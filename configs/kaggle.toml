@@ -1,0 +1,9 @@
+[paths]
+mode = "kaggle"
+input_root = "/kaggle/input"
+work_root = "/kaggle/working"
+
+[preprocessing]
+slice_count = 8
+lower_percentile = 1
+upper_percentile = 99

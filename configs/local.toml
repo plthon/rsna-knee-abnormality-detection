@@ -1,0 +1,9 @@
+[paths]
+mode = "local"
+input_root = "data"
+work_root = ".artifacts"
+
+[preprocessing]
+slice_count = 8
+lower_percentile = 1
+upper_percentile = 99
