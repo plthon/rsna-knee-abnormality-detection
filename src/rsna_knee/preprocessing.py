@@ -17,7 +17,7 @@ def uniform_indices(length: int, count: int) -> tuple[int, ...]:
 
 def preprocess_series(
     paths: Sequence[str | Path], config: PreprocessingConfig
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     indices = uniform_indices(len(paths), config.slice_count)
     if not indices:
         raise ValueError("Cannot preprocess an empty series")
@@ -27,8 +27,13 @@ def preprocess_series(
         volume, (config.lower_percentile, config.upper_percentile)
     )
     if lower == upper:
-        return np.zeros_like(volume, dtype=np.float32)
-    normalized: np.ndarray = np.clip((volume - lower) / (upper - lower), 0, 1).astype(
-        np.float32
-    )
-    return normalized
+        normalized = np.zeros_like(volume, dtype=np.float32)
+    else:
+        normalized = np.clip((volume - lower) / (upper - lower), 0, 1).astype(
+            np.float32
+        )
+
+    padded = np.zeros((config.slice_count, *normalized.shape[1:]), dtype=np.float32)
+    padded[: len(indices)] = normalized
+    mask = np.arange(config.slice_count) < len(indices)
+    return padded, mask

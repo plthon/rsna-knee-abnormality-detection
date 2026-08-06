@@ -81,12 +81,18 @@ upper_percentile = 100
 
     config = load_config(config_path)
     series = sorted(config.paths.input_root.glob("[0-9][0-9].dcm"))
-    normalized = preprocess_series(series, config.preprocessing)
+    normalized, mask = preprocess_series(series, config.preprocessing)
 
     assert normalized.shape == (4, 2, 2)
+    np.testing.assert_array_equal(mask, [True, True, True, True])
     assert np.isfinite(normalized).all()
     assert normalized.min() == 0
     assert normalized.max() == 1
+
+    short_normalized, short_mask = preprocess_series(series[:3], config.preprocessing)
+    assert short_normalized.shape == (4, 2, 2)
+    np.testing.assert_array_equal(short_mask, [True, True, True, False])
+    assert not short_normalized[3].any()
 
 
 def test_uniform_sampling_handles_long_and_short_series() -> None:
