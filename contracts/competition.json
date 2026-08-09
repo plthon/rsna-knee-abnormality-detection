@@ -1,0 +1,796 @@
+{
+  "schema_version": 1,
+  "competition": {
+    "slug": "rsna-knee-abnormality-detection",
+    "title": "RSNA Knee Abnormalities Detection",
+    "contract_verified_at": "2026-08-09",
+    "mutable_platform_facts_require_reverification": true
+  },
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "requirement": "Inventory files, sizes, schemas, identifiers, reports, languages, targets, missing fields, and duplicates.",
+      "initial_classification": "requires_additional_lightweight_inspection",
+      "final_status": "satisfied",
+      "evidence": [
+        "real_data_inspection_v2",
+        "contract_gap_inspection_v1",
+        "identifier_gap_inspection_v2",
+        "competition_data_api"
+      ]
+    },
+    {
+      "id": "AC2",
+      "requirement": "Summarize representative DICOM shapes, slices, modalities, orientations, and transfer syntaxes without exporting pixels.",
+      "initial_classification": "requires_additional_lightweight_inspection",
+      "final_status": "satisfied",
+      "evidence": [
+        "real_data_inspection_v2",
+        "contract_gap_inspection_v1",
+        "official_data_description"
+      ]
+    },
+    {
+      "id": "AC3",
+      "requirement": "Identify leakage relationships and the highest safe available split grouping.",
+      "initial_classification": "requires_additional_lightweight_inspection",
+      "final_status": "satisfied",
+      "evidence": [
+        "real_data_inspection_v2",
+        "contract_gap_inspection_v1"
+      ]
+    },
+    {
+      "id": "AC4",
+      "requirement": "Record metric, submission interface, runtime, disk, internet, and packages.",
+      "initial_classification": "requires_additional_lightweight_inspection",
+      "final_status": "satisfied",
+      "evidence": [
+        "official_evaluation",
+        "official_code_requirements",
+        "real_data_inspection_v2",
+        "contract_gap_inspection_v1"
+      ]
+    },
+    {
+      "id": "AC5",
+      "requirement": "Classify rules for external data, pretrained weights, generative AI, and external report processing.",
+      "initial_classification": "requires_additional_lightweight_inspection",
+      "final_status": "satisfied",
+      "evidence": [
+        "official_rules",
+        "official_code_requirements"
+      ]
+    },
+    {
+      "id": "AC6",
+      "requirement": "Capture Python, PyTorch, torchvision, pydicom, CUDA, accelerator, and Kaggle image provenance.",
+      "initial_classification": "already_satisfied",
+      "final_status": "satisfied",
+      "evidence": [
+        "real_data_inspection_v2",
+        "packaged_cpu_run_v3",
+        "contract_gap_inspection_v1"
+      ]
+    },
+    {
+      "id": "AC7",
+      "requirement": "Do not download or commit reports, DICOMs, or private competition data.",
+      "initial_classification": "already_satisfied",
+      "final_status": "satisfied",
+      "evidence": [
+        "real_data_inspection_v2",
+        "contract_gap_inspection_v1"
+      ]
+    },
+    {
+      "id": "AC8",
+      "requirement": "Give every provisional assumption a verified, rejected, or unresolved status.",
+      "initial_classification": "requires_additional_lightweight_inspection",
+      "final_status": "satisfied",
+      "evidence": [
+        "real_data_inspection_v2",
+        "contract_gap_inspection_v1",
+        "identifier_gap_inspection_v2",
+        "official_evaluation",
+        "official_code_requirements",
+        "official_rules",
+        "official_data_description"
+      ]
+    }
+  ],
+  "evidence": {
+    "real_data_inspection_v2": {
+      "kind": "private_kaggle_kernel_output",
+      "kernel": "plthon/rsna-knee-real-data-inspection",
+      "kernel_version": 2,
+      "artifact": "inspection_findings.json",
+      "artifact_sha256": "e0399ebb26f871ed46d499470007177772b64f29d9540fb73528af2caa8632de",
+      "url": "https://www.kaggle.com/code/plthon/rsna-knee-real-data-inspection"
+    },
+    "contract_gap_inspection_v1": {
+      "kind": "private_kaggle_kernel_output",
+      "kernel": "plthon/rsna-knee-identifier-finalization",
+      "kernel_version": 1,
+      "scope": "five CSVs and one non-pixel DICOM header per training study",
+      "source_sha256": "33596af8de9532964a04d5a5037d6e4ac0365b60b68b1d8040d1a0222c422cc1",
+      "notebook_sha256": "6892886c0dd9e404e582f390e9addf4e4ce3f08c14476cb9173716acfb266ddf",
+      "artifact": "contract_gap_findings.json",
+      "artifact_sha256": "7871a32bdbe30c3f0342b3bfcc4fb8ff9fb98acde7c30c32bcf42cae59d8edb1",
+      "url": "https://www.kaggle.com/code/plthon/rsna-knee-identifier-finalization"
+    },
+    "identifier_gap_inspection_v2": {
+      "kind": "private_kaggle_kernel_output",
+      "kernel": "plthon/rsna-knee-identifier-finalization",
+      "kernel_version": 2,
+      "scope": "per-column identifier cardinality across five CSVs; no reports or DICOMs read",
+      "source_sha256": "98796a5a53261aa3793a4ed6ad984034e9df6bb687508b5ed2c06c87e1e7f584",
+      "notebook_sha256": "e4124bf9cb472cf550ab4ee53c0508ea30c118ceaf611711ad45fdbea56c0157",
+      "artifact": "identifier_gap_findings.json",
+      "artifact_sha256": "18b79b3f04c6c894ce312e685cc23422db13fea5f075bddd489317280555df56",
+      "url": "https://www.kaggle.com/code/plthon/rsna-knee-identifier-finalization"
+    },
+    "competition_data_api": {
+      "kind": "official_kaggle_api",
+      "retrieved_at": "2026-08-09",
+      "scope": "aggregate file summary and root file tree",
+      "url": "https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/data"
+    },
+    "official_evaluation": {
+      "kind": "official_competition_page",
+      "retrieved_at": "2026-08-09",
+      "url": "https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/overview/evaluation"
+    },
+    "official_code_requirements": {
+      "kind": "official_competition_page",
+      "retrieved_at": "2026-08-09",
+      "url": "https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/overview/code-requirements"
+    },
+    "official_rules": {
+      "kind": "official_competition_page",
+      "retrieved_at": "2026-08-09",
+      "url": "https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/rules"
+    },
+    "official_data_description": {
+      "kind": "official_competition_page",
+      "retrieved_at": "2026-08-09",
+      "url": "https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/data"
+    },
+    "packaged_cpu_run_v3": {
+      "kind": "private_kaggle_kernel_manifest",
+      "kernel": "plthon/rsna-knee-synthetic-pipeline",
+      "kernel_version": 3,
+      "manifest_sha256": "48be2d7d56ebb35f2883a728a2fc74eaa90e31779de16026e55729c6cd48b2c7"
+    }
+  },
+  "data": {
+    "root": "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+    "root_discovery": "verified unique sample_submission.csv mount in the completed inspection",
+    "total_file_count": 819640,
+    "total_size_bytes": 569763893144,
+    "file_types": {
+      ".csv": {
+        "count": 5,
+        "size_bytes": 9151736
+      },
+      ".dcm": {
+        "count": 819635,
+        "size_bytes": 569754741408
+      }
+    },
+    "image_roots": {
+      "train_series": {
+        "study_count": 4407,
+        "series_count": 24371,
+        "image_count": 819078
+      },
+      "test_series": {
+        "study_count": 3,
+        "series_count": 15,
+        "image_count": 557,
+        "is_example_replaced_during_scoring": true
+      }
+    },
+    "image_path_template": "{train_series|test_series}/{StudyInstanceUID}/{SeriesInstanceUID}/{SOPInstanceUID}.dcm",
+    "tables": {
+      "sample_submission.csv": {
+        "size_bytes": 470,
+        "row_count": 3,
+        "columns": [
+          "StudyInstanceUID",
+          "ACL",
+          "MCL",
+          "Medial Meniscus",
+          "Lateral Meniscus",
+          "Medial OA",
+          "Lateral OA",
+          "PF OA",
+          "Effusion",
+          "Synovitis",
+          "Baker's",
+          "Contusion",
+          "Fracture"
+        ],
+        "identifier_columns": [
+          "StudyInstanceUID"
+        ],
+        "identifier_cardinality": {
+          "StudyInstanceUID": {
+            "unique_nonblank": 3,
+            "duplicate_nonblank_rows": 0,
+            "maximum_rows_per_value": 1
+          }
+        },
+        "duplicate_identifier_rows": 0,
+        "missing_by_column": {
+          "StudyInstanceUID": 0,
+          "ACL": 0,
+          "MCL": 0,
+          "Medial Meniscus": 0,
+          "Lateral Meniscus": 0,
+          "Medial OA": 0,
+          "Lateral OA": 0,
+          "PF OA": 0,
+          "Effusion": 0,
+          "Synovitis": 0,
+          "Baker's": 0,
+          "Contusion": 0,
+          "Fracture": 0
+        }
+      },
+      "test.csv": {
+        "size_bytes": 212,
+        "row_count": 3,
+        "columns": [
+          "StudyInstanceUID"
+        ],
+        "identifier_columns": [
+          "StudyInstanceUID"
+        ],
+        "identifier_cardinality": {
+          "StudyInstanceUID": {
+            "unique_nonblank": 3,
+            "duplicate_nonblank_rows": 0,
+            "maximum_rows_per_value": 1
+          }
+        },
+        "duplicate_identifier_rows": 0,
+        "missing_by_column": {
+          "StudyInstanceUID": 0
+        }
+      },
+      "test_series.csv": {
+        "size_bytes": 2213,
+        "row_count": 15,
+        "columns": [
+          "StudyInstanceUID",
+          "SeriesInstanceUID",
+          "Fluid_Sensitive",
+          "Fat_Suppression",
+          "Anatomical_Plane"
+        ],
+        "identifier_columns": [
+          "StudyInstanceUID",
+          "SeriesInstanceUID"
+        ],
+        "identifier_cardinality": {
+          "StudyInstanceUID": {
+            "unique_nonblank": 3,
+            "duplicate_nonblank_rows": 12,
+            "maximum_rows_per_value": 5,
+            "expected_nonunique_role": "foreign_key_to_study"
+          },
+          "SeriesInstanceUID": {
+            "unique_nonblank": 15,
+            "duplicate_nonblank_rows": 0,
+            "maximum_rows_per_value": 1
+          }
+        },
+        "duplicate_identifier_rows": 0,
+        "missing_by_column": {
+          "StudyInstanceUID": 0,
+          "SeriesInstanceUID": 0,
+          "Fluid_Sensitive": 0,
+          "Fat_Suppression": 0,
+          "Anatomical_Plane": 0
+        }
+      },
+      "train.csv": {
+        "size_bytes": 5690007,
+        "row_count": 4407,
+        "columns": [
+          "StudyInstanceUID",
+          "Report",
+          "ACL",
+          "MCL",
+          "Medial Meniscus",
+          "Lateral Meniscus",
+          "Medial OA",
+          "Lateral OA",
+          "PF OA",
+          "Effusion",
+          "Synovitis",
+          "Baker's",
+          "Contusion",
+          "Fracture"
+        ],
+        "identifier_columns": [
+          "StudyInstanceUID"
+        ],
+        "identifier_cardinality": {
+          "StudyInstanceUID": {
+            "unique_nonblank": 4407,
+            "duplicate_nonblank_rows": 0,
+            "maximum_rows_per_value": 1
+          }
+        },
+        "duplicate_identifier_rows": 0,
+        "missing_by_column": {
+          "StudyInstanceUID": 0,
+          "Report": 0,
+          "ACL": 4349,
+          "MCL": 4349,
+          "Medial Meniscus": 4349,
+          "Lateral Meniscus": 4349,
+          "Medial OA": 4349,
+          "Lateral OA": 4349,
+          "PF OA": 4349,
+          "Effusion": 4349,
+          "Synovitis": 4349,
+          "Baker's": 4349,
+          "Contusion": 4349,
+          "Fracture": 4349
+        }
+      },
+      "train_series.csv": {
+        "size_bytes": 3458834,
+        "row_count": 24371,
+        "columns": [
+          "StudyInstanceUID",
+          "SeriesInstanceUID",
+          "Fluid_Sensitive",
+          "Fat_Suppression",
+          "Anatomical_Plane"
+        ],
+        "identifier_columns": [
+          "StudyInstanceUID",
+          "SeriesInstanceUID"
+        ],
+        "identifier_cardinality": {
+          "StudyInstanceUID": {
+            "unique_nonblank": 4407,
+            "duplicate_nonblank_rows": 19964,
+            "maximum_rows_per_value": 14,
+            "expected_nonunique_role": "foreign_key_to_study"
+          },
+          "SeriesInstanceUID": {
+            "unique_nonblank": 24371,
+            "duplicate_nonblank_rows": 0,
+            "maximum_rows_per_value": 1
+          }
+        },
+        "duplicate_identifier_rows": 0,
+        "missing_by_column": {
+          "StudyInstanceUID": 0,
+          "SeriesInstanceUID": 0,
+          "Fluid_Sensitive": 0,
+          "Fat_Suppression": 0,
+          "Anatomical_Plane": 0
+        }
+      }
+    },
+    "documented_schema_discrepancies": [
+      {
+        "field": "PatientSex",
+        "documentation": "listed for train.csv",
+        "mounted_data": "column absent",
+        "canonical_resolution": "rejected; consumers must follow the mounted schema"
+      }
+    ]
+  },
+  "dicom": {
+    "modality": {
+      "status": "verified",
+      "headers_read": 4407,
+      "counts": {
+        "MR": 4407
+      }
+    },
+    "representative_header_sample_count": 127,
+    "representative_dimensions": [
+      [
+        512,
+        512
+      ],
+      [
+        640,
+        640
+      ],
+      [
+        800,
+        800
+      ],
+      [
+        960,
+        960
+      ]
+    ],
+    "slice_count": {
+      "minimum": 11,
+      "median": 30.0,
+      "maximum": 320
+    },
+    "orientation": {
+      "status": "verified",
+      "representative_unique_values": 4,
+      "planes_visualized": [
+        "axial",
+        "sagittal",
+        "coronal"
+      ]
+    },
+    "transfer_syntaxes": {
+      "representative_observed": [
+        "1.2.840.10008.1.2.1"
+      ],
+      "representative_observed_name": [
+        "Explicit VR Little Endian"
+      ],
+      "officially_documented_corpus_mix": [
+        "Explicit VR Little Endian",
+        "JPEG Lossless",
+        "JPEG 2000",
+        "Implicit VR Little Endian"
+      ],
+      "full_corpus_frequencies": "unresolved"
+    },
+    "representative_photometric_interpretations": [
+      "MONOCHROME2"
+    ],
+    "representative_pixel_decoding": {
+      "decoded_series": 4,
+      "failures": 0,
+      "full_corpus_decoded": false
+    }
+  },
+  "targets": {
+    "status": "verified",
+    "count": 12,
+    "order": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ],
+    "label_representation": [
+      0,
+      1
+    ],
+    "label_availability": {
+      "nonmissing_rows_per_target": 58,
+      "missing_rows_per_target": 4349,
+      "joint_rowwise_missingness": "unresolved"
+    }
+  },
+  "reports": {
+    "availability_status": "verified",
+    "table": "train.csv",
+    "column": "Report",
+    "nonempty_rows": 4407,
+    "empty_rows": 0,
+    "duplicate_nonempty_rows": 134,
+    "observed_languages": {
+      "status": "unresolved",
+      "values": [],
+      "basis": "The official data page says reports may use several languages, but the internet-off runtime had no language detector and report text was not exported."
+    },
+    "full_text_exported": false
+  },
+  "leakage": {
+    "status": "verified",
+    "highest_safe_available_grouping_entity": "PatientID",
+    "fallback_grouping_entity": "StudyInstanceUID",
+    "patient_id": {
+      "headers_requested": 4407,
+      "headers_read": 4407,
+      "nonblank": 4407,
+      "unique": 4407,
+      "repeated_values": 0,
+      "maximum_studies_per_value": 1,
+      "relationship_to_study": "one-to-one in the observed training data",
+      "raw_values_exported": false
+    },
+    "hierarchy": {
+      "levels": [
+        "PatientID",
+        "StudyInstanceUID",
+        "SeriesInstanceUID",
+        "SOPInstanceUID"
+      ],
+      "study_series_image_relationships_verified": true
+    },
+    "table_relationships": {
+      "train_series_studies_not_in_train": 0,
+      "train_studies_without_series": 0,
+      "test_series_studies_not_in_test": 0,
+      "test_studies_without_series": 0,
+      "train_test_study_overlap": 0,
+      "train_test_series_overlap": 0
+    },
+    "operational_note": "PatientID and StudyInstanceUID produce equivalent groups for the current training data because no PatientID spans multiple studies; retain PatientID to preserve the safest available semantic boundary.",
+    "report_content_leakage": {
+      "duplicate_nonempty_rows": 134,
+      "duplicates_cross_patient_groups": true,
+      "basis": "PatientID is one-to-one with StudyInstanceUID, so every duplicate report row belongs to a distinct patient group.",
+      "mitigation": "Deduplicate or group by normalized report hash when validating any report model or report-label extractor; PatientID remains the image-model split group."
+    }
+  },
+  "metric": {
+    "name": "macro_averaged_roc_auc",
+    "aggregation": "unweighted_mean_across_12_targets",
+    "objective": "maximize",
+    "status": "verified"
+  },
+  "submission": {
+    "format": "csv",
+    "filename": "submission.csv",
+    "row_granularity": "study",
+    "identifier_columns": [
+      "StudyInstanceUID"
+    ],
+    "ordered_columns": [
+      "StudyInstanceUID",
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ],
+    "inference_api": {
+      "required": false,
+      "status": "verified",
+      "basis": "The official interface is a notebook-generated submission.csv; no inference API is specified."
+    },
+    "status": "verified"
+  },
+  "platform": {
+    "submission_method": "kaggle_notebook",
+    "constraints": {
+      "cpu_runtime_max_seconds": 32400,
+      "gpu_runtime_max_seconds": 32400,
+      "internet_enabled": false,
+      "official_disk_quota_bytes": null,
+      "official_disk_quota_status": "unresolved",
+      "observed_working_disk": {
+        "total_bytes": 20957446144,
+        "free_bytes": 20940529664
+      },
+      "observed_memory_bytes": 33659383808
+    },
+    "observed_runtime": {
+      "captured_at": "2026-08-09",
+      "python": "3.12.13",
+      "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+      "accelerator": "cpu",
+      "cpu_count": 4,
+      "cuda_available": false,
+      "cuda_version": null,
+      "kaggle_image_git_commit": "fc61d5cda7da39530055bae9bd0e92865f995cd9",
+      "packages": {
+        "numpy": "2.0.2",
+        "pydicom": "3.0.2",
+        "torch": "2.10.0+cpu",
+        "torchvision": "0.25.0+cpu",
+        "pylibjpeg": null,
+        "pylibjpeg-libjpeg": null,
+        "pylibjpeg-openjpeg": null,
+        "python-gdcm": null
+      }
+    }
+  },
+  "rules": {
+    "external_data": {
+      "status": "permitted",
+      "conditions": [
+        "publicly and equally accessible to participants at no cost, or reasonable under the competition rules",
+        "compatible licensing and winner reproducibility obligations"
+      ],
+      "evidence": [
+        "official_rules",
+        "official_code_requirements"
+      ]
+    },
+    "pretrained_weights": {
+      "status": "permitted",
+      "conditions": [
+        "freely and publicly available",
+        "reasonably accessible with compatible licensing",
+        "available offline to the submission notebook"
+      ],
+      "evidence": [
+        "official_rules",
+        "official_code_requirements"
+      ]
+    },
+    "generative_ai": {
+      "status": "permitted",
+      "conditions": [
+        "the LLM or tool satisfies the rules' accessibility, reasonable-cost, and licensing requirements",
+        "competition data is not disclosed to an unauthorized external party"
+      ],
+      "evidence": [
+        "official_rules"
+      ]
+    },
+    "external_report_processing": {
+      "status": "prohibited",
+      "scope": "hosted third-party processing that transmits report text or other competition data outside the authorized Kaggle environment",
+      "conditions": [
+        "offline processing with otherwise permitted tools remains allowed",
+        "do not expose competition reports to a party that has not formally accepted the competition rules"
+      ],
+      "evidence": [
+        "official_rules"
+      ]
+    }
+  },
+  "assumptions": {
+    "competition_metric": {
+      "status": "verified",
+      "basis": "The official Evaluation page defines the unweighted mean of twelve per-target ROC AUC values."
+    },
+    "competition_rules_for_external_data": {
+      "status": "verified",
+      "basis": "Official rules permit external data subject to equal accessibility or reasonableness, cost, and licensing conditions."
+    },
+    "competition_rules_for_generative_ai": {
+      "status": "verified",
+      "basis": "Official rules explicitly address LLMs and permit tools that satisfy the reasonableness and licensing requirements."
+    },
+    "dataset_size": {
+      "status": "verified",
+      "basis": "The mounted data and official API both total 569763893144 bytes, consistent with the provisional approximately 600 GB estimate."
+    },
+    "decoder_supports_observed_sample": {
+      "status": "verified",
+      "basis": "Four representative series decoded without failure, but this does not verify every documented transfer syntax."
+    },
+    "deterministic_eight_slice_sampling_executes": {
+      "status": "verified",
+      "basis": "The completed inspection exercised deterministic sampling on four representative real series."
+    },
+    "external_report_processing_rule": {
+      "status": "verified",
+      "basis": "The data-security rule prohibits making competition data available to unauthorized parties; hosted report processing is therefore prohibited."
+    },
+    "geometric_ordering_available": {
+      "status": "verified",
+      "basis": "Geometric ordering was available and selected for all four representative series."
+    },
+    "identifier_hierarchy_is_study_series_image": {
+      "status": "verified",
+      "basis": "Mounted paths and both series tables verify StudyInstanceUID to SeriesInstanceUID to SOPInstanceUID relationships."
+    },
+    "internet_access_rule": {
+      "status": "verified",
+      "basis": "The official Code Requirements page requires internet-disabled submission notebooks."
+    },
+    "monochrome1_interface_on_observed_sample": {
+      "status": "unresolved",
+      "basis": "No MONOCHROME1 image appeared in the representative decoded sample."
+    },
+    "multilingual_reports": {
+      "status": "unresolved",
+      "basis": "Official documentation says reports may use several languages, but observed language values could not be classified reliably in the internet-off runtime."
+    },
+    "percentile_normalization_is_suitable": {
+      "status": "unresolved",
+      "basis": "A four-series smoke sample proves execution, not modelling suitability."
+    },
+    "pretrained_weights_are_permitted": {
+      "status": "verified",
+      "basis": "The official Code Requirements page explicitly permits freely and publicly available pretrained models."
+    },
+    "report_pseudo_labelling_is_needed": {
+      "status": "unresolved",
+      "basis": "Each target is missing in 4349 rows, but report pseudo-labelling is a modelling choice rather than a requirement established by the competition data."
+    },
+    "reports_are_available": {
+      "status": "verified",
+      "basis": "Every one of 4407 train.csv rows has a nonempty Report."
+    },
+    "rescale_interface_on_observed_sample": {
+      "status": "unresolved",
+      "basis": "No non-default rescale values appeared in the representative decoded sample."
+    },
+    "runtime_environment_captured": {
+      "status": "verified",
+      "basis": "Python, packages, CPU, memory, disk, CUDA availability, and Kaggle image commit were captured."
+    },
+    "runtime_limits": {
+      "status": "unresolved",
+      "basis": "The official 9-hour duration and internet rule are verified, but no separate official disk quota was found; only observed capacity is recorded."
+    },
+    "submission_contract": {
+      "status": "verified",
+      "basis": "The official Evaluation and Code Requirements pages specify a notebook-produced submission.csv with StudyInstanceUID and twelve ordered targets."
+    },
+    "target_schema_from_sample_submission": {
+      "status": "verified",
+      "basis": "The mounted sample submission and official Evaluation page agree on twelve target names and order."
+    },
+    "patient_level_grouping_available": {
+      "status": "verified",
+      "basis": "PatientID was nonblank in all 4407 sampled-per-study headers and unique for all 4407 studies."
+    },
+    "patient_sex_column_available": {
+      "status": "rejected",
+      "basis": "The official data description lists PatientSex, but the mounted train.csv schema does not contain that column."
+    },
+    "all_dicoms_use_explicit_vr_little_endian": {
+      "status": "rejected",
+      "basis": "Only Explicit VR Little Endian was observed in representative headers, while official documentation states that the corpus also includes JPEG Lossless, JPEG 2000, and Implicit VR Little Endian."
+    },
+    "example_test_rows_equal_scoring_rows": {
+      "status": "rejected",
+      "basis": "The three mounted test studies are examples replaced by the actual hidden test set during scoring."
+    },
+    "global_sop_instance_uid_uniqueness": {
+      "status": "unresolved",
+      "basis": "The completed inspection verified path hierarchy but did not retain full-corpus SOPInstanceUID cardinality; repeating the 819635-path scan was explicitly excluded."
+    }
+  },
+  "unresolved": [
+    {
+      "fact": "observed report languages",
+      "reason": "No offline language detector was installed, reports were not exported, and the official page does not enumerate language values."
+    },
+    {
+      "fact": "official Kaggle disk quota",
+      "reason": "The competition page specifies runtime and internet constraints but no separate disk quota; observed capacity is not promoted to an official limit."
+    },
+    {
+      "fact": "full-corpus transfer-syntax frequencies",
+      "reason": "The official page lists a mixed corpus; the completed bounded sample observed only Explicit VR Little Endian."
+    },
+    {
+      "fact": "MONOCHROME1 and non-default rescale behavior on competition data",
+      "reason": "Neither case appeared in the bounded decoded sample."
+    },
+    {
+      "fact": "percentile-normalization suitability",
+      "reason": "Execution on four representative series is insufficient evidence for a modelling decision."
+    },
+    {
+      "fact": "joint row-wise target missingness",
+      "reason": "Each target has 58 nonmissing values, but the compact evidence did not retain whether the same 58 rows are populated for every target."
+    },
+    {
+      "fact": "global SOPInstanceUID uniqueness",
+      "reason": "Exact CSV identifier cardinality is verified, but proving global image-identifier uniqueness would require repeating the full 819635-path scan."
+    }
+  ],
+  "data_governance": {
+    "competition_data_committed": false,
+    "competition_source_files_downloaded_by_issue_4": false,
+    "derived_inspection_artifacts_committed": false,
+    "derived_inspection_artifacts_preexisting_locally": true,
+    "full_reports_downloaded": false,
+    "raw_dicoms_downloaded": false
+  }
+}

@@ -2,6 +2,13 @@
 
 CPU-only local foundations for the competition pipeline.
 
+## Canonical competition contract
+
+Later data, validation, metric, model, and submission code must consume
+[`contracts/competition.json`](contracts/competition.json). Its concise evidence
+summary and unresolved facts are documented in
+[`docs/competition-inspection-report.md`](docs/competition-inspection-report.md).
+
 ## Local checks
 
 ```bash
