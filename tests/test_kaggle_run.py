@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import subprocess
 import zipfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from rsna_knee.kaggle_run import (
     build_wheel_dataset,
     download_and_register_run,
     push_run_bundle,
+    render_run_kernel,
 )
 from rsna_knee.provenance import create_run_id, write_run_manifest
 
@@ -98,6 +100,9 @@ def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None
             token in notebook_source
             for token in ("pip", "install", "--no-index", "--no-deps")
         ),
+        "wheel_digest_verified": (
+            "hashlib.sha256(wheel_path.read_bytes()).hexdigest()" in notebook_source
+        ),
         "same_pipeline": "preprocess_series" in notebook_source,
         "unresolved_marker": "__RSNA_KNEE_" in notebook_source,
         "tracked_generated_notebooks": tracked_notebooks,
@@ -125,6 +130,7 @@ def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None
             "title": "RSNA Knee Synthetic Pipeline",
         },
         "offline_install": True,
+        "wheel_digest_verified": True,
         "same_pipeline": True,
         "unresolved_marker": False,
         "tracked_generated_notebooks": [],
@@ -179,6 +185,8 @@ def test_remote_push_requires_explicit_remote_and_gpu_approvals(
 
     def record_call(command: list[str]) -> CompletedProcess[str]:
         calls.append(command)
+        if command[:3] == ["kaggle", "datasets", "status"]:
+            return CompletedProcess(command, 0, stdout="ready")
         return CompletedProcess(command, 0)
 
     with pytest.raises(PermissionError, match="explicit remote approval"):
@@ -199,8 +207,153 @@ def test_remote_push_requires_explicit_remote_and_gpu_approvals(
 
     assert calls == [
         ["kaggle", "datasets", "create", "-p", str(bundle.wheel_dataset.root)],
+        [
+            "kaggle",
+            "datasets",
+            "status",
+            "plthon/rsna-knee-offline-wheel",
+        ],
         ["kaggle", "kernels", "push", "-p", str(bundle.kernel_root)],
     ]
+
+
+def test_kernel_push_waits_for_private_dataset_to_be_ready(tmp_path: Path) -> None:
+    bundle = build_run_bundle(
+        Path.cwd(),
+        tmp_path / "run-bundle",
+        dataset_id="plthon/rsna-knee-offline-wheel",
+        kernel_id="plthon/rsna-knee-synthetic-pipeline",
+    )
+    calls: list[list[str]] = []
+    waits: list[float] = []
+    dataset_statuses = iter(("creating", "ready"))
+
+    def run_command(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        if command[:3] == ["kaggle", "datasets", "status"]:
+            return CompletedProcess(command, 0, stdout=next(dataset_statuses))
+        return CompletedProcess(command, 0)
+
+    push_run_bundle(
+        bundle,
+        approved=True,
+        runner=run_command,
+        wait=waits.append,
+    )
+
+    assert calls == [
+        ["kaggle", "datasets", "create", "-p", str(bundle.wheel_dataset.root)],
+        [
+            "kaggle",
+            "datasets",
+            "status",
+            "plthon/rsna-knee-offline-wheel",
+        ],
+        [
+            "kaggle",
+            "datasets",
+            "status",
+            "plthon/rsna-knee-offline-wheel",
+        ],
+        ["kaggle", "kernels", "push", "-p", str(bundle.kernel_root)],
+    ]
+    assert waits == [2.0]
+
+
+def test_retry_reuses_ready_dataset_without_recreating_it(tmp_path: Path) -> None:
+    bundle = build_run_bundle(
+        Path.cwd(),
+        tmp_path / "run-bundle",
+        dataset_id="plthon/rsna-knee-offline-wheel",
+        kernel_id="plthon/rsna-knee-synthetic-pipeline",
+    )
+    calls: list[list[str]] = []
+
+    def run_command(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        if command[:3] == ["kaggle", "datasets", "status"]:
+            return CompletedProcess(command, 0, stdout="ready")
+        return CompletedProcess(command, 0)
+
+    dataset_result, _ = push_run_bundle(
+        bundle,
+        approved=True,
+        reuse_ready_dataset=True,
+        runner=run_command,
+    )
+
+    assert dataset_result is None
+    assert calls == [
+        [
+            "kaggle",
+            "datasets",
+            "status",
+            "plthon/rsna-knee-offline-wheel",
+        ],
+        ["kaggle", "kernels", "push", "-p", str(bundle.kernel_root)],
+    ]
+
+
+def test_default_cli_runner_captures_dataset_status_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = build_run_bundle(
+        Path.cwd(),
+        tmp_path / "run-bundle",
+        dataset_id="plthon/rsna-knee-offline-wheel",
+        kernel_id="plthon/rsna-knee-synthetic-pipeline",
+    )
+    calls_path = tmp_path / "kaggle-calls.txt"
+    bin_root = tmp_path / "bin"
+    bin_root.mkdir()
+    fake_kaggle = bin_root / "kaggle"
+    fake_kaggle.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{calls_path}"\n'
+        'if [ "$1" = "datasets" ] && [ "$2" = "status" ]; then\n'
+        '  printf "ready\\n"\n'
+        "fi\n"
+    )
+    fake_kaggle.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_root), prepend=os.pathsep)
+
+    push_run_bundle(
+        bundle,
+        approved=True,
+        reuse_ready_dataset=True,
+        wait=lambda _: None,
+    )
+
+    assert calls_path.read_text().splitlines() == [
+        "datasets status plthon/rsna-knee-offline-wheel",
+        f"kernels push -p {bundle.kernel_root}",
+    ]
+
+
+def test_retry_rerenders_kernel_without_rebuilding_uploaded_wheel(
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "run-bundle"
+    wheel_dataset = build_wheel_dataset(
+        Path.cwd(),
+        bundle_root / "wheel-dataset",
+        dataset_id="plthon/rsna-knee-offline-wheel",
+    )
+    wheel_digest = hashlib.sha256(wheel_dataset.wheel_path.read_bytes()).hexdigest()
+
+    bundle = render_run_kernel(
+        Path.cwd(),
+        bundle_root,
+        wheel_dataset=wheel_dataset,
+        kernel_id="plthon/rsna-knee-synthetic-pipeline",
+    )
+
+    assert bundle.wheel_dataset.wheel_path == wheel_dataset.wheel_path
+    assert hashlib.sha256(bundle.wheel_dataset.wheel_path.read_bytes()).hexdigest() == (
+        wheel_digest
+    )
+    assert wheel_digest in _read_notebook_source(bundle.notebook_path)
 
 
 def test_run_manifest_records_source_config_runtime_notebook_and_artifacts(

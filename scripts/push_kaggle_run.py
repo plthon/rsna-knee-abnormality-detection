@@ -23,12 +23,18 @@ def main() -> None:
         action="store_true",
         help="Separately approve a GPU-enabled kernel if metadata requests one",
     )
+    parser.add_argument(
+        "--reuse-ready-dataset",
+        action="store_true",
+        help="Reuse an already-ready Dataset instead of attempting to recreate it",
+    )
     arguments = parser.parse_args()
     try:
         push_run_bundle(
             load_run_bundle(arguments.bundle),
             approved=arguments.approve_remote,
             gpu_approved=arguments.approve_gpu,
+            reuse_ready_dataset=arguments.reuse_ready_dataset,
         )
     except (FileNotFoundError, PermissionError, TypeError, ValueError) as error:
         parser.error(str(error))

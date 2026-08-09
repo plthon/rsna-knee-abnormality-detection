@@ -63,6 +63,11 @@ both refused unless the following explicit approval is supplied:
 uv run python scripts/push_kaggle_run.py --approve-remote
 ```
 
+If a prior kernel attempt failed after the Dataset became ready, a separately
+approved retry can preserve and rerender against the exact uploaded wheel with
+`build_kaggle_run.py --reuse-wheel-dataset`, then push with
+`push_kaggle_run.py --approve-remote --reuse-ready-dataset`.
+
 The Dataset command omits Kaggle's `--public` option, so creation remains
 private. CPU metadata is the default. Creating or pushing GPU metadata also
 requires the separate `--approve-gpu` flag.

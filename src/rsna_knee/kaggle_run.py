@@ -3,15 +3,17 @@ import json
 import re
 import shutil
 import subprocess
+import time
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess
 
 from .kaggle import _percent_source_to_notebook
 
 type CommandRunner = Callable[[list[str]], CompletedProcess[str]]
+type Waiter = Callable[[float], object]
 
 _KAGGLE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_-]*")
 _RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -185,6 +187,36 @@ def build_run_bundle(
         output_root / "wheel-dataset",
         dataset_id=dataset_id,
     )
+    return render_run_kernel(
+        project_root,
+        output_root,
+        wheel_dataset=wheel_dataset,
+        kernel_id=kernel_id,
+        enable_gpu=enable_gpu,
+        gpu_approved=gpu_approved,
+    )
+
+
+def render_run_kernel(
+    project_root: Path,
+    output_root: Path,
+    *,
+    wheel_dataset: WheelDataset,
+    kernel_id: str,
+    enable_gpu: bool = False,
+    gpu_approved: bool = False,
+) -> KaggleRunBundle:
+    """Render a kernel while preserving an existing wheel Dataset."""
+    _require_resolved_kaggle_id(kernel_id)
+    if enable_gpu and not gpu_approved:
+        raise PermissionError(
+            "GPU metadata requires a separate GPU approval; no bundle was written"
+        )
+    dataset_metadata = json.loads(wheel_dataset.metadata_path.read_text())
+    dataset_id = dataset_metadata.get("id")
+    if not isinstance(dataset_id, str):
+        raise TypeError("Dataset metadata must contain an ID")
+    _require_resolved_kaggle_id(dataset_id)
     kernel_root = output_root / "kernel"
     kernel_root.mkdir(parents=True, exist_ok=True)
     kernel_metadata = _kernel_metadata(
@@ -256,8 +288,10 @@ def push_run_bundle(
     *,
     approved: bool = False,
     gpu_approved: bool = False,
+    reuse_ready_dataset: bool = False,
     runner: CommandRunner | None = None,
-) -> tuple[CompletedProcess[str], CompletedProcess[str]]:
+    wait: Waiter | None = None,
+) -> tuple[CompletedProcess[str] | None, CompletedProcess[str]]:
     """Create the private Dataset and execute its notebook after approval."""
     if not approved:
         raise PermissionError(
@@ -270,13 +304,55 @@ def push_run_bundle(
         )
 
     run_command = runner or _run_command
-    dataset_result = run_command(
-        ["kaggle", "datasets", "create", "-p", str(bundle.wheel_dataset.root)]
+    status_command_runner = runner or _run_status_command
+    dataset_result = None
+    if not reuse_ready_dataset:
+        dataset_result = run_command(
+            ["kaggle", "datasets", "create", "-p", str(bundle.wheel_dataset.root)]
+        )
+    _wait_for_dataset_ready(
+        bundle,
+        runner=status_command_runner,
+        wait=wait or time.sleep,
     )
     kernel_result = run_command(
         ["kaggle", "kernels", "push", "-p", str(bundle.kernel_root)]
     )
     return dataset_result, kernel_result
+
+
+def _wait_for_dataset_ready(
+    bundle: KaggleRunBundle,
+    *,
+    runner: CommandRunner,
+    wait: Waiter,
+    attempts: int = 60,
+    interval_seconds: float = 2.0,
+) -> None:
+    metadata = json.loads(bundle.wheel_dataset.metadata_path.read_text())
+    dataset_id = metadata["id"]
+    if not isinstance(dataset_id, str):
+        raise TypeError("Dataset metadata must contain an ID")
+    status_command = ["kaggle", "datasets", "status", dataset_id]
+    last_status = "unavailable"
+    for attempt in range(attempts):
+        try:
+            result = runner(status_command)
+        except CalledProcessError:
+            last_status = "unavailable"
+        else:
+            last_status = (result.stdout or "").strip().lower()
+            if last_status == "ready":
+                return
+            if last_status in {"error", "failed", "failure"}:
+                raise RuntimeError(
+                    f"Kaggle Dataset entered terminal status: {last_status}"
+                )
+        if attempt < attempts - 1:
+            wait(interval_seconds)
+    raise TimeoutError(
+        f"Kaggle Dataset was not ready after {attempts} checks: {last_status}"
+    )
 
 
 def download_and_register_run(
@@ -371,6 +447,10 @@ def download_and_register_run(
 
 def _run_command(command: list[str]) -> CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True)
+
+
+def _run_status_command(command: list[str]) -> CompletedProcess[str]:
+    return subprocess.run(command, check=True, capture_output=True, text=True)
 
 
 def _artifact_records_by_path(
