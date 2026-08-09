@@ -103,6 +103,10 @@ def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None
         "wheel_digest_verified": (
             "hashlib.sha256(wheel_path.read_bytes()).hexdigest()" in notebook_source
         ),
+        "dataset_mount_path": (
+            'Path("/kaggle/input/datasets") '
+            '/ "plthon/rsna-knee-offline-wheel"' in notebook_source
+        ),
         "same_pipeline": "preprocess_series" in notebook_source,
         "unresolved_marker": "__RSNA_KNEE_" in notebook_source,
         "tracked_generated_notebooks": tracked_notebooks,
@@ -131,6 +135,7 @@ def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None
         },
         "offline_install": True,
         "wheel_digest_verified": True,
+        "dataset_mount_path": True,
         "same_pipeline": True,
         "unresolved_marker": False,
         "tracked_generated_notebooks": [],

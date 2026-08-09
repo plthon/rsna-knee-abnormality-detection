@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
-dataset_root = Path("/kaggle/input") / "__RSNA_KNEE_DATASET_SLUG__"
+dataset_root = Path("/kaggle/input/datasets") / "__RSNA_KNEE_DATASET_ID__"
 wheel_path = dataset_root / "__RSNA_KNEE_WHEEL_FILENAME__"
 wheel_digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
 if wheel_digest != "__RSNA_KNEE_WHEEL_SHA256__":
