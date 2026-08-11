@@ -68,7 +68,11 @@ def write_dicom(path: Path, pixels: np.ndarray) -> None:
 
 
 # %%
-config = load_config(dataset_root / "kaggle-synthetic.toml")
+config_path = dataset_root / "kaggle-synthetic.toml"
+config_digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+if config_digest != "__RSNA_KNEE_CONFIG_SHA256__":
+    raise ValueError("Mounted configuration SHA-256 does not match build provenance")
+config = load_config(config_path)
 config.paths.input_root.mkdir(parents=True, exist_ok=True)
 config.paths.work_root.mkdir(parents=True, exist_ok=True)
 

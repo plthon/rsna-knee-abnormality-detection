@@ -120,6 +120,22 @@ def test_canonical_competition_contract_is_complete_and_machine_readable() -> No
         "unique_nonblank": 24371,
     }
     assert contract["reports"]["observed_languages"]["status"] == "unresolved"
+    assert contract["dicom"]["transfer_syntaxes"]["mounted_snapshot"] == {
+        "status": "verified",
+        "headers_indexed": 819635,
+        "frequencies": {"1.2.840.10008.1.2.1": 819635},
+        "evidence": "full_corpus_data_index_v1",
+    }
+    assert (
+        contract["assumptions"][
+            "all_mounted_snapshot_dicoms_use_explicit_vr_little_endian"
+        ]["status"]
+        == "verified"
+    )
+    assert (
+        contract["assumptions"]["all_dicoms_use_explicit_vr_little_endian"]["status"]
+        == "unresolved"
+    )
     assert (
         contract["assumptions"]["report_pseudo_labelling_is_needed"]["status"]
         == "unresolved"

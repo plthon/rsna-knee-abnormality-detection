@@ -11,6 +11,8 @@ summary and unresolved facts are documented in
 The completed full-corpus metadata index and representative preprocessing
 evidence are recorded in [`contracts/data-index.json`](contracts/data-index.json)
 and [`docs/data-index-report.md`](docs/data-index-report.md).
+The issues #2–#5 review, corrections, and proceed recommendation are recorded in
+[`docs/foundation-hardening-report.md`](docs/foundation-hardening-report.md).
 
 ## Local checks
 

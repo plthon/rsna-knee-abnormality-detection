@@ -13,6 +13,7 @@ from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 from rsna_knee import (
     PreprocessingConfig,
     build_competition_index,
+    decode_pixels,
     indexing,
     preprocess_series,
     preprocess_series_result,
@@ -172,7 +173,7 @@ def test_competition_index_is_ordered_compact_and_header_first(
     assert manifest["join_fields"] == ["StudyInstanceUID", "SeriesInstanceUID"]
     assert manifest["competition_contract"] == {
         "schema_version": 1,
-        "verified_at": "2026-08-09",
+        "verified_at": "2026-08-11",
         "sha256": hashlib.sha256(
             Path("contracts/competition.json").read_bytes()
         ).hexdigest(),
@@ -209,6 +210,31 @@ def test_competition_index_is_ordered_compact_and_header_first(
     assert not list(outcome.artifact_dir.glob("*.npz"))
     assert not list(outcome.artifact_dir.glob("*.png"))
     assert verify_index_artifact(outcome.artifact_dir) == outcome.statistics
+
+    original_manifest = outcome.manifest_path.read_text()
+    incomplete_manifest = json.loads(original_manifest)
+    incomplete_manifest["files"].pop("slices.csv")
+    outcome.manifest_path.write_text(json.dumps(incomplete_manifest))
+    with pytest.raises(ValueError, match="file inventory"):
+        verify_index_artifact(outcome.artifact_dir)
+
+    outcome.manifest_path.write_text(original_manifest)
+    incomplete_statistics = json.loads(outcome.statistics_path.read_text())
+    first_check = incomplete_statistics["preprocessing"]["checks"][0]
+    first_check["decoded_count"] = 1
+    first_check["mask"] = [1, 0, 0, 0, 0, 0, 0, 0]
+    outcome.statistics_path.write_text(
+        json.dumps(incomplete_statistics, indent=2, sort_keys=True) + "\n"
+    )
+    incomplete_manifest = json.loads(original_manifest)
+    statistics_record = incomplete_manifest["files"]["statistics.json"]
+    statistics_record["sha256"] = hashlib.sha256(
+        outcome.statistics_path.read_bytes()
+    ).hexdigest()
+    statistics_record["size_bytes"] = outcome.statistics_path.stat().st_size
+    outcome.manifest_path.write_text(json.dumps(incomplete_manifest))
+    with pytest.raises(ValueError, match="checks did not pass"):
+        verify_index_artifact(outcome.artifact_dir)
 
 
 def test_index_contract_rejects_schema_drift(tmp_path: Path) -> None:
@@ -267,6 +293,58 @@ def test_shared_preprocessing_resizes_pads_and_masks_decode_failures(
     assert result.pixels[0, 5, -1] == 0.0
     np.testing.assert_array_equal(ordinary_pixels, result.pixels)
     np.testing.assert_array_equal(ordinary_mask, result.mask)
+
+
+def test_rescale_fallbacks_and_nonfinite_values_cannot_silently_change_output(
+    tmp_path: Path,
+) -> None:
+    pixels = np.array([[5, 5], [5, 5]], dtype=np.uint16)
+    slope_only_path = tmp_path / "slope-only.dcm"
+    intercept_only_path = tmp_path / "intercept-only.dcm"
+    nonfinite_path = tmp_path / "nonfinite.dcm"
+    for path in (slope_only_path, intercept_only_path, nonfinite_path):
+        _write_dicom(
+            path,
+            study_uid=_STUDY_1,
+            series_uid=_GEOMETRY_SERIES,
+            patient_id="P1",
+            pixels=pixels,
+            slope=2.0,
+            intercept=-10.0,
+        )
+
+    slope_only = dcmread(slope_only_path)
+    del slope_only.RescaleIntercept
+    slope_only.save_as(slope_only_path)
+    intercept_only = dcmread(intercept_only_path)
+    del intercept_only.RescaleSlope
+    intercept_only.save_as(intercept_only_path)
+    nonfinite = dcmread(nonfinite_path)
+    nonfinite.RescaleSlope = float("nan")
+    nonfinite.save_as(nonfinite_path)
+
+    np.testing.assert_array_equal(
+        decode_pixels(slope_only_path),
+        np.full((2, 2), 10.0, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        decode_pixels(intercept_only_path),
+        np.full((2, 2), -5.0, dtype=np.float32),
+    )
+
+    config = PreprocessingConfig(
+        slice_count=2, lower_percentile=0, upper_percentile=100, image_size=2
+    )
+    result = preprocess_series_result([slope_only_path, nonfinite_path], config)
+
+    np.testing.assert_array_equal(result.mask, [True, False])
+    assert np.isfinite(result.pixels).all()
+    assert not result.pixels.any()
+    assert [
+        (failure.path, failure.code, failure.exception_type)
+        for failure in result.failures
+    ] == [(nonfinite_path, "pixel_decode_failed", "ValueError")]
+    assert result.lower_value == result.upper_value == 10.0
 
 
 def _write_series_table(path: Path, rows: list[tuple[str, str, str, str, str]]) -> None:

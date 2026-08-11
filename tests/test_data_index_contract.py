@@ -11,10 +11,20 @@ def test_data_index_contract_records_complete_real_evidence() -> None:
     competition_contract = Path("contracts/competition.json").read_bytes()
 
     assert evidence["schema_version"] == 1
-    assert (
-        evidence["competition_contract"]["sha256"]
-        == hashlib.sha256(competition_contract).hexdigest()
-    )
+    assert evidence["competition_contract"] == {
+        "path": "contracts/competition.json",
+        "sha256": "8ae8eda3d5f5a2c4d256ec23992a9a8bd9358f86a69c3f994d8586f7307e3880",
+        "role": "exact contract embedded in and consumed by Kaggle kernel version 1",
+    }
+    assert evidence["current_competition_contract"] == {
+        "path": "contracts/competition.json",
+        "sha256": hashlib.sha256(competition_contract).hexdigest(),
+        "reviewed_at": "2026-08-11",
+        "compatibility": (
+            "Issue #17 updated evidence classifications only; the table, join, "
+            "path, and target fields consumed by the index are unchanged"
+        ),
+    }
     assert evidence["source_dataset"] == {
         "platform": "kaggle",
         "kind": "competition",

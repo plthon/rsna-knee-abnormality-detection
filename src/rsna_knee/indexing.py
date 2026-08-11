@@ -141,6 +141,16 @@ def verify_index_artifact(artifact_dir: Path) -> dict[str, Any]:
     files = manifest.get("files")
     if not isinstance(files, dict):
         raise TypeError("Index manifest has no file inventory")
+    expected_file_columns: dict[str, list[str] | None] = {
+        "studies.csv": _study_fields(),
+        "series.csv": _series_fields(),
+        "slices.csv": _slice_fields(),
+        "selected_slices.csv": _selected_fields(),
+        "errors.csv": _error_fields(),
+        "statistics.json": None,
+    }
+    if set(files) != set(expected_file_columns):
+        raise ValueError("Index manifest file inventory is incomplete or unexpected")
     for filename, raw_metadata in files.items():
         if not isinstance(filename, str) or not isinstance(raw_metadata, dict):
             raise TypeError("Index manifest file inventory is malformed")
@@ -151,15 +161,15 @@ def verify_index_artifact(artifact_dir: Path) -> dict[str, Any]:
             raise ValueError(f"Index artifact hash mismatch: {filename}")
         if raw_metadata.get("size_bytes") != path.stat().st_size:
             raise ValueError(f"Index artifact size mismatch: {filename}")
-        columns = raw_metadata.get("columns")
+        columns = expected_file_columns[filename]
+        if raw_metadata.get("columns") != columns and columns is not None:
+            raise ValueError(f"Index artifact columns are malformed: {filename}")
         if columns is not None:
-            if not isinstance(columns, list) or not all(
-                isinstance(column, str) for column in columns
-            ):
-                raise TypeError(f"Index artifact columns are malformed: {filename}")
             with path.open(newline="", encoding="utf-8") as file:
                 if next(csv.reader(file), None) != columns:
                     raise ValueError(f"Index artifact columns do not match: {filename}")
+        elif "columns" in raw_metadata:
+            raise ValueError(f"Non-tabular artifact records columns: {filename}")
 
     forbidden_suffixes = {".dcm", ".dicom", ".npy", ".npz", ".png"}
     persisted_pixels = [
@@ -179,17 +189,34 @@ def verify_index_artifact(artifact_dir: Path) -> dict[str, Any]:
         raise TypeError("Index has no representative preprocessing evidence")
     checked = preprocessing.get("representative_series_checked")
     succeeded = preprocessing.get("representative_series_succeeded")
-    if not isinstance(checked, int) or checked <= 0 or succeeded != checked:
-        raise ValueError("Representative preprocessing checks did not pass")
     checks = preprocessing.get("checks")
-    if not isinstance(checks, list) or not all(
-        isinstance(check, dict)
-        and check.get("all_finite") is True
-        and isinstance(check.get("decoded_count"), int)
-        and check["decoded_count"] > 0
-        for check in checks
+    manifest_preprocessing = manifest.get("preprocessing")
+    if not isinstance(manifest_preprocessing, dict):
+        raise TypeError("Index manifest has no preprocessing contract")
+    slice_count = manifest_preprocessing.get("slice_count")
+    image_size = manifest_preprocessing.get("image_size")
+    if (
+        not isinstance(checked, int)
+        or isinstance(checked, bool)
+        or checked <= 0
+        or not isinstance(succeeded, int)
+        or isinstance(succeeded, bool)
+        or not isinstance(checks, list)
+        or len(checks) != checked
+        or not isinstance(slice_count, int)
+        or isinstance(slice_count, bool)
+        or slice_count <= 0
+        or not isinstance(image_size, int)
+        or isinstance(image_size, bool)
+        or image_size <= 0
     ):
         raise ValueError("Representative preprocessing evidence is incomplete")
+    successful_checks = sum(
+        _representative_check_succeeded(check, slice_count, image_size)
+        for check in checks
+    )
+    if succeeded != successful_checks or successful_checks != checked:
+        raise ValueError("Representative preprocessing checks did not pass")
     return statistics
 
 
@@ -877,10 +904,60 @@ def _run_representative_checks(
         ),
         "representative_series_checked": len(checks),
         "representative_series_succeeded": sum(
-            bool(check["decoded_count"]) for check in checks
+            _representative_check_succeeded(
+                check,
+                config.slice_count,
+                config.image_size,
+            )
+            for check in checks
         ),
         "checks": checks,
     }
+
+
+def _representative_check_succeeded(
+    check: object, slice_count: int, image_size: int
+) -> bool:
+    if not isinstance(check, dict) or check.get("all_finite") is not True:
+        return False
+    selected_count = check.get("selected_count")
+    decoded_count = check.get("decoded_count")
+    mask = check.get("mask")
+    output_shape = check.get("output_shape")
+    normalized_range = check.get("normalized_range")
+    lower_value = check.get("lower_value")
+    upper_value = check.get("upper_value")
+    return bool(
+        isinstance(selected_count, int)
+        and not isinstance(selected_count, bool)
+        and 0 < selected_count <= slice_count
+        and isinstance(decoded_count, int)
+        and not isinstance(decoded_count, bool)
+        and decoded_count == selected_count
+        and isinstance(mask, list)
+        and len(mask) == slice_count
+        and all(
+            isinstance(value, int) and not isinstance(value, bool) and value in (0, 1)
+            for value in mask
+        )
+        and sum(mask) == decoded_count
+        and output_shape == [slice_count, image_size, image_size]
+        and isinstance(normalized_range, list)
+        and len(normalized_range) == 2
+        and all(_is_finite_number(value) for value in normalized_range)
+        and 0 <= normalized_range[0] <= normalized_range[1] <= 1
+        and _is_finite_number(lower_value)
+        and _is_finite_number(upper_value)
+        and cast(float, lower_value) <= cast(float, upper_value)
+    )
+
+
+def _is_finite_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and bool(np.isfinite(value))
+    )
 
 
 def _diverse_representatives(

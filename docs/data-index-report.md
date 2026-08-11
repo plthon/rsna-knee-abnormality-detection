@@ -5,6 +5,12 @@ machine-readable evidence is [`contracts/data-index.json`](../contracts/data-ind
 The canonical input schema remains
 [`contracts/competition.json`](../contracts/competition.json).
 
+The kernel consumed the 2026-08-09 competition-contract snapshot with SHA-256
+`8ae8eda3...e3880`. Issue #17 later incorporated this index's full-corpus
+transfer-syntax evidence into the canonical contract. The data-index contract
+records both hashes explicitly; the table, join, path, and target fields used by
+the completed run did not change.
+
 ## Real-data result
 
 Private Kaggle kernel

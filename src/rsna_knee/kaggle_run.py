@@ -98,6 +98,22 @@ def build_wheel_dataset(
 ) -> WheelDataset:
     """Build the project wheel and record its local source provenance."""
     _require_resolved_kaggle_id(dataset_id)
+    git_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
     output_root.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
@@ -117,22 +133,6 @@ def build_wheel_dataset(
     wheel_path = wheels[0]
     _require_pure_python_wheel(wheel_path)
 
-    git_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    git_dirty = bool(
-        subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
     provenance_path = output_root / "wheel-provenance.json"
     provenance_path.write_text(
         json.dumps(
@@ -394,14 +394,14 @@ def download_and_register_run(
     if not isinstance(notebook, dict) or notebook.get("kernel_id") != kernel_id:
         raise ValueError("Run manifest kernel ID does not match the download request")
     artifact_records = _artifact_records_by_path(manifest)
+    if len(set(selected_artifacts)) != len(selected_artifacts):
+        raise ValueError("Selected artifacts must not contain duplicate paths")
 
     relative_run_root = Path("runs") / run_id
     registered_root = registry_root / relative_run_root
-    registered_root.mkdir(parents=True, exist_ok=True)
     registered_manifest_path = registered_root / source_manifest_path.name
-    shutil.copy2(source_manifest_path, registered_manifest_path)
 
-    registered_artifacts: list[Path] = []
+    artifact_sources: list[tuple[Path, Path]] = []
     for selected_path in selected_artifacts:
         record = artifact_records.get(selected_path)
         if record is None:
@@ -420,27 +420,49 @@ def download_and_register_run(
             raise ValueError(
                 f"Selected artifact does not match manifest: {selected_path}"
             )
-        destination_path = registered_root / selected_path
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, destination_path)
-        registered_artifacts.append(destination_path)
+        artifact_sources.append((source_path, registered_root / selected_path))
 
     registry_path = registry_root / "registry.jsonl"
     entry: dict[str, object] = {
         "artifacts": [
-            (relative_run_root / path.relative_to(registered_root)).as_posix()
-            for path in registered_artifacts
+            (relative_run_root / destination.relative_to(registered_root)).as_posix()
+            for _, destination in artifact_sources
         ],
         "kernel_id": kernel_id,
         "manifest": (relative_run_root / registered_manifest_path.name).as_posix(),
         "run_id": run_id,
     }
+    existing_entry = _registry_entry_for_run(registry_path, run_id)
+    if existing_entry is not None:
+        if existing_entry != entry or not _registered_run_matches(
+            source_manifest_path,
+            registered_manifest_path,
+            artifact_sources,
+        ):
+            raise ValueError(f"Registry already contains a different run: {run_id}")
+        return RegisteredRun(
+            run_id=run_id,
+            root=registered_root,
+            manifest_path=registered_manifest_path,
+            artifact_paths=tuple(destination for _, destination in artifact_sources),
+            registry_path=registry_path,
+        )
+    if registered_root.exists():
+        raise ValueError(
+            f"Run directory already exists without a registry entry: {run_id}"
+        )
+
+    registered_root.mkdir(parents=True)
+    shutil.copy2(source_manifest_path, registered_manifest_path)
+    for source_path, destination_path in artifact_sources:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
     _append_registry_entry(registry_path, entry)
     return RegisteredRun(
         run_id=run_id,
         root=registered_root,
         manifest_path=registered_manifest_path,
-        artifact_paths=tuple(registered_artifacts),
+        artifact_paths=tuple(destination for _, destination in artifact_sources),
         registry_path=registry_path,
     )
 
@@ -472,11 +494,41 @@ def _artifact_records_by_path(
             or not isinstance(size_bytes, int)
         ):
             raise TypeError("Run manifest contains an invalid artifact record")
+        if path in records:
+            raise ValueError(f"Run manifest contains a duplicate artifact path: {path}")
         records[path] = {
             "sha256": sha256,
             "size_bytes": size_bytes,
         }
     return records
+
+
+def _registry_entry_for_run(path: Path, run_id: str) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    matching_entries = [
+        entry
+        for entry in (json.loads(line) for line in path.read_text().splitlines())
+        if isinstance(entry, dict) and entry.get("run_id") == run_id
+    ]
+    if len(matching_entries) > 1:
+        raise ValueError(f"Registry contains duplicate run entries: {run_id}")
+    return matching_entries[0] if matching_entries else None
+
+
+def _registered_run_matches(
+    source_manifest_path: Path,
+    registered_manifest_path: Path,
+    artifact_sources: Sequence[tuple[Path, Path]],
+) -> bool:
+    if not registered_manifest_path.is_file() or (
+        registered_manifest_path.read_bytes() != source_manifest_path.read_bytes()
+    ):
+        return False
+    return all(
+        destination.is_file() and destination.read_bytes() == source.read_bytes()
+        for source, destination in artifact_sources
+    )
 
 
 def _append_registry_entry(path: Path, entry: dict[str, object]) -> None:
@@ -552,8 +604,19 @@ def _validate_run_bundle(bundle: KaggleRunBundle) -> bool:
     expected_digest = hashlib.sha256(
         bundle.wheel_dataset.wheel_path.read_bytes()
     ).hexdigest()
-    if provenance.get("wheel", {}).get("sha256") != expected_digest:
+    wheel_record = provenance.get("wheel")
+    if not isinstance(wheel_record, dict) or (
+        wheel_record.get("filename") != bundle.wheel_dataset.wheel_path.name
+    ):
+        raise ValueError("Wheel filename does not match recorded provenance")
+    if wheel_record.get("sha256") != expected_digest:
         raise ValueError("Wheel digest does not match recorded provenance")
+    notebook_source = code_file.read_text()
+    config_digest = hashlib.sha256(
+        bundle.wheel_dataset.config_path.read_bytes()
+    ).hexdigest()
+    if config_digest not in notebook_source:
+        raise ValueError("Configuration digest does not match the rendered notebook")
     _require_pure_python_wheel(bundle.wheel_dataset.wheel_path)
     return gpu_value == "true"
 

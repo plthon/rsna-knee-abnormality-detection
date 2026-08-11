@@ -66,6 +66,8 @@ def preprocess_series_result(
                 raise ValueError(
                     "Only nonempty single-frame grayscale images are supported"
                 )
+            if not np.isfinite(pixels).all():
+                raise ValueError("Decoded pixels contain non-finite values")
             decoded.append((slot, pixels))
         except Exception as error:  # noqa: BLE001 - DICOM failures are data records
             failures.append(

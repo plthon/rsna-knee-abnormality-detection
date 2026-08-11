@@ -1,8 +1,10 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -44,13 +46,14 @@ def test_wheel_dataset_records_a_pure_python_build(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    git_dirty = (
+    git_dirty = bool(
         subprocess.run(
-            ["git", "diff", "--quiet"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=Path.cwd(),
-            check=False,
-        ).returncode
-        != 0
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
     )
 
     assert {
@@ -75,6 +78,42 @@ def test_wheel_dataset_records_a_pure_python_build(tmp_path: Path) -> None:
             },
         },
     }
+
+
+def test_wheel_provenance_includes_untracked_package_sources(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    for directory in ("configs", "contracts", "src"):
+        shutil.copytree(Path(directory), project_root / directory)
+    for filename in ("README.md", "pyproject.toml"):
+        shutil.copy2(filename, project_root / filename)
+    subprocess.run(["git", "init", "-q", project_root], check=True)
+    subprocess.run(["git", "add", "."], cwd=project_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=project_root,
+        check=True,
+    )
+    untracked_source = project_root / "src" / "rsna_knee" / "untracked_marker.py"
+    untracked_source.write_text("MARKER = True\n")
+
+    dataset = build_wheel_dataset(
+        project_root,
+        tmp_path / "wheel-dataset",
+        dataset_id="plthon/rsna-knee-offline-wheel",
+    )
+
+    with zipfile.ZipFile(dataset.wheel_path) as wheel:
+        assert "rsna_knee/untracked_marker.py" in wheel.namelist()
+    assert json.loads(dataset.provenance_path.read_text())["git_dirty"] is True
 
 
 def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None:
@@ -105,6 +144,9 @@ def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None
         ),
         "wheel_digest_verified": (
             "hashlib.sha256(wheel_path.read_bytes()).hexdigest()" in notebook_source
+        ),
+        "config_digest_verified": (
+            "hashlib.sha256(config_path.read_bytes()).hexdigest()" in notebook_source
         ),
         "dataset_mount_path": (
             'Path("/kaggle/input/datasets") '
@@ -138,6 +180,7 @@ def test_run_bundle_renders_private_offline_cpu_notebook(tmp_path: Path) -> None
         },
         "offline_install": True,
         "wheel_digest_verified": True,
+        "config_digest_verified": True,
         "dataset_mount_path": True,
         "same_pipeline": True,
         "unresolved_marker": False,
@@ -223,6 +266,32 @@ def test_remote_push_requires_explicit_remote_and_gpu_approvals(
         ],
         ["kaggle", "kernels", "push", "-p", str(bundle.kernel_root)],
     ]
+
+
+def test_remote_push_rejects_configuration_changed_after_render(
+    tmp_path: Path,
+) -> None:
+    bundle = build_run_bundle(
+        Path.cwd(),
+        tmp_path / "run-bundle",
+        dataset_id="plthon/rsna-knee-offline-wheel",
+        kernel_id="plthon/rsna-knee-synthetic-pipeline",
+    )
+    bundle.wheel_dataset.config_path.write_text(
+        bundle.wheel_dataset.config_path.read_text().replace(
+            "slice_count = 4", "slice_count = 3"
+        )
+    )
+    calls: list[list[str]] = []
+
+    def record_call(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0, stdout="ready")
+
+    with pytest.raises(ValueError, match="Configuration digest"):
+        push_run_bundle(bundle, approved=True, runner=record_call)
+
+    assert calls == []
 
 
 def test_kernel_push_waits_for_private_dataset_to_be_ready(tmp_path: Path) -> None:
@@ -538,3 +607,65 @@ def test_selected_kernel_output_is_verified_and_registered_locally(
             "run_id": "synthetic-deadbeef1234",
         }
     ]
+
+
+def test_existing_registered_run_cannot_be_overwritten_by_colliding_output(
+    tmp_path: Path,
+) -> None:
+    registry_root = tmp_path / "registry"
+
+    def runner_for(
+        download_root: Path, payload: bytes
+    ) -> Callable[[list[str]], CompletedProcess[str]]:
+        def download_output(command: list[str]) -> CompletedProcess[str]:
+            output_root = download_root / "rsna-knee-run"
+            output_root.mkdir(parents=True)
+            artifact_path = output_root / "synthetic-output.npz"
+            artifact_path.write_bytes(payload)
+            (output_root / "run-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "artifacts": [
+                            {
+                                "path": artifact_path.name,
+                                "sha256": hashlib.sha256(payload).hexdigest(),
+                                "size_bytes": len(payload),
+                            }
+                        ],
+                        "configuration": {"slice_count": 4},
+                        "notebook": {
+                            "kernel_id": "plthon/rsna-knee-synthetic-pipeline"
+                        },
+                        "run_id": "synthetic-collision",
+                        "runtime": {"python": "3.12.0"},
+                        "schema_version": 1,
+                        "source": {"git_commit": "deadbeef"},
+                    }
+                )
+            )
+            return CompletedProcess(command, 0)
+
+        return download_output
+
+    first_download = tmp_path / "first-download"
+    second_download = tmp_path / "second-download"
+    registered = download_and_register_run(
+        kernel_id="plthon/rsna-knee-synthetic-pipeline",
+        download_root=first_download,
+        registry_root=registry_root,
+        selected_artifacts=["synthetic-output.npz"],
+        runner=runner_for(first_download, b"original"),
+    )
+    original_manifest = registered.manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="already contains a different run"):
+        download_and_register_run(
+            kernel_id="plthon/rsna-knee-synthetic-pipeline",
+            download_root=second_download,
+            registry_root=registry_root,
+            selected_artifacts=["synthetic-output.npz"],
+            runner=runner_for(second_download, b"replacement"),
+        )
+
+    assert registered.manifest_path.read_bytes() == original_manifest
+    assert (registered.root / "synthetic-output.npz").read_bytes() == b"original"

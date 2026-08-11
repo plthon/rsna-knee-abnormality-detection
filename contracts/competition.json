@@ -3,7 +3,7 @@
   "competition": {
     "slug": "rsna-knee-abnormality-detection",
     "title": "RSNA Knee Abnormalities Detection",
-    "contract_verified_at": "2026-08-09",
+    "contract_verified_at": "2026-08-11",
     "mutable_platform_facts_require_reverification": true
   },
   "acceptance_criteria": [
@@ -27,6 +27,7 @@
       "evidence": [
         "real_data_inspection_v2",
         "contract_gap_inspection_v1",
+        "full_corpus_data_index_v1",
         "official_data_description"
       ]
     },
@@ -161,6 +162,16 @@
       "kernel": "plthon/rsna-knee-synthetic-pipeline",
       "kernel_version": 3,
       "manifest_sha256": "48be2d7d56ebb35f2883a728a2fc74eaa90e31779de16026e55729c6cd48b2c7"
+    },
+    "full_corpus_data_index_v1": {
+      "kind": "private_kaggle_kernel_output",
+      "kernel": "plthon/rsna-knee-data-index",
+      "kernel_version": 1,
+      "scope": "all 819635 mounted DICOM headers and eight representative real series",
+      "input_competition_contract_sha256": "8ae8eda3d5f5a2c4d256ec23992a9a8bd9358f86a69c3f994d8586f7307e3880",
+      "manifest_sha256": "85970899c44c1325ab6d1fe8983dc9e472e6a854d8b6bb8fb65506ec91480caa",
+      "statistics_sha256": "4be3434249f73c287c611bb6de030b273975b3b311250395a676a87556ea917c",
+      "url": "https://www.kaggle.com/code/plthon/rsna-knee-data-index"
     }
   },
   "data": {
@@ -442,7 +453,15 @@
         "JPEG 2000",
         "Implicit VR Little Endian"
       ],
-      "full_corpus_frequencies": "unresolved"
+      "mounted_snapshot": {
+        "status": "verified",
+        "headers_indexed": 819635,
+        "frequencies": {
+          "1.2.840.10008.1.2.1": 819635
+        },
+        "evidence": "full_corpus_data_index_v1"
+      },
+      "hidden_scoring_set_frequencies": "unresolved"
     },
     "representative_photometric_interpretations": [
       "MONOCHROME2"
@@ -668,7 +687,7 @@
     },
     "decoder_supports_observed_sample": {
       "status": "verified",
-      "basis": "Four representative series decoded without failure, but this does not verify every documented transfer syntax."
+      "basis": "All 819635 mounted headers used Explicit VR Little Endian and eight representative series decoded without failure; this does not establish the hidden scoring set's transfer syntaxes."
     },
     "deterministic_eight_slice_sampling_executes": {
       "status": "verified",
@@ -743,8 +762,12 @@
       "basis": "The official data description lists PatientSex, but the mounted train.csv schema does not contain that column."
     },
     "all_dicoms_use_explicit_vr_little_endian": {
-      "status": "rejected",
-      "basis": "Only Explicit VR Little Endian was observed in representative headers, while official documentation states that the corpus also includes JPEG Lossless, JPEG 2000, and Implicit VR Little Endian."
+      "status": "unresolved",
+      "basis": "Every one of the 819635 DICOMs in the mounted train and example-test snapshot used Explicit VR Little Endian, but the official documentation describes a mixed corpus and Kaggle replaces the example test data with a hidden scoring set."
+    },
+    "all_mounted_snapshot_dicoms_use_explicit_vr_little_endian": {
+      "status": "verified",
+      "basis": "The completed full-corpus header index counted Explicit VR Little Endian for all 819635 DICOMs in the mounted train and example-test snapshot."
     },
     "example_test_rows_equal_scoring_rows": {
       "status": "rejected",
@@ -765,8 +788,8 @@
       "reason": "The competition page specifies runtime and internet constraints but no separate disk quota; observed capacity is not promoted to an official limit."
     },
     {
-      "fact": "full-corpus transfer-syntax frequencies",
-      "reason": "The official page lists a mixed corpus; the completed bounded sample observed only Explicit VR Little Endian."
+      "fact": "hidden scoring-set transfer-syntax frequencies",
+      "reason": "The mounted snapshot is fully verified as Explicit VR Little Endian, but the official page lists a mixed corpus and Kaggle replaces the example test data during scoring."
     },
     {
       "fact": "MONOCHROME1 and non-default rescale behavior on competition data",

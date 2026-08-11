@@ -1,6 +1,6 @@
 # Canonical competition inspection report
 
-Verified 2026-08-09 for `rsna-knee-abnormality-detection`. The machine-readable source of truth is [`contracts/competition.json`](../contracts/competition.json). This report finalizes issue #4 by combining the completed real-data inspection with one narrow follow-up and the official competition pages. It is not a second EDA.
+Verified 2026-08-09 and hardened 2026-08-11 for `rsna-knee-abnormality-detection`. The machine-readable source of truth is [`contracts/competition.json`](../contracts/competition.json). This report combines the completed real-data inspection, its narrow follow-up, the official competition pages, and the later full-corpus header index. It is not a second EDA.
 
 ## Acceptance-criterion map
 
@@ -33,7 +33,7 @@ The mounted `train.csv` does not contain the `PatientSex` column listed by the o
 
 The 12 ordered binary targets are: ACL, MCL, Medial Meniscus, Lateral Meniscus, Medial OA, Lateral OA, PF OA, Effusion, Synovitis, Baker's, Contusion, and Fracture. Each target has 58 populated rows and 4,349 missing rows. The compact evidence did not retain whether the same 58 rows are populated for every target, so joint row-wise missingness is unresolved.
 
-Representative DICOMs ranged from 512×512 to 960×960 pixels and from 11 to 320 slices per series (median 30). Orientation metadata and axial, sagittal, and coronal planes were verified. All 4,407 one-per-study headers reported `MR`. The representative sample used Explicit VR Little Endian and MONOCHROME2. The official Data page says the full corpus also includes JPEG Lossless, JPEG 2000, and Implicit VR Little Endian, so decoder support must not be limited to the sampled syntax.
+Representative DICOMs ranged from 512×512 to 960×960 pixels and from 11 to 320 slices per series (median 30). Orientation metadata and axial, sagittal, and coronal planes were verified. All 4,407 one-per-study headers reported `MR`. The later full-corpus index counted Explicit VR Little Endian for every one of the 819,635 DICOMs in the mounted train and example-test snapshot; eight representative series decoded without failure. The official Data page nevertheless describes a mixed corpus, and Kaggle replaces the example test data during scoring, so hidden-set transfer syntaxes remain unresolved.
 
 ## Leakage and split grouping
 
@@ -92,7 +92,8 @@ The official CPU and GPU runtime limit is 9 hours, and internet must be disabled
 | Percentile normalization is suitable | Unresolved | Smoke execution is not modelling evidence |
 | Report pseudo-labels are needed | Unresolved | Missing labels are verified per target, but pseudo-labeling is a modelling choice |
 | `PatientSex` exists in mounted `train.csv` | Rejected | Column absent despite documentation |
-| All DICOMs use sampled Explicit VR syntax | Rejected | Official page documents a mixed corpus |
+| All mounted-snapshot DICOMs use Explicit VR syntax | Verified | Full-corpus index counted 819,635/819,635 headers |
+| All hidden scoring DICOMs use Explicit VR syntax | Unresolved | Official page documents a mix; hidden data is unavailable before scoring |
 | Three example test rows equal scoring-set size | Rejected | Kaggle replaces the example at scoring time |
 | Global `SOPInstanceUID` uniqueness | Unresolved | Would require repeating the excluded full-corpus path scan |
 

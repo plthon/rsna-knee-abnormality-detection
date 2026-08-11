@@ -30,7 +30,7 @@ import json
 print(json.dumps(outcome.findings, indent=2, sort_keys=True))
 
 # %%
-from IPython.display import Image, display
+from IPython.display import Image, display  # type: ignore[import-not-found]
 
 for relative_path in outcome.findings["visualizations"]["paths"]:
     display(Image(filename=outcome.artifact_path.parent / relative_path))
