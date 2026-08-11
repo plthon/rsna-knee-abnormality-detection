@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import subprocess
 import zipfile
 from collections.abc import Callable
@@ -12,6 +13,36 @@ from typing import Any
 type CommandRunner = Callable[[list[str]], CompletedProcess[str]]
 
 _PACKAGE_MARKER = "__RSNA_KNEE_PACKAGE_ARCHIVE__"
+_KAGGLE_KERNEL_TITLE_MAX_LENGTH = 50
+_KAGGLE_KERNEL_SLUG_MAX_LENGTH = 50
+_FORBIDDEN_PUBLIC_NOTEBOOK_DETAILS = (
+    ".artifacts/",
+    "build/kaggle/",
+    "credentials/",
+    "kaggle.json",
+    "rsna-knee-offline-wheel",
+    "rsna_knee_source.zip",
+    "run-manifest.json",
+    "index-manifest.json",
+    "pseudo-label",
+    "pseudo_label",
+    "report mapping",
+    "report-language",
+    "report language",
+    "validation split",
+    "leaderboard",
+    "checkpoint",
+    "attention/mil",
+    "2.5d",
+    "ensemble strategy",
+    "calibration strateg",
+    "plthon/rsna-knee-real-data-inspection",
+    "plthon/rsna-knee-data-index",
+)
+
+
+def _kernel_title_slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +53,23 @@ class _KernelMetadata:
     competition_slug: str = "rsna-knee-abnormality-detection"
 
     def as_json(self) -> dict[str, Any]:
+        owner_and_slug = self.kernel_id.split("/", 1)
+        expected_slug = _kernel_title_slug(self.title)
+        if len(self.title) > _KAGGLE_KERNEL_TITLE_MAX_LENGTH:
+            raise ValueError(
+                "Kaggle kernel title must be no longer than "
+                f"{_KAGGLE_KERNEL_TITLE_MAX_LENGTH} characters"
+            )
+        if len(expected_slug) > _KAGGLE_KERNEL_SLUG_MAX_LENGTH:
+            raise ValueError(
+                "Kaggle kernel slug must be no longer than "
+                f"{_KAGGLE_KERNEL_SLUG_MAX_LENGTH} characters"
+            )
+        if len(owner_and_slug) != 2 or owner_and_slug[1] != expected_slug:
+            raise ValueError(
+                "Kaggle kernel id slug must resolve from its title: "
+                f"expected {expected_slug}"
+            )
         return {
             "code_file": self.code_file,
             "competition_sources": [self.competition_slug],
@@ -50,6 +98,11 @@ _INDEX_METADATA = _KernelMetadata(
     title="RSNA Knee Data Index",
     code_file="index_real_data.ipynb",
 )
+_PUBLIC_NOTEBOOK_METADATA = _KernelMetadata(
+    kernel_id="plthon/rsna-knee-mri-correct-dicom-ordering-sampling",
+    title="RSNA Knee MRI | Correct DICOM Ordering & Sampling",
+    code_file="rsna_knee_dicom_ordering.ipynb",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +114,7 @@ class KaggleSourceBundle:
 
 type InspectionBundle = KaggleSourceBundle
 type IndexBundle = KaggleSourceBundle
+type PublicNotebookBundle = KaggleSourceBundle
 
 
 def build_inspection_bundle(project_root: Path, output_root: Path) -> InspectionBundle:
@@ -81,6 +135,64 @@ def build_index_bundle(project_root: Path, output_root: Path) -> IndexBundle:
         source_name="index_real_data.py",
         metadata=_INDEX_METADATA.as_json(),
     )
+
+
+def build_public_notebook_bundle(
+    project_root: Path, output_root: Path
+) -> PublicNotebookBundle:
+    """Build the standalone public-facing notebook as a private review bundle."""
+    source_path = project_root / "notebooks" / "public_dicom_ordering.py"
+    source = source_path.read_text()
+    _validate_public_notebook_source(source)
+
+    metadata = _PUBLIC_NOTEBOOK_METADATA.as_json()
+    output_root.mkdir(parents=True, exist_ok=True)
+    notebook_path = output_root / str(metadata["code_file"])
+    metadata_path = output_root / "kernel-metadata.json"
+    notebook_path.write_text(json.dumps(_percent_source_to_notebook(source)))
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    _validate_public_notebook_bundle(output_root, metadata)
+    return KaggleSourceBundle(
+        root=output_root,
+        notebook_path=notebook_path,
+        metadata_path=metadata_path,
+    )
+
+
+def _validate_public_notebook_source(source: str) -> None:
+    if _PACKAGE_MARKER in source or "from rsna_knee" in source:
+        raise ValueError("Public notebook must not embed the private package")
+    folded_source = source.casefold()
+    for detail in _FORBIDDEN_PUBLIC_NOTEBOOK_DETAILS:
+        if detail.casefold() in folded_source:
+            raise ValueError(
+                f"Notebook contains forbidden public-notebook detail: {detail}"
+            )
+
+
+def _validate_public_notebook_bundle(
+    bundle_root: Path, expected_metadata: dict[str, Any]
+) -> None:
+    _validate_source_bundle(bundle_root, expected_metadata)
+    notebook_path = bundle_root / str(expected_metadata["code_file"])
+    notebook: dict[str, Any] = json.loads(notebook_path.read_text())
+    raw_cells = notebook.get("cells")
+    if not isinstance(raw_cells, list):
+        raise TypeError("Public notebook has no cell list")
+    source_parts: list[str] = []
+    for raw_cell in raw_cells:
+        if not isinstance(raw_cell, dict):
+            raise TypeError("Public notebook contains a malformed cell")
+        raw_source = raw_cell.get("source", [])
+        if isinstance(raw_source, str):
+            source_parts.append(raw_source)
+        elif isinstance(raw_source, list) and all(
+            isinstance(line, str) for line in raw_source
+        ):
+            source_parts.append("".join(raw_source))
+        else:
+            raise TypeError("Public notebook cell source is malformed")
+    _validate_public_notebook_source("\n".join(source_parts))
 
 
 def _build_source_bundle(
@@ -146,6 +258,25 @@ def push_index_bundle(
     )
 
 
+def push_public_notebook_bundle(
+    bundle_root: Path,
+    *,
+    approved: bool = False,
+    runner: CommandRunner | None = None,
+) -> CompletedProcess[str]:
+    """Execute the review notebook privately after explicit remote approval."""
+    if approved:
+        _validate_public_notebook_bundle(
+            bundle_root, _PUBLIC_NOTEBOOK_METADATA.as_json()
+        )
+    return _push_source_bundle(
+        bundle_root,
+        metadata=_PUBLIC_NOTEBOOK_METADATA.as_json(),
+        approved=approved,
+        runner=runner,
+    )
+
+
 def _push_source_bundle(
     bundle_root: Path,
     *,
@@ -199,16 +330,23 @@ def _percent_source_to_notebook(source: str) -> dict[str, Any]:
     def append_cell() -> None:
         if cell_kind is None:
             return
+        cell_id = f"cell-{len(cells) + 1:03d}"
         if cell_kind == "markdown":
             rendered_lines = [_markdown_line(line) for line in cell_lines]
             cells.append(
-                {"cell_type": "markdown", "metadata": {}, "source": rendered_lines}
+                {
+                    "cell_type": "markdown",
+                    "id": cell_id,
+                    "metadata": {},
+                    "source": rendered_lines,
+                }
             )
         else:
             cells.append(
                 {
                     "cell_type": "code",
                     "execution_count": None,
+                    "id": cell_id,
                     "metadata": {},
                     "outputs": [],
                     "source": cell_lines.copy(),

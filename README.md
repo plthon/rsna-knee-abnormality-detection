@@ -98,6 +98,32 @@ The compact run manifest records source, configuration, runtime, notebook, and
 artifact provenance. Registered runs live under `.artifacts/experiments/runs/`
 with an append-only `registry.jsonl` index.
 
+## Public DICOM ordering notebook
+
+Build the standalone public-facing notebook and its review metadata locally:
+
+```bash
+uv run python scripts/build_public_notebook.py
+```
+
+The ignored `build/kaggle/public-dicom-ordering/` directory contains the
+rendered notebook and `kernel-metadata.json`. The notebook embeds no repository
+package or private Dataset. It discovers the attached competition data,
+inspects only three representative series, and remains CPU-only with internet
+disabled.
+
+The review metadata intentionally keeps the notebook private. After explicit
+approval to run it on Kaggle, execute:
+
+```bash
+uv run python scripts/push_public_notebook.py --approve-remote
+```
+
+Pushing starts a Kaggle execution. Review the completed title, introduction,
+statistics, code, plots, ordering claims, takeaways, and runtime before making
+any visibility change. Publication is a separate human approval gate and is not
+performed by either script.
+
 ## Real-data index and preprocessing check
 
 Build the private, CPU-only, internet-off indexing notebook without contacting
