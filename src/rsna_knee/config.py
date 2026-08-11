@@ -16,6 +16,7 @@ class PreprocessingConfig:
     slice_count: int
     lower_percentile: float
     upper_percentile: float
+    image_size: int = 224
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +39,14 @@ def load_config(path: Path) -> PipelineConfig:
         slice_count=preprocessing_values["slice_count"],
         lower_percentile=preprocessing_values["lower_percentile"],
         upper_percentile=preprocessing_values["upper_percentile"],
+        image_size=preprocessing_values.get("image_size", 224),
     )
     if preprocessing.slice_count <= 0:
         raise ValueError("slice_count must be positive")
     if not 0 <= preprocessing.lower_percentile < preprocessing.upper_percentile <= 100:
         raise ValueError("percentiles must satisfy 0 <= lower < upper <= 100")
+    if preprocessing.image_size <= 0:
+        raise ValueError("image_size must be positive")
 
     return PipelineConfig(
         paths=ProjectPaths(

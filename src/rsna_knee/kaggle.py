@@ -15,10 +15,10 @@ _PACKAGE_MARKER = "__RSNA_KNEE_PACKAGE_ARCHIVE__"
 
 
 @dataclass(frozen=True, slots=True)
-class _InspectionKernelMetadata:
-    kernel_id: str = "plthon/rsna-knee-real-data-inspection"
-    title: str = "RSNA Knee Real Data Inspection"
-    code_file: str = "inspect_real_data.ipynb"
+class _KernelMetadata:
+    kernel_id: str
+    title: str
+    code_file: str
     competition_slug: str = "rsna-knee-abnormality-detection"
 
     def as_json(self) -> dict[str, Any]:
@@ -40,19 +40,57 @@ class _InspectionKernelMetadata:
         }
 
 
-_INSPECTION_METADATA = _InspectionKernelMetadata()
+_INSPECTION_METADATA = _KernelMetadata(
+    kernel_id="plthon/rsna-knee-real-data-inspection",
+    title="RSNA Knee Real Data Inspection",
+    code_file="inspect_real_data.ipynb",
+)
+_INDEX_METADATA = _KernelMetadata(
+    kernel_id="plthon/rsna-knee-data-index",
+    title="RSNA Knee Data Index",
+    code_file="index_real_data.ipynb",
+)
 
 
 @dataclass(frozen=True, slots=True)
-class InspectionBundle:
+class KaggleSourceBundle:
     root: Path
     notebook_path: Path
     metadata_path: Path
 
 
+type InspectionBundle = KaggleSourceBundle
+type IndexBundle = KaggleSourceBundle
+
+
 def build_inspection_bundle(project_root: Path, output_root: Path) -> InspectionBundle:
     """Build the reviewable, offline inspection notebook and Kaggle metadata."""
-    source_path = project_root / "notebooks" / "inspect_real_data.py"
+    return _build_source_bundle(
+        project_root,
+        output_root,
+        source_name="inspect_real_data.py",
+        metadata=_INSPECTION_METADATA.as_json(),
+    )
+
+
+def build_index_bundle(project_root: Path, output_root: Path) -> IndexBundle:
+    """Build the reviewable, offline real-data index notebook."""
+    return _build_source_bundle(
+        project_root,
+        output_root,
+        source_name="index_real_data.py",
+        metadata=_INDEX_METADATA.as_json(),
+    )
+
+
+def _build_source_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    source_name: str,
+    metadata: dict[str, Any],
+) -> KaggleSourceBundle:
+    source_path = project_root / "notebooks" / source_name
     package_root = project_root / "src" / "rsna_knee"
 
     source = source_path.read_text()
@@ -65,14 +103,13 @@ def build_inspection_bundle(project_root: Path, output_root: Path) -> Inspection
         _PACKAGE_MARKER, base64.b64encode(archive).decode("ascii")
     )
 
-    metadata = _INSPECTION_METADATA.as_json()
     output_root.mkdir(parents=True, exist_ok=True)
     notebook_path = output_root / str(metadata["code_file"])
     metadata_path = output_root / "kernel-metadata.json"
     notebook_path.write_text(json.dumps(_percent_source_to_notebook(rendered_source)))
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
-    _validate_bundle(output_root)
-    return InspectionBundle(
+    _validate_source_bundle(output_root, metadata)
+    return KaggleSourceBundle(
         root=output_root,
         notebook_path=notebook_path,
         metadata_path=metadata_path,
@@ -86,11 +123,41 @@ def push_inspection_bundle(
     runner: CommandRunner | None = None,
 ) -> CompletedProcess[str]:
     """Push a validated bundle only after an explicit remote approval gate."""
+    return _push_source_bundle(
+        bundle_root,
+        metadata=_INSPECTION_METADATA.as_json(),
+        approved=approved,
+        runner=runner,
+    )
+
+
+def push_index_bundle(
+    bundle_root: Path,
+    *,
+    approved: bool = False,
+    runner: CommandRunner | None = None,
+) -> CompletedProcess[str]:
+    """Push a validated index bundle only after explicit remote approval."""
+    return _push_source_bundle(
+        bundle_root,
+        metadata=_INDEX_METADATA.as_json(),
+        approved=approved,
+        runner=runner,
+    )
+
+
+def _push_source_bundle(
+    bundle_root: Path,
+    *,
+    metadata: dict[str, Any],
+    approved: bool,
+    runner: CommandRunner | None,
+) -> CompletedProcess[str]:
     if not approved:
         raise PermissionError(
             "Kaggle push requires explicit remote approval; no command was executed"
         )
-    _validate_bundle(bundle_root)
+    _validate_source_bundle(bundle_root, metadata)
     command = ["kaggle", "kernels", "push", "-p", str(bundle_root)]
     return (runner or _run_command)(command)
 
@@ -110,6 +177,17 @@ def _package_archive(package_root: Path) -> bytes:
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
             archive.writestr(info, source_path.read_bytes())
+        contract_path = package_root.parents[1] / "contracts" / "competition.json"
+        if not contract_path.is_file():
+            raise FileNotFoundError(
+                f"Missing canonical competition contract: {contract_path}"
+            )
+        info = zipfile.ZipInfo(
+            "rsna_knee/competition.json", date_time=(1980, 1, 1, 0, 0, 0)
+        )
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        archive.writestr(info, contract_path.read_bytes())
     return archive_buffer.getvalue()
 
 
@@ -180,13 +258,15 @@ def _markdown_line(line: str) -> str:
     return line
 
 
-def _validate_bundle(bundle_root: Path) -> None:
+def _validate_source_bundle(
+    bundle_root: Path, expected_metadata: dict[str, Any]
+) -> None:
     metadata_path = bundle_root / "kernel-metadata.json"
     if not metadata_path.is_file():
         raise FileNotFoundError(f"Missing Kaggle metadata: {metadata_path}")
     metadata: dict[str, Any] = json.loads(metadata_path.read_text())
-    if metadata != _INSPECTION_METADATA.as_json():
-        raise ValueError("Kaggle metadata does not match the safe inspection policy")
+    if metadata != expected_metadata:
+        raise ValueError("Kaggle metadata does not match the safe source policy")
     code_file = metadata.get("code_file")
     if not isinstance(code_file, str) or not (bundle_root / code_file).is_file():
         raise FileNotFoundError("Kaggle metadata code_file does not exist")

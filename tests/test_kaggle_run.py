@@ -35,6 +35,7 @@ def test_wheel_dataset_records_a_pure_python_build(tmp_path: Path) -> None:
             name for name in wheel.namelist() if name.endswith(".dist-info/WHEEL")
         )
         wheel_metadata = wheel.read(wheel_metadata_path).decode()
+        packaged_contract = wheel.read("rsna_knee/competition.json")
     provenance = json.loads(dataset.provenance_path.read_text())
     git_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -56,11 +57,13 @@ def test_wheel_dataset_records_a_pure_python_build(tmp_path: Path) -> None:
         "filename": dataset.wheel_path.name,
         "is_pure_python": "Root-Is-Purelib: true" in wheel_metadata,
         "tag": "Tag: py3-none-any" in wheel_metadata,
+        "canonical_contract": packaged_contract,
         "provenance": provenance,
     } == {
         "filename": "rsna_knee-0.1.0-py3-none-any.whl",
         "is_pure_python": True,
         "tag": True,
+        "canonical_contract": Path("contracts/competition.json").read_bytes(),
         "provenance": {
             "dataset_id": "plthon/rsna-knee-offline-wheel",
             "git_commit": git_commit,

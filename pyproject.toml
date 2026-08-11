@@ -23,6 +23,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rsna_knee"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"contracts/competition.json" = "rsna_knee/competition.json"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

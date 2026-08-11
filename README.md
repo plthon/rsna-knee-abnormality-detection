@@ -8,6 +8,9 @@ Later data, validation, metric, model, and submission code must consume
 [`contracts/competition.json`](contracts/competition.json). Its concise evidence
 summary and unresolved facts are documented in
 [`docs/competition-inspection-report.md`](docs/competition-inspection-report.md).
+The completed full-corpus metadata index and representative preprocessing
+evidence are recorded in [`contracts/data-index.json`](contracts/data-index.json)
+and [`docs/data-index-report.md`](docs/data-index-report.md).
 
 ## Local checks
 
@@ -92,3 +95,34 @@ uv run python scripts/register_kaggle_run.py \
 The compact run manifest records source, configuration, runtime, notebook, and
 artifact provenance. Registered runs live under `.artifacts/experiments/runs/`
 with an append-only `registry.jsonl` index.
+
+## Real-data index and preprocessing check
+
+Build the private, CPU-only, internet-off indexing notebook without contacting
+Kaggle:
+
+```bash
+uv run python scripts/build_index_notebook.py
+```
+
+The generated bundle in `build/kaggle/index-real-data/` reads the verified
+`train_series.csv` and `test_series.csv` fields, completes a header-only index,
+and only then decodes eight deterministic slices from representative series
+through the shared training/inference transform. Its versioned output contains
+normalized study, series, slice, selection, error, and statistics tables. It
+does not contain DICOMs, decoded arrays, or image files.
+
+Pushing the notebook starts a remote Kaggle CPU job and therefore remains behind
+an explicit approval gate:
+
+```bash
+uv run python scripts/push_index_notebook.py --approve-remote
+```
+
+After downloading a successful kernel output, verify its hashes, no-pixel
+invariant, and representative preprocessing evidence locally:
+
+```bash
+uv run python scripts/verify_index_artifact.py \
+  path/to/rsna-knee-index-v1
+```

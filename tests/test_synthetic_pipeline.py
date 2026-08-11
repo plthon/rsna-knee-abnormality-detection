@@ -59,6 +59,7 @@ work_root = "{tmp_path / "artifacts"}"
 slice_count = 4
 lower_percentile = 0
 upper_percentile = 100
+image_size = 2
 """.strip()
     )
 
