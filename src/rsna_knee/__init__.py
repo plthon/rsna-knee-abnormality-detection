@@ -11,6 +11,7 @@ from .preprocessing import (
     preprocess_series_result,
     uniform_indices,
 )
+from .submission import run_constant_baseline
 
 __all__ = [
     "IndexOutcome",
@@ -26,6 +27,7 @@ __all__ = [
     "load_config",
     "preprocess_series",
     "preprocess_series_result",
+    "run_constant_baseline",
     "uniform_indices",
     "verify_index_artifact",
 ]

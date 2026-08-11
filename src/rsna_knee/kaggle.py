@@ -1,9 +1,10 @@
 import base64
+import hashlib
 import json
 import re
 import subprocess
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -98,6 +99,11 @@ _INDEX_METADATA = _KernelMetadata(
     title="RSNA Knee Data Index",
     code_file="index_real_data.ipynb",
 )
+_SUBMISSION_METADATA = _KernelMetadata(
+    kernel_id="plthon/rsna-knee-constant-baseline",
+    title="RSNA Knee Constant Baseline",
+    code_file="constant_baseline_submission.ipynb",
+)
 _PUBLIC_NOTEBOOK_METADATA = _KernelMetadata(
     kernel_id="plthon/rsna-knee-mri-correct-dicom-ordering-sampling",
     title="RSNA Knee MRI | Correct DICOM Ordering & Sampling",
@@ -114,6 +120,7 @@ class KaggleSourceBundle:
 
 type InspectionBundle = KaggleSourceBundle
 type IndexBundle = KaggleSourceBundle
+type SubmissionBundle = KaggleSourceBundle
 type PublicNotebookBundle = KaggleSourceBundle
 
 
@@ -134,6 +141,40 @@ def build_index_bundle(project_root: Path, output_root: Path) -> IndexBundle:
         output_root,
         source_name="index_real_data.py",
         metadata=_INDEX_METADATA.as_json(),
+    )
+
+
+def build_submission_bundle(project_root: Path, output_root: Path) -> SubmissionBundle:
+    """Build the private, offline constant-baseline submission notebook."""
+    source_path = project_root / "notebooks" / "constant_baseline_submission.py"
+    git_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return _build_source_bundle(
+        project_root,
+        output_root,
+        source_name="constant_baseline_submission.py",
+        metadata=_SUBMISSION_METADATA.as_json(),
+        replacements={
+            "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+            "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+            "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                source_path.read_bytes()
+            ).hexdigest(),
+        },
     )
 
 
@@ -201,11 +242,16 @@ def _build_source_bundle(
     *,
     source_name: str,
     metadata: dict[str, Any],
+    replacements: Mapping[str, str] | None = None,
 ) -> KaggleSourceBundle:
     source_path = project_root / "notebooks" / source_name
     package_root = project_root / "src" / "rsna_knee"
 
     source = source_path.read_text()
+    for marker, value in (replacements or {}).items():
+        if source.count(marker) != 1:
+            raise ValueError(f"Notebook source must contain exactly one {marker}")
+        source = source.replace(marker, value)
     if source.count(_PACKAGE_MARKER) != 1:
         raise ValueError(
             "Notebook source must contain exactly one package archive marker"
@@ -253,6 +299,21 @@ def push_index_bundle(
     return _push_source_bundle(
         bundle_root,
         metadata=_INDEX_METADATA.as_json(),
+        approved=approved,
+        runner=runner,
+    )
+
+
+def push_submission_bundle(
+    bundle_root: Path,
+    *,
+    approved: bool = False,
+    runner: CommandRunner | None = None,
+) -> CompletedProcess[str]:
+    """Execute the constant baseline only after explicit remote approval."""
+    return _push_source_bundle(
+        bundle_root,
+        metadata=_SUBMISSION_METADATA.as_json(),
         approved=approved,
         runner=runner,
     )

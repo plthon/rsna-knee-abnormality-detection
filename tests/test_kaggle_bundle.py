@@ -12,9 +12,11 @@ from rsna_knee.kaggle import (
     build_index_bundle,
     build_inspection_bundle,
     build_public_notebook_bundle,
+    build_submission_bundle,
     push_index_bundle,
     push_inspection_bundle,
     push_public_notebook_bundle,
+    push_submission_bundle,
 )
 
 
@@ -130,6 +132,74 @@ def test_index_push_refuses_to_call_kaggle_without_approval(tmp_path: Path) -> N
 
     with pytest.raises(PermissionError, match="explicit remote approval"):
         push_index_bundle(bundle.root, runner=record_call)
+
+    assert calls == []
+
+
+def test_submission_bundle_is_private_offline_cpu_and_uses_package_validator(
+    tmp_path: Path,
+) -> None:
+    bundle = build_submission_bundle(Path.cwd(), tmp_path / "bundle")
+    metadata = json.loads(bundle.metadata_path.read_text())
+    notebook = json.loads(bundle.notebook_path.read_text())
+    notebook_source = "\n".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+
+    assert metadata == {
+        "code_file": "constant_baseline_submission.ipynb",
+        "competition_sources": ["rsna-knee-abnormality-detection"],
+        "dataset_sources": [],
+        "enable_gpu": "false",
+        "enable_internet": "false",
+        "enable_tpu": "false",
+        "id": "plthon/rsna-knee-constant-baseline",
+        "is_private": "true",
+        "kernel_sources": [],
+        "kernel_type": "notebook",
+        "language": "python",
+        "machine_shape": "",
+        "model_sources": [],
+        "title": "RSNA Knee Constant Baseline",
+    }
+    assert notebook["nbformat"] == 4
+    assert "__RSNA_KNEE_" not in notebook_source
+    assert 'os.environ["CUDA_VISIBLE_DEVICES"] = ""' in notebook_source
+    assert "from rsna_knee import run_constant_baseline" in notebook_source
+    assert 'input_root=Path("/kaggle/input")' in notebook_source
+    assert 'work_root=Path("/kaggle/working")' in notebook_source
+    assert "probability=0.5" in notebook_source
+    assert "validation_report_path" in notebook_source
+    assert "manifest_path" in notebook_source
+    assert '"git_commit"' in notebook_source
+    assert '"jupytext_source_sha256"' in notebook_source
+    assert '"package_archive"' in notebook_source
+    encoded_archive = re.search(
+        r'base64\.b64decode\("([A-Za-z0-9+/=]+)"\)', notebook_source
+    )
+    assert encoded_archive is not None
+    with zipfile.ZipFile(
+        BytesIO(base64.b64decode(encoded_archive.group(1)))
+    ) as archive:
+        assert "rsna_knee/submission.py" in archive.namelist()
+        assert (
+            archive.read("rsna_knee/competition.json")
+            == Path("contracts/competition.json").read_bytes()
+        )
+
+
+def test_submission_push_refuses_remote_execution_without_approval(
+    tmp_path: Path,
+) -> None:
+    bundle = build_submission_bundle(Path.cwd(), tmp_path / "bundle")
+    calls: list[list[str]] = []
+
+    def record_call(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0)
+
+    with pytest.raises(PermissionError, match="explicit remote approval"):
+        push_submission_bundle(bundle.root, runner=record_call)
 
     assert calls == []
 

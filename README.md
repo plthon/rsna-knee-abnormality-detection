@@ -154,3 +154,26 @@ invariant, and representative preprocessing evidence locally:
 uv run python scripts/verify_index_artifact.py \
   path/to/rsna-knee-index-v1
 ```
+
+## Constant baseline submission notebook
+
+Build the private, CPU-only submission notebook locally without contacting
+Kaggle:
+
+```bash
+uv run python scripts/build_submission_notebook.py
+```
+
+The ignored `build/kaggle/constant-baseline-submission/` bundle embeds the
+current package and verified competition contract. With internet disabled, the
+notebook dynamically discovers the current test studies, writes a `0.5`
+prediction for every required target, validates `submission.csv`, and records
+`submission-validation.json`, `submission-fallbacks.csv`, and
+`run-manifest.json`.
+
+Pushing starts a Kaggle CPU execution and remains behind an explicit approval
+gate:
+
+```bash
+uv run python scripts/push_submission_notebook.py --approve-remote
+```
