@@ -183,15 +183,28 @@ def write_submission(
     work_root: Path,
     predictions: Mapping[str, Sequence[float]],
     failures: Mapping[str, str],
-    fallback_probability: float,
+    fallback_probability: float | Sequence[float],
 ) -> SubmissionArtifacts:
     """Complete, record, write, and validate study-level predictions.
 
     Every required entity must have either a prediction or an explicit failure.
     Failed entities receive the fixed fallback and remain in the submission.
     """
-    if not 0.0 <= fallback_probability <= 1.0:
-        raise ValueError("Fallback probability must be within [0,1]")
+    if isinstance(fallback_probability, (int, float)):
+        if not 0.0 <= fallback_probability <= 1.0:
+            raise ValueError("Fallback probability must be within [0,1]")
+        fallback_values = (float(fallback_probability),) * len(
+            inputs.contract.target_names
+        )
+    else:
+        fallback_values = tuple(float(value) for value in fallback_probability)
+        if len(fallback_values) != len(inputs.contract.target_names):
+            raise ValueError("Fallback probabilities have the wrong target count")
+        if any(
+            not math.isfinite(value) or not 0.0 <= value <= 1.0
+            for value in fallback_values
+        ):
+            raise ValueError("Fallback probabilities must be finite and within [0,1]")
     expected_ids = set(inputs.entity_ids)
     prediction_ids = set(predictions)
     failure_ids = set(failures)
@@ -210,8 +223,6 @@ def write_submission(
     submission_path = work_root / inputs.contract.filename
     fallbacks_path = work_root / "submission-fallbacks.csv"
     validation_report_path = work_root / "submission-validation.json"
-    fallback_values = (fallback_probability,) * len(inputs.contract.target_names)
-
     with submission_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(inputs.contract.ordered_columns)

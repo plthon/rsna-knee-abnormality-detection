@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "architecture": "torchvision.models.resnet18",
+    "torch_version_base": "2.10.0",
+    "torchvision_version_base": "0.25.0",
+    "weight_enum": "ResNet18_Weights.IMAGENET1K_V1",
+    "weight_release": "IMAGENET1K_V1",
+    "default_alias_accepted": false
+  },
+  "artifact": {
+    "filename": "resnet18-f37072fd.pth",
+    "size_bytes": 46830571,
+    "sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec",
+    "source_url": "https://download.pytorch.org/models/resnet18-f37072fd.pth",
+    "public_access_checked_at": "2026-08-12",
+    "public_access_evidence": "The exact bytes were retrieved without authentication from the official download.pytorch.org URL and matched the filename hash prefix and the full recorded SHA-256."
+  },
+  "upstream": {
+    "repository": "https://github.com/pytorch/vision",
+    "source_release": "https://github.com/pytorch/vision/blob/v0.25.0/torchvision/models/resnet.py",
+    "documentation": "https://docs.pytorch.org/vision/0.25/models/generated/torchvision.models.resnet18.html",
+    "recipe_identity": "simple training recipe, ImageNet-1K",
+    "license": {
+      "torchvision_code_spdx": "BSD-3-Clause",
+      "torchvision_license_evidence": "https://github.com/pytorch/vision/blob/v0.25.0/LICENSE",
+      "pretrained_model_terms_evidence": "https://github.com/pytorch/vision/tree/v0.25.0#pre-trained-model-license",
+      "scope_note": "Torchvision states that pretrained models may have licenses or terms derived from their training datasets. This contract records public accessibility and the upstream notice; it does not assert that the torchvision code license independently licenses the ImageNet-trained weight bytes."
+    }
+  },
+  "weight_preprocessing": {
+    "official_identity": "ResNet18_Weights.IMAGENET1K_V1.transforms",
+    "official_resize_size": 256,
+    "official_crop_size": 224,
+    "official_interpolation": "bilinear",
+    "official_mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "official_std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "training_adapter": {
+      "identity": "rsna-knee-dicom-224-imagenet-normalization-v1",
+      "input": "shared_train_inference_preprocess_series_result float32 grayscale in [0,1] at 224x224",
+      "channel_adapter": "repeat one grayscale channel to RGB",
+      "spatial_adapter": "no additional resize or crop after the shared 224x224 DICOM transform",
+      "normalization": "ResNet18_Weights.IMAGENET1K_V1 mean and standard deviation"
+    }
+  },
+  "offline_kaggle_input": {
+    "dataset_id": "plthon/torchvision-resnet18-imagenet1k-v1",
+    "title": "Torchvision ResNet18 ImageNet1K V1",
+    "visibility": "private",
+    "version_policy": "Kaggle creates an immutable Dataset version; every consumer must rediscover the named file and reject any size or SHA-256 mismatch before model construction.",
+    "internet_required_at_runtime": false
+  },
+  "construction_policy": {
+    "validate_before_model_construction": true,
+    "network_download_allowed_at_runtime": false,
+    "silent_weight_fallback_allowed": false,
+    "random_initialization_fallback_allowed": false,
+    "strict_state_dict_load": true
+  }
+}

@@ -1,0 +1,200 @@
+{
+  "artifact_type": "rsna_knee_gold_training_smoke",
+  "schema_version": 1,
+  "verified_at": "2026-08-12",
+  "scope": "Engineering smoke evidence only. Losses and online metrics do not establish model quality, statistical adequacy, generalization, or competitive performance.",
+  "source_contracts": {
+    "competition_sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292",
+    "gold_supervision_sha256": "80747838d3e88696ab66e100ac1271331d5c69f383126aac7cfaa2a4b02cc1d9",
+    "index_manifest_sha256": "85970899c44c1325ab6d1fe8983dc9e472e6a854d8b6bb8fb65506ec91480caa",
+    "initialization_sha256": "cbd3639197247bf8b4bd83f11047f5cac5bf8b13ba92e881c423f7c61fabc4ca"
+  },
+  "supervision": {
+    "source": "organizer gold train.csv only",
+    "report_derived_labels_used": false,
+    "unknown_labels_masked_in_binary_cross_entropy": true,
+    "cohort_selection_rule_version": "organizer-gold-all-eligible-v1",
+    "cohort_size": 58,
+    "independently_rederived_before_training": true,
+    "membership_label_digest": "ea739a412709b0ac65429ca47f29161614ba384e2e92643301f817712cd6b7bc",
+    "all_targets_have_positive_and_negative_gold_support": true,
+    "target_order": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ]
+  },
+  "model": {
+    "architecture": "torchvision.models.resnet18",
+    "shared_encoder": true,
+    "image_size": 224,
+    "output_count": 12,
+    "slice_to_series_pooling": "masked mean over valid encoded slices",
+    "series_to_study_pooling": "masked mean over series with at least one valid slice",
+    "padded_slice_pixels_enter_encoder": false,
+    "padding_can_affect_pooling": false
+  },
+  "offline_initialization": {
+    "identity": "ResNet18_Weights.IMAGENET1K_V1",
+    "artifact_filename": "resnet18-f37072fd.pth",
+    "artifact_size_bytes": 46830571,
+    "artifact_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec",
+    "validated_before_model_construction": true,
+    "network_fallback": false,
+    "random_or_alternate_weight_fallback": false,
+    "private_kaggle_dataset": {
+      "id": "plthon/torchvision-resnet18-imagenet1k-v1",
+      "version": 1,
+      "status": "ready",
+      "visibility": "private"
+    }
+  },
+  "execution": {
+    "approved_gpu": true,
+    "kernel": {
+      "id": "plthon/rsna-knee-gold-model-smoke",
+      "successful_version": 2,
+      "status": "complete",
+      "visibility": "private",
+      "internet_enabled": false,
+      "machine_shape": "NvidiaTeslaT4"
+    },
+    "preflight_attempts": [
+      {
+        "kernel_version": 1,
+        "status": "error",
+        "assigned_device": "Tesla P100-PCIE-16GB",
+        "reason": "The Kaggle PyTorch 2.10.0+cu128 image supports CUDA architectures sm_70 and newer, so the required real CUDA operation rejected the assigned sm_60 device before training.",
+        "log_sha256": "1626ddc04fdac1fe181e9fc4122882a5029123eeb093fb2a3d301a6cac87dadf"
+      },
+      {
+        "kernel_version": 2,
+        "status": "complete",
+        "assigned_device": "Tesla T4",
+        "machine_shape": "NvidiaTeslaT4"
+      }
+    ],
+    "cuda_readiness": {
+      "operation": "(torch.ones(1, device='cuda') * 2).item()",
+      "result": 2.0,
+      "device_name": "Tesla T4",
+      "device_total_memory_bytes": 15636037632
+    },
+    "runtime": {
+      "python": "3.12.13",
+      "torch": "2.10.0+cu128",
+      "torchvision": "0.25.0+cu128",
+      "cuda_version": "12.8",
+      "platform": "Linux-6.12.90+-x86_64-with-glibc2.35"
+    },
+    "training": {
+      "epochs_completed": 1,
+      "mixed_precision": true,
+      "attempted_cohort_studies": 58,
+      "optimized_cohort_studies": 58,
+      "batch_size": 1,
+      "optimizer_steps": 58,
+      "valid_training_slices": 2688,
+      "training_seconds": 58.533929398000055,
+      "training_slices_per_second": 45.92208361278821,
+      "peak_cuda_memory_bytes": 1106189312,
+      "mean_training_loss": 0.6729888422735806,
+      "training_decode_errors": {},
+      "inference_seconds": 3.174173708000012,
+      "inference_decode_errors": {}
+    },
+    "smoke_metrics": {
+      "scope": "Online training diagnostics only; not a quality estimate.",
+      "per_target": {
+        "ACL": {"binary_cross_entropy": 0.7075369358062744, "accuracy_at_0_5": 0.4655172526836395, "roc_auc": 0.41421568393707275},
+        "MCL": {"binary_cross_entropy": 0.5458352565765381, "accuracy_at_0_5": 0.7758620977401733, "roc_auc": 0.3174603283405304},
+        "Medial Meniscus": {"binary_cross_entropy": 0.7082144618034363, "accuracy_at_0_5": 0.5, "roc_auc": 0.3209134638309479},
+        "Lateral Meniscus": {"binary_cross_entropy": 0.7086679935455322, "accuracy_at_0_5": 0.43103447556495667, "roc_auc": 0.3776397407054901},
+        "Medial OA": {"binary_cross_entropy": 0.6216919422149658, "accuracy_at_0_5": 0.7068965435028076, "roc_auc": 0.5007752180099487},
+        "Lateral OA": {"binary_cross_entropy": 0.6961269974708557, "accuracy_at_0_5": 0.5862069129943848, "roc_auc": 0.5280464291572571},
+        "PF OA": {"binary_cross_entropy": 0.6750116944313049, "accuracy_at_0_5": 0.6379310488700867, "roc_auc": 0.25032174587249756},
+        "Effusion": {"binary_cross_entropy": 0.7049363851547241, "accuracy_at_0_5": 0.5344827771186829, "roc_auc": 0.2832298278808594},
+        "Synovitis": {"binary_cross_entropy": 0.7055445909500122, "accuracy_at_0_5": 0.4482758641242981, "roc_auc": 0.4038231670856476},
+        "Baker's": {"binary_cross_entropy": 0.6454898118972778, "accuracy_at_0_5": 0.6379310488700867, "roc_auc": 0.6195651888847351},
+        "Contusion": {"binary_cross_entropy": 0.6446875929832458, "accuracy_at_0_5": 0.6034482717514038, "roc_auc": 0.5721997022628784},
+        "Fracture": {"binary_cross_entropy": 0.7121221423149109, "accuracy_at_0_5": 0.5, "roc_auc": 0.4583333432674408}
+      }
+    }
+  },
+  "checkpoint": {
+    "run_id": "gold-training-smoke-47fa76c2c31e4c91812d5c8b791f0440",
+    "schema_version": 1,
+    "completed_epochs": 1,
+    "path": "checkpoint.pt",
+    "size_bytes": 134348295,
+    "sha256": "ff285942dd75a165a5079cee7558aac1afafb1e75269d00d11d2d1cdd04ace82",
+    "reloaded_before_inference": true,
+    "optimizer_and_scaler_reloaded": true,
+    "inventory": [
+      "artifact_hashes",
+      "checkpoint_schema_version",
+      "code",
+      "cohort",
+      "completed_epochs",
+      "configuration",
+      "initialization",
+      "label_contract",
+      "model_state_dict",
+      "optimizer_state_dict",
+      "preprocessing",
+      "priors",
+      "rng_state",
+      "runtime",
+      "scaler_state_dict",
+      "targets"
+    ]
+  },
+  "submission": {
+    "reloaded_checkpoint_used": true,
+    "validator_passed": true,
+    "row_count": 3,
+    "target_count": 12,
+    "fallback_count": 0,
+    "probability_minimum": 0.1734619140625,
+    "probability_maximum": 0.6591796875,
+    "submission_sha256": "cb93aad6f20c7e026e3af75cc4a461c830863ce695069bbc1737a5f7acf31e1e",
+    "validation_sha256": "0ff3fa758e5232b5ef3d6b4a8f97466ee01ee7f0c26e1faec04550744285057a"
+  },
+  "local_cpu_check": {
+    "completed": true,
+    "forward_shape": [1, 12],
+    "loss": 0.597630500793457,
+    "backward_completed": true,
+    "optimizer_step_completed": true,
+    "checkpoint_reloaded": true,
+    "prediction_finite": true,
+    "checkpoint_sha256": "594f99dce16c500f1672e9cf1cc4c126a7537da4f99fc3be8740da33226328c5"
+  },
+  "provenance": {
+    "base_git_commit": "1ab01a4344a8c81e5dce99c5a94c7d19c3e5589c",
+    "source_worktree_dirty": true,
+    "jupytext_source_sha256": "e26faf9b26aca21fe7f5c25075b2e0644209208b2d321dbe0f55b703c7c2e00a",
+    "package_archive_sha256": "87d9118ef65a892bd418257e7d9c57efb9a70aceb46a0b72c52f399e29f668a9",
+    "training_config_sha256": "13b880be2c0c0f5f1f5d1d7fdbcc831af81c16b5ec91d79479803edd7ef4620e",
+    "server_source_cells_sha256": "dacf0455b6bb027134bee25023f29e5d222e70a126ed914bccd49b4f1bfa7be1",
+    "server_source_cells_match_rendered_bundle": true,
+    "kernel_log_sha256": "5f55e2be787a44d3d99fa6339268bc600874ffb8474cd128a9aeb23389ef14ef",
+    "run_manifest_sha256": "c481c17fe7c19b7643bfa59d586288570947df491799d4fa3e9fb12b2c86e945",
+    "training_report_sha256": "f73adf670b49cec7591e7dbcc81f2c10a81ba6163dbc0f8ba8deaa9c0bd44f7f"
+  },
+  "privacy": {
+    "competition_data_downloaded": false,
+    "row_level_membership_or_labels_committed": false,
+    "predictions_committed": false,
+    "private_artifacts_registered_under_ignored_path": true
+  }
+}

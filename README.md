@@ -15,6 +15,14 @@ The organizer-gold cohort, smoke-sufficiency decision, and frozen evaluation
 witness are recorded in
 [`contracts/gold-supervision.json`](contracts/gold-supervision.json) and
 [`docs/gold-supervision-report.md`](docs/gold-supervision-report.md).
+The exact ResNet-18 initialization identity, upstream/access and license
+evidence, byte hash, preprocessing adapter, and offline-only construction policy
+are frozen in
+[`contracts/resnet18-imagenet1k-v1.json`](contracts/resnet18-imagenet1k-v1.json).
+The verified one-epoch GPU smoke result, complete checkpoint evidence, and
+submission reload proof are recorded in
+[`contracts/gold-training.json`](contracts/gold-training.json) and
+[`docs/gold-training-report.md`](docs/gold-training-report.md).
 The issues #2–#5 review, corrections, and proceed recommendation are recorded in
 [`docs/foundation-hardening-report.md`](docs/foundation-hardening-report.md).
 
@@ -25,6 +33,13 @@ uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
+```
+
+The issue #8 model checks use the optional training extra:
+
+```bash
+uv sync --extra training --locked
+uv run --extra training pytest -m training
 ```
 
 ## Real-data inspection notebook
@@ -216,3 +231,58 @@ uv run python scripts/verify_gold_audit_artifact.py \
 uv run python scripts/export_gold_audit_contract.py \
   path/to/rsna-knee-gold-audit-v1
 ```
+
+## Gold-only ResNet-18 smoke training
+
+The training path consumes the accepted private index and competition mount,
+independently re-derives the frozen all-eligible organizer-gold cohort, and
+rejects any membership/label digest mismatch before model construction. It uses
+one shared torchvision ResNet-18, excludes padded slices and series from both
+masked means, masks unknown targets in BCE, saves full resumable state, reloads
+that state, and sends predictions through the issue #6 submission validator.
+Report text is not interpreted or used, and report-derived labels do not enter
+training or evaluation.
+
+Download the one named upstream artifact outside Kaggle and run the full local
+CPU forward/backward/optimizer/checkpoint/reload/prediction check:
+
+```bash
+curl --fail --location \
+  --output .artifacts/weights/resnet18-f37072fd.pth \
+  https://download.pytorch.org/models/resnet18-f37072fd.pth
+uv run --extra training python scripts/run_local_training_check.py \
+  --weights .artifacts/weights/resnet18-f37072fd.pth
+```
+
+Both bundle rendering and remote execution require a separate explicit GPU
+approval. Rendering copies the hash-validated bytes into a private Kaggle
+Dataset bundle; runtime internet remains disabled and the notebook validates
+the mounted file again before constructing the model:
+
+```bash
+uv run --extra training python scripts/build_training_notebook.py \
+  --weights .artifacts/weights/resnet18-f37072fd.pth \
+  --approve-gpu
+uv run --extra training python scripts/push_training_notebook.py \
+  --approve-remote \
+  --approve-gpu
+```
+
+Pushing creates the private versioned weight Dataset and starts a GPU notebook,
+so neither command is part of local tests. If the exact Dataset is already
+ready, use `--reuse-ready-dataset` on the push command. After completion,
+download, register, and verify all manifest hashes, complete checkpoint fields,
+approved CUDA and mixed-precision evidence, gold-only invariants, reload status,
+and submission validation with:
+
+```bash
+uv run --extra training python scripts/register_training_run.py
+```
+
+`scripts/verify_training_artifact.py` performs the same verification against an
+already-downloaded `rsna-knee-gold-training-v1` directory.
+
+The generated metadata pins `NvidiaTeslaT4`: the current Kaggle PyTorch 2.10
+image does not contain CUDA kernels for the older default Tesla P100. The
+completed private evidence run is kernel version 2; see the training report for
+the preserved version-1 preflight failure and successful T4 verification.

@@ -1,0 +1,15 @@
+[preprocessing]
+slice_count = 8
+lower_percentile = 1
+upper_percentile = 99
+image_size = 224
+
+[training]
+epochs = 1
+batch_size = 1
+learning_rate = 0.0001
+weight_decay = 0.0001
+seed = 20260812
+mixed_precision = true
+architecture = "torchvision.models.resnet18"
+weight_identity = "ResNet18_Weights.IMAGENET1K_V1"

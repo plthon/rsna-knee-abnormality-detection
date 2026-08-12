@@ -211,6 +211,25 @@ def test_unusable_studies_receive_an_explicit_recorded_fixed_fallback(
     }
 
 
+def test_fallback_can_use_verified_per_target_priors(tmp_path: Path) -> None:
+    input_root = tmp_path / "input"
+    _write_submission_inputs(input_root, ("unusable",))
+    inputs = discover_submission_inputs(input_root, contract_path=CONTRACT_PATH)
+    priors = tuple((index + 1) / (len(TARGETS) + 1) for index in range(len(TARGETS)))
+
+    result = write_submission(
+        inputs=inputs,
+        work_root=tmp_path / "working",
+        predictions={},
+        failures={"unusable": "no_usable_series"},
+        fallback_probability=priors,
+    )
+
+    with result.submission_path.open(newline="") as file:
+        rows = list(csv.reader(file))
+    assert [float(value) for value in rows[1][1:]] == list(priors)
+
+
 @pytest.mark.parametrize(
     ("header", "rows", "error"),
     [

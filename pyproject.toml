@@ -9,6 +9,12 @@ dependencies = [
     "pydicom>=3.0",
 ]
 
+[project.optional-dependencies]
+training = [
+    "torch>=2.10,<2.11",
+    "torchvision>=0.25,<0.26",
+]
+
 [dependency-groups]
 dev = [
     "mypy>=1.14",
@@ -27,9 +33,14 @@ packages = ["src/rsna_knee"]
 "contracts/competition.json" = "rsna_knee/competition.json"
 "contracts/data-index.json" = "rsna_knee/data-index.json"
 "contracts/gold-supervision.json" = "rsna_knee/gold-supervision.json"
+"contracts/gold-training.json" = "rsna_knee/gold-training.json"
+"contracts/resnet18-imagenet1k-v1.json" = "rsna_knee/resnet18-imagenet1k-v1.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "training: checks that require the optional PyTorch/torchvision training extra",
+]
 
 [tool.mypy]
 python_version = "3.12"
