@@ -48,6 +48,18 @@ class VerifiedSubmissionContract:
     test_series_columns: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedGoldContract:
+    schema_version: int
+    verified_at: str
+    sha256: str
+    train_filename: str
+    train_columns: tuple[str, ...]
+    identifier_column: str
+    patient_group_column: str
+    target_names: tuple[str, ...]
+
+
 def load_verified_index_contract(path: Path | None = None) -> VerifiedIndexContract:
     """Load and validate the canonical fields consumed by DICOM indexing."""
     raw = _contract_bytes(path)
@@ -173,6 +185,70 @@ def load_verified_submission_contract(
         test_series_filename=test_series_filename,
         test_series_image_root=test_series_image_root,
         test_series_columns=test_series_columns,
+    )
+
+
+def load_verified_gold_contract(path: Path | None = None) -> VerifiedGoldContract:
+    """Load the organizer-gold schema and leakage-safe grouping contract."""
+    raw = _contract_bytes(path)
+    contract = cast(dict[str, Any], json.loads(raw))
+    schema_version = _required_int(contract, "schema_version")
+    competition = _required_dict(contract, "competition")
+    verified_at = _required_str(competition, "contract_verified_at")
+
+    targets = _required_dict(contract, "targets")
+    if targets.get("status") != "verified" or targets.get("label_representation") != [
+        0,
+        1,
+    ]:
+        raise ValueError("Organizer-gold targets are not verified binary labels")
+    raw_target_names = targets.get("order")
+    if not isinstance(raw_target_names, list) or not all(
+        isinstance(target, str) and target for target in raw_target_names
+    ):
+        raise TypeError("Competition target order must contain nonempty strings")
+    target_names = tuple(raw_target_names)
+    if targets.get("count") != len(target_names) or not target_names:
+        raise ValueError("Competition target count does not match its target order")
+
+    data = _required_dict(contract, "data")
+    tables = _required_dict(data, "tables")
+    train_filename = "train.csv"
+    train_table = _required_dict(tables, train_filename)
+    raw_train_columns = train_table.get("columns")
+    if not isinstance(raw_train_columns, list) or not all(
+        isinstance(column, str) and column for column in raw_train_columns
+    ):
+        raise TypeError("Verified train columns must be nonempty strings")
+    train_columns = tuple(raw_train_columns)
+
+    identifier_columns = train_table.get("identifier_columns")
+    if (
+        not isinstance(identifier_columns, list)
+        or len(identifier_columns) != 1
+        or not isinstance(identifier_columns[0], str)
+    ):
+        raise ValueError("Exactly one verified train identifier is required")
+    identifier_column = identifier_columns[0]
+    if not set(target_names).issubset(train_columns):
+        raise ValueError("Verified train table does not contain every target")
+
+    leakage = _required_dict(contract, "leakage")
+    if leakage.get("status") != "verified":
+        raise ValueError("Competition leakage contract is not verified")
+    patient_group_column = leakage.get("highest_safe_available_grouping_entity")
+    if patient_group_column != "PatientID":
+        raise ValueError("Organizer-gold evaluation requires PatientID grouping")
+
+    return VerifiedGoldContract(
+        schema_version=schema_version,
+        verified_at=verified_at,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        train_filename=train_filename,
+        train_columns=train_columns,
+        identifier_column=identifier_column,
+        patient_group_column=patient_group_column,
+        target_names=target_names,
     )
 
 

@@ -1,0 +1,499 @@
+{
+  "artifact_type": "rsna_knee_gold_supervision_audit",
+  "canonical_cohort": {
+    "all_selected_studies_resolve_to_exactly_one_usable_index_study": true,
+    "cohort_size": 58,
+    "digest": {
+      "algorithm": "sha256",
+      "canonicalization_version": "study-label-jsonl-v1",
+      "header_record": {
+        "schema": "study-label-jsonl-v1",
+        "targets": [
+          "ACL",
+          "MCL",
+          "Medial Meniscus",
+          "Lateral Meniscus",
+          "Medial OA",
+          "Lateral OA",
+          "PF OA",
+          "Effusion",
+          "Synovitis",
+          "Baker's",
+          "Contusion",
+          "Fracture"
+        ]
+      },
+      "identifier_representation": "UTF-8 JSON string",
+      "json_serialization": "ensure_ascii=false, separators=(',', ':'), sort_keys=true",
+      "label_representation": "ordered JSON array of 0, 1, or null",
+      "missing_value_encoding": "JSON null",
+      "ordering": "StudyInstanceUID UTF-8 byte order",
+      "record_framing": "UTF-8 newline-delimited canonical JSON with a final newline",
+      "row_record": "[StudyInstanceUID, ordered_label_array]",
+      "value": "ea739a412709b0ac65429ca47f29161614ba384e2e92643301f817712cd6b7bc"
+    },
+    "excluded_study_count": 4349,
+    "excluded_study_counts_by_reason": {
+      "no_verified_gold_label": 4349
+    },
+    "label_contract_version": {
+      "schema_version": 1,
+      "sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292"
+    },
+    "per_target": {
+      "ACL": {
+        "known": 58,
+        "missing": 0,
+        "negative": 34,
+        "positive": 24
+      },
+      "Baker's": {
+        "known": 58,
+        "missing": 0,
+        "negative": 46,
+        "positive": 12
+      },
+      "Contusion": {
+        "known": 58,
+        "missing": 0,
+        "negative": 39,
+        "positive": 19
+      },
+      "Effusion": {
+        "known": 58,
+        "missing": 0,
+        "negative": 23,
+        "positive": 35
+      },
+      "Fracture": {
+        "known": 58,
+        "missing": 0,
+        "negative": 40,
+        "positive": 18
+      },
+      "Lateral Meniscus": {
+        "known": 58,
+        "missing": 0,
+        "negative": 35,
+        "positive": 23
+      },
+      "Lateral OA": {
+        "known": 58,
+        "missing": 0,
+        "negative": 47,
+        "positive": 11
+      },
+      "MCL": {
+        "known": 58,
+        "missing": 0,
+        "negative": 49,
+        "positive": 9
+      },
+      "Medial Meniscus": {
+        "known": 58,
+        "missing": 0,
+        "negative": 32,
+        "positive": 26
+      },
+      "Medial OA": {
+        "known": 58,
+        "missing": 0,
+        "negative": 43,
+        "positive": 15
+      },
+      "PF OA": {
+        "known": 58,
+        "missing": 0,
+        "negative": 37,
+        "positive": 21
+      },
+      "Synovitis": {
+        "known": 58,
+        "missing": 0,
+        "negative": 31,
+        "positive": 27
+      }
+    },
+    "selection_optimizes_class_balance": false,
+    "selection_rule": "Every organizer-labeled study with at least one nonmissing verified gold target that resolves through the authoritative index to one usable study; missing targets remain masked.",
+    "selection_rule_version": "organizer-gold-all-eligible-v1",
+    "uses_all_eligible_studies": true
+  },
+  "evaluation_eligibility": {
+    "allocation_rule_version": "patient-disjoint-exact-backtracking-v1",
+    "assignment_digest": {
+      "algorithm": "sha256",
+      "canonicalization_version": "patient-study-partition-jsonl-v1",
+      "header_record": {
+        "allocation_rule": "patient-disjoint-exact-backtracking-v1",
+        "schema": "patient-study-partition-jsonl-v1",
+        "seed": 20260812
+      },
+      "identifier_representation": "UTF-8 JSON strings",
+      "json_serialization": "ensure_ascii=false, separators=(',', ':'), sort_keys=true",
+      "ordering": "PatientID then StudyInstanceUID UTF-8 byte order",
+      "partition_values": [
+        "train",
+        "holdout"
+      ],
+      "record_framing": "UTF-8 newline-delimited canonical JSON with a final newline",
+      "row_record": "[PatientID, StudyInstanceUID, partition]",
+      "value": "8dccc31852a3e26ec677062a289301004fdce29eb64a556bea8922dfd2bb263d"
+    },
+    "candidate_scope": "A valid gold-only attempt is possible; no claim of statistical adequacy is made.",
+    "decision": "Candidate",
+    "grouping_entity": "PatientID",
+    "minimum_class_support_per_partition": 1,
+    "missing_labels_remain_masked": true,
+    "partitions": {
+      "holdout": {
+        "patient_count": 4,
+        "per_target": {
+          "ACL": {
+            "known": 4,
+            "missing": 0,
+            "negative": 1,
+            "positive": 3
+          },
+          "Baker's": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1
+          },
+          "Contusion": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2
+          },
+          "Effusion": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2
+          },
+          "Fracture": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1
+          },
+          "Lateral Meniscus": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1
+          },
+          "Lateral OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1
+          },
+          "MCL": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1
+          },
+          "Medial Meniscus": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2
+          },
+          "Medial OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2
+          },
+          "PF OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 1,
+            "positive": 3
+          },
+          "Synovitis": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2
+          }
+        },
+        "study_count": 4
+      },
+      "train": {
+        "patient_count": 54,
+        "per_target": {
+          "ACL": {
+            "known": 54,
+            "missing": 0,
+            "negative": 33,
+            "positive": 21
+          },
+          "Baker's": {
+            "known": 54,
+            "missing": 0,
+            "negative": 43,
+            "positive": 11
+          },
+          "Contusion": {
+            "known": 54,
+            "missing": 0,
+            "negative": 37,
+            "positive": 17
+          },
+          "Effusion": {
+            "known": 54,
+            "missing": 0,
+            "negative": 21,
+            "positive": 33
+          },
+          "Fracture": {
+            "known": 54,
+            "missing": 0,
+            "negative": 37,
+            "positive": 17
+          },
+          "Lateral Meniscus": {
+            "known": 54,
+            "missing": 0,
+            "negative": 32,
+            "positive": 22
+          },
+          "Lateral OA": {
+            "known": 54,
+            "missing": 0,
+            "negative": 44,
+            "positive": 10
+          },
+          "MCL": {
+            "known": 54,
+            "missing": 0,
+            "negative": 46,
+            "positive": 8
+          },
+          "Medial Meniscus": {
+            "known": 54,
+            "missing": 0,
+            "negative": 30,
+            "positive": 24
+          },
+          "Medial OA": {
+            "known": 54,
+            "missing": 0,
+            "negative": 41,
+            "positive": 13
+          },
+          "PF OA": {
+            "known": 54,
+            "missing": 0,
+            "negative": 36,
+            "positive": 18
+          },
+          "Synovitis": {
+            "known": 54,
+            "missing": 0,
+            "negative": 29,
+            "positive": 25
+          }
+        },
+        "study_count": 54
+      }
+    },
+    "prediction_independent": true,
+    "seed": 20260812,
+    "unsupported_findings": [],
+    "uses_leaderboard_results": false,
+    "uses_predictions": false
+  },
+  "label_contract": {
+    "allowed_values": [
+      0,
+      1,
+      "missing"
+    ],
+    "contract_violation_counts": {},
+    "invalid_value_count": 0,
+    "invalid_value_counts_by_target": {
+      "ACL": 0,
+      "Baker's": 0,
+      "Contusion": 0,
+      "Effusion": 0,
+      "Fracture": 0,
+      "Lateral Meniscus": 0,
+      "Lateral OA": 0,
+      "MCL": 0,
+      "Medial Meniscus": 0,
+      "Medial OA": 0,
+      "PF OA": 0,
+      "Synovitis": 0
+    },
+    "source_missing_encoding": "empty CSV field after whitespace trimming",
+    "status": "verified",
+    "target_count": 12,
+    "target_order": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ]
+  },
+  "privacy": {
+    "patient_ids_committed": false,
+    "private_files_remain_in_kaggle_artifact": true,
+    "public_safe_summary": true,
+    "row_level_assignments_committed": false,
+    "row_level_labels_committed": false,
+    "row_level_membership_committed": false
+  },
+  "report_derived_supervision_recommendation": {
+    "activated": false,
+    "changes_evaluation_decision": false,
+    "changes_smoke_decision": false,
+    "downstream_ticket_created": false,
+    "observed_limitation": "Organizer-provided gold supervision covers fewer studies than the usable indexed training corpus.",
+    "organizer_gold_cohort_studies": 58,
+    "plausibly_addresses_observed_training_limitation": true,
+    "status": "informational-only",
+    "treats_report_values_as_gold": false,
+    "usable_indexed_train_studies": 4407
+  },
+  "schema_version": 1,
+  "smoke_sufficiency": {
+    "bounded_smoke_conflict": {
+      "basis": "Issue #8 requires one epoch over this all-eligible cohort and declares no smaller cohort-size limit.",
+      "status": "none_identified"
+    },
+    "decision": "smoke-sufficient",
+    "input_contract_valid": true,
+    "pseudo_label_work_activated": false,
+    "rule": "Each verified target has at least one gold positive and one gold negative in the canonical cohort.",
+    "substitute_cohort_used": false,
+    "target_contract_weakened": false,
+    "unsupported_targets": []
+  },
+  "source_contracts": {
+    "competition": {
+      "schema_version": 1,
+      "sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292",
+      "verified_at": "2026-08-11"
+    },
+    "data_index": {
+      "accepted_manifest_sha256": "85970899c44c1325ab6d1fe8983dc9e472e6a854d8b6bb8fb65506ec91480caa",
+      "accepted_studies_sha256": "a8331f8ef01bb598924a6c494432fa99332a6f89835047763ee3f85c74b262c2",
+      "schema_version": 1,
+      "sha256": "3e9c66134a11e9f6ebcb79027a81deae92d43618f28984c740a5fe79e9a324d3",
+      "verification_scope": [
+        "accepted external manifest digest",
+        "accepted studies.csv digest and size",
+        "studies.csv columns",
+        "competition-contract compatibility"
+      ],
+      "verified_at": "2026-08-11"
+    }
+  },
+  "source_gold_labels": {
+    "per_target": {
+      "ACL": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 34,
+        "positive": 24
+      },
+      "Baker's": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 46,
+        "positive": 12
+      },
+      "Contusion": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 39,
+        "positive": 19
+      },
+      "Effusion": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 23,
+        "positive": 35
+      },
+      "Fracture": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 40,
+        "positive": 18
+      },
+      "Lateral Meniscus": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 35,
+        "positive": 23
+      },
+      "Lateral OA": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 47,
+        "positive": 11
+      },
+      "MCL": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 49,
+        "positive": 9
+      },
+      "Medial Meniscus": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 32,
+        "positive": 26
+      },
+      "Medial OA": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 43,
+        "positive": 15
+      },
+      "PF OA": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 37,
+        "positive": 21
+      },
+      "Synovitis": {
+        "known": 58,
+        "missing": 4349,
+        "negative": 31,
+        "positive": 27
+      }
+    },
+    "row_count": 4407,
+    "rowwise_completeness": {
+      "all_targets_known": 58,
+      "all_targets_missing": 4349,
+      "known_target_count_histogram": {
+        "0": 4349,
+        "12": 58
+      },
+      "partially_known": 0,
+      "status": "verified"
+    }
+  },
+  "source_provenance": {
+    "git_commit": "5bc4b7d59c19b1685f5e699db60146fe3df9bbd2",
+    "git_dirty": true,
+    "jupytext_source_sha256": "b6aac2d8954b5da1a8ac9d8b91a8c28782b79186ee659876c13f1fbd0dc8501b",
+    "package_archive_sha256": "62e2ed9e42ad51fa4e43caecf7d13b4d8ba9bedf0b63031b6cc7841bb78438e1"
+  }
+}

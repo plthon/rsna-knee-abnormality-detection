@@ -52,6 +52,7 @@ class _KernelMetadata:
     title: str
     code_file: str
     competition_slug: str = "rsna-knee-abnormality-detection"
+    kernel_sources: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, Any]:
         owner_and_slug = self.kernel_id.split("/", 1)
@@ -80,7 +81,7 @@ class _KernelMetadata:
             "enable_tpu": "false",
             "id": self.kernel_id,
             "is_private": "true",
-            "kernel_sources": [],
+            "kernel_sources": list(self.kernel_sources),
             "kernel_type": "notebook",
             "language": "python",
             "machine_shape": "",
@@ -104,6 +105,12 @@ _SUBMISSION_METADATA = _KernelMetadata(
     title="RSNA Knee Constant Baseline",
     code_file="constant_baseline_submission.ipynb",
 )
+_GOLD_AUDIT_METADATA = _KernelMetadata(
+    kernel_id="plthon/rsna-knee-gold-supervision-audit",
+    title="RSNA Knee Gold Supervision Audit",
+    code_file="gold_supervision_audit.ipynb",
+    kernel_sources=("plthon/rsna-knee-data-index",),
+)
 _PUBLIC_NOTEBOOK_METADATA = _KernelMetadata(
     kernel_id="plthon/rsna-knee-mri-correct-dicom-ordering-sampling",
     title="RSNA Knee MRI | Correct DICOM Ordering & Sampling",
@@ -121,6 +128,7 @@ class KaggleSourceBundle:
 type InspectionBundle = KaggleSourceBundle
 type IndexBundle = KaggleSourceBundle
 type SubmissionBundle = KaggleSourceBundle
+type GoldAuditBundle = KaggleSourceBundle
 type PublicNotebookBundle = KaggleSourceBundle
 
 
@@ -175,6 +183,41 @@ def build_submission_bundle(project_root: Path, output_root: Path) -> Submission
                 source_path.read_bytes()
             ).hexdigest(),
         },
+    )
+
+
+def build_gold_audit_bundle(project_root: Path, output_root: Path) -> GoldAuditBundle:
+    """Build the private, offline, CPU-only organizer-gold audit notebook."""
+    source_path = project_root / "notebooks" / "gold_supervision_audit.py"
+    git_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return _build_source_bundle(
+        project_root,
+        output_root,
+        source_name="gold_supervision_audit.py",
+        metadata=_GOLD_AUDIT_METADATA.as_json(),
+        replacements={
+            "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+            "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+            "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                source_path.read_bytes()
+            ).hexdigest(),
+        },
+        package_contracts=("data-index.json",),
     )
 
 
@@ -243,6 +286,7 @@ def _build_source_bundle(
     source_name: str,
     metadata: dict[str, Any],
     replacements: Mapping[str, str] | None = None,
+    package_contracts: tuple[str, ...] = (),
 ) -> KaggleSourceBundle:
     source_path = project_root / "notebooks" / source_name
     package_root = project_root / "src" / "rsna_knee"
@@ -256,7 +300,7 @@ def _build_source_bundle(
         raise ValueError(
             "Notebook source must contain exactly one package archive marker"
         )
-    archive = _package_archive(package_root)
+    archive = _package_archive(package_root, additional_contracts=package_contracts)
     rendered_source = source.replace(
         _PACKAGE_MARKER, base64.b64encode(archive).decode("ascii")
     )
@@ -319,6 +363,21 @@ def push_submission_bundle(
     )
 
 
+def push_gold_audit_bundle(
+    bundle_root: Path,
+    *,
+    approved: bool = False,
+    runner: CommandRunner | None = None,
+) -> CompletedProcess[str]:
+    """Execute the gold audit only after explicit remote CPU approval."""
+    return _push_source_bundle(
+        bundle_root,
+        metadata=_GOLD_AUDIT_METADATA.as_json(),
+        approved=approved,
+        runner=runner,
+    )
+
+
 def push_public_notebook_bundle(
     bundle_root: Path,
     *,
@@ -358,29 +417,31 @@ def _run_command(command: list[str]) -> CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True)
 
 
-def _package_archive(package_root: Path) -> bytes:
+def _package_archive(
+    package_root: Path, *, additional_contracts: tuple[str, ...] = ()
+) -> bytes:
     archive_buffer = BytesIO()
     with zipfile.ZipFile(
         archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED
     ) as archive:
         for source_path in sorted(package_root.rglob("*.py")):
             relative_path = source_path.relative_to(package_root.parent).as_posix()
-            info = zipfile.ZipInfo(relative_path, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
-            archive.writestr(info, source_path.read_bytes())
-        contract_path = package_root.parents[1] / "contracts" / "competition.json"
-        if not contract_path.is_file():
-            raise FileNotFoundError(
-                f"Missing canonical competition contract: {contract_path}"
-            )
-        info = zipfile.ZipInfo(
-            "rsna_knee/competition.json", date_time=(1980, 1, 1, 0, 0, 0)
-        )
-        info.compress_type = zipfile.ZIP_DEFLATED
-        info.external_attr = 0o644 << 16
-        archive.writestr(info, contract_path.read_bytes())
+            _write_archive_entry(archive, relative_path, source_path)
+        for contract_name in ("competition.json", *additional_contracts):
+            contract_path = package_root.parents[1] / "contracts" / contract_name
+            if not contract_path.is_file():
+                raise FileNotFoundError(f"Missing package contract: {contract_path}")
+            _write_archive_entry(archive, f"rsna_knee/{contract_name}", contract_path)
     return archive_buffer.getvalue()
+
+
+def _write_archive_entry(
+    archive: zipfile.ZipFile, archive_name: str, source_path: Path
+) -> None:
+    info = zipfile.ZipInfo(archive_name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    archive.writestr(info, source_path.read_bytes())
 
 
 def _percent_source_to_notebook(source: str) -> dict[str, Any]:

@@ -11,6 +11,10 @@ summary and unresolved facts are documented in
 The completed full-corpus metadata index and representative preprocessing
 evidence are recorded in [`contracts/data-index.json`](contracts/data-index.json)
 and [`docs/data-index-report.md`](docs/data-index-report.md).
+The organizer-gold cohort, smoke-sufficiency decision, and frozen evaluation
+witness are recorded in
+[`contracts/gold-supervision.json`](contracts/gold-supervision.json) and
+[`docs/gold-supervision-report.md`](docs/gold-supervision-report.md).
 The issues #2–#5 review, corrections, and proceed recommendation are recorded in
 [`docs/foundation-hardening-report.md`](docs/foundation-hardening-report.md).
 
@@ -176,4 +180,39 @@ gate:
 
 ```bash
 uv run python scripts/push_submission_notebook.py --approve-remote
+```
+
+## Organizer-gold supervision audit
+
+Build the private, CPU-only issue #7 audit without contacting Kaggle:
+
+```bash
+uv run python scripts/build_gold_audit_notebook.py
+```
+
+The ignored `build/kaggle/gold-supervision-audit/` bundle attaches the accepted
+private `plthon/rsna-knee-data-index` kernel output and the competition mount.
+It verifies the accepted study-index hashes, audits `train.csv` without
+processing or exporting report text and without reading DICOM pixels, freezes
+the canonical all-eligible organizer-gold cohort, and performs a complete
+deterministic search for one PatientID-disjoint train/holdout eligibility
+witness.
+
+Row-level membership, labels, PatientIDs, exclusions, and assignments remain in
+the private Kaggle output. The summary contains only aggregate counts, metadata,
+structured findings, and cryptographic digests. Pushing starts the remote CPU
+run and remains behind explicit approval:
+
+```bash
+uv run python scripts/push_gold_audit_notebook.py --approve-remote
+```
+
+After downloading the completed private artifact, verify it and export only its
+public-safe aggregate contract:
+
+```bash
+uv run python scripts/verify_gold_audit_artifact.py \
+  path/to/rsna-knee-gold-audit-v1
+uv run python scripts/export_gold_audit_contract.py \
+  path/to/rsna-knee-gold-audit-v1
 ```
