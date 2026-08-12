@@ -23,6 +23,10 @@ The verified one-epoch GPU smoke result, complete checkpoint evidence, and
 submission reload proof are recorded in
 [`contracts/gold-training.json`](contracts/gold-training.json) and
 [`docs/gold-training-report.md`](docs/gold-training-report.md).
+The first leakage-safe organizer-gold holdout baseline, PatientID bootstrap
+uncertainty, and evidence-adequacy decision for issue #11 are recorded in
+[`contracts/gold-baseline.json`](contracts/gold-baseline.json) and
+[`docs/gold-baseline-report.md`](docs/gold-baseline-report.md).
 The issues #2–#5 review, corrections, and proceed recommendation are recorded in
 [`docs/foundation-hardening-report.md`](docs/foundation-hardening-report.md).
 

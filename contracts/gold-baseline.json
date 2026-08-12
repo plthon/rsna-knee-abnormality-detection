@@ -1,0 +1,654 @@
+{
+  "adequacy_for_issue_11": {
+    "claims_general_statistical_sufficiency": false,
+    "decision": "inadequate",
+    "leaderboard_evidence_used": false,
+    "purpose": "motivate and evaluate exactly one model change in issue #11",
+    "rationale": "The frozen holdout contains only 4 PatientIDs and 4 studies; several targets have only one example of a class. Under the predeclared PatientID bootstrap, 90.6% of macro-AUC replicates are undefined and the defined-replicate percentile interval is {'lower': 0.611111111111111, 'upper': 0.611111111111111}. This evidence is too fragile to attribute a measured failure to the baseline or to evaluate one model change. The decision is limited to issue #11 and does not assert a general support or interval-width threshold.",
+    "roadmap_effect": "issue #11 must stop for explicit roadmap realignment",
+    "uses_support_or_interval_threshold": false
+  },
+  "artifact_type": "rsna_knee_gold_holdout_baseline",
+  "checkpoints": {
+    "best": {
+      "epoch": 9,
+      "path": "best-checkpoint.pt",
+      "selection_metric": "official_macro_auc",
+      "selection_value": 0.611111111111111,
+      "sha256": "4bac5d264cd7900fc06b6dc354ea89114ce5d9665836f4b164632f007163b2a0",
+      "size_bytes": 134350530
+    },
+    "best_and_last_resumable": true,
+    "best_reloaded_for_reported_predictions": true,
+    "last": {
+      "epoch": 10,
+      "path": "last-checkpoint.pt",
+      "sha256": "20890ff267fab7b026582999b0231efc85f9a62b2c79566f2c1460fa8e3342fb",
+      "size_bytes": 134350530
+    },
+    "reload_prediction_absolute_tolerance": 1e-06,
+    "reload_prediction_maximum_absolute_difference": 0.0,
+    "reload_predictions_within_tolerance": true,
+    "retained_count": 2,
+    "retention_policy": "best and last resumable checkpoints only"
+  },
+  "configuration": {
+    "bootstrap": {
+      "confidence_level": 0.95,
+      "method_version": "patient-id-nonparametric-bootstrap-v1",
+      "replicate_count": 10000,
+      "seed": 20260812
+    },
+    "preprocessing": {
+      "image_size": 224,
+      "lower_percentile": 1.0,
+      "slice_count": 8,
+      "upper_percentile": 99.0
+    },
+    "schema_version": 1,
+    "training": {
+      "architecture": "torchvision.models.resnet18",
+      "batch_size": 1,
+      "epochs": 10,
+      "learning_rate": 0.0001,
+      "mixed_precision": true,
+      "seed": 20260812,
+      "weight_decay": 0.0001,
+      "weight_identity": "ResNet18_Weights.IMAGENET1K_V1"
+    },
+    "validation": {
+      "reload_absolute_tolerance": 1e-06
+    }
+  },
+  "data_loading": {
+    "cache_or_embedding_recommendation": {
+      "decision": "not_recommended",
+      "rationale": "This single run measures decoding but does not measure reuse benefit or the cost and size of a cache; no material benefit is therefore established. This baseline creates neither decoded-pixel nor embedding caches."
+    },
+    "decode_share_of_measured_epoch_training": 0.8350991547068118,
+    "training_decode_seconds": 241.90116643200088,
+    "training_forward_backward_seconds": 45.71921133800265,
+    "validation_decode_seconds_after_best_reload": 1.1734366409996255,
+    "validation_forward_seconds_after_best_reload": 0.10461911399988821
+  },
+  "duration_probe": {
+    "approved_gpu": true,
+    "estimate_method": "linear study-count scaling of the comparable #8 one-epoch smoke run",
+    "estimated_complete_epoch_seconds": 54.4971066808966,
+    "gpu": "NvidiaTeslaT4",
+    "kernel_id": "plthon/rsna-knee-gold-model-smoke",
+    "kernel_version": 2,
+    "kind": "approved one-epoch smoke run completed before the issue #9 run",
+    "reviewed_before_predictions": true,
+    "source_contract": "gold-training.json",
+    "source_contract_sha256": "10d8e7be3c3c0da497eefd109dd8f4611d8c1d06c604aa373fb571fd008cf3a0",
+    "source_epoch_duration_seconds": 58.533929398000055,
+    "source_epoch_study_count": 58,
+    "source_issue": 8,
+    "source_peak_cuda_memory_bytes": 1106189312,
+    "source_training_slices_per_second": 45.92208361278821,
+    "target_train_study_count": 54
+  },
+  "evaluation": {
+    "bootstrap": {
+      "confidence_level": 0.95,
+      "interval": "two-sided percentile interval over defined replicates",
+      "method_version": "patient-id-nonparametric-bootstrap-v1",
+      "quantile_method": "linear",
+      "replicate_count": 10000,
+      "sampling": "sample the frozen holdout PatientIDs with replacement using the original distinct-PatientID count; include every study for each draw",
+      "sampling_unit": "PatientID",
+      "seed": 20260812,
+      "uncertainty": {
+        "official_macro_auc": {
+          "interval": {
+            "lower": 0.611111111111111,
+            "upper": 0.611111111111111
+          },
+          "undefined_replicate_count": 9065,
+          "undefined_replicate_rate": 0.9065,
+          "valid_replicate_count": 935,
+          "valid_replicate_rate": 0.0935
+        },
+        "per_target": {
+          "ACL": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 3226,
+            "undefined_replicate_rate": 0.3226,
+            "valid_replicate_count": 6774,
+            "valid_replicate_rate": 0.6774
+          },
+          "Baker's": {
+            "interval": {
+              "lower": 1.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 3237,
+            "undefined_replicate_rate": 0.3237,
+            "valid_replicate_count": 6763,
+            "valid_replicate_rate": 0.6763
+          },
+          "Contusion": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 1233,
+            "undefined_replicate_rate": 0.1233,
+            "valid_replicate_count": 8767,
+            "valid_replicate_rate": 0.8767
+          },
+          "Effusion": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 1268,
+            "undefined_replicate_rate": 0.1268,
+            "valid_replicate_count": 8732,
+            "valid_replicate_rate": 0.8732
+          },
+          "Fracture": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 0.0
+            },
+            "undefined_replicate_count": 3189,
+            "undefined_replicate_rate": 0.3189,
+            "valid_replicate_count": 6811,
+            "valid_replicate_rate": 0.6811
+          },
+          "Lateral Meniscus": {
+            "interval": {
+              "lower": 1.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 3237,
+            "undefined_replicate_rate": 0.3237,
+            "valid_replicate_count": 6763,
+            "valid_replicate_rate": 0.6763
+          },
+          "Lateral OA": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 3237,
+            "undefined_replicate_rate": 0.3237,
+            "valid_replicate_count": 6763,
+            "valid_replicate_rate": 0.6763
+          },
+          "MCL": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 0.0
+            },
+            "undefined_replicate_count": 3189,
+            "undefined_replicate_rate": 0.3189,
+            "valid_replicate_count": 6811,
+            "valid_replicate_rate": 0.6811
+          },
+          "Medial Meniscus": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 0.0
+            },
+            "undefined_replicate_count": 1233,
+            "undefined_replicate_rate": 0.1233,
+            "valid_replicate_count": 8767,
+            "valid_replicate_rate": 0.8767
+          },
+          "Medial OA": {
+            "interval": {
+              "lower": 0.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 1233,
+            "undefined_replicate_rate": 0.1233,
+            "valid_replicate_count": 8767,
+            "valid_replicate_rate": 0.8767
+          },
+          "PF OA": {
+            "interval": {
+              "lower": 1.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 3168,
+            "undefined_replicate_rate": 0.3168,
+            "valid_replicate_count": 6832,
+            "valid_replicate_rate": 0.6832
+          },
+          "Synovitis": {
+            "interval": {
+              "lower": 1.0,
+              "upper": 1.0
+            },
+            "undefined_replicate_count": 1268,
+            "undefined_replicate_rate": 0.1268,
+            "valid_replicate_count": 8732,
+            "valid_replicate_rate": 0.8732
+          }
+        }
+      },
+      "undefined_metric_policy": {
+        "default_scores_assigned": false,
+        "defined_target_only_macro_average": false,
+        "macro_auc": "undefined when any required target AUC is undefined",
+        "target_auc": "undefined when a replicate lacks either organizer-gold class"
+      }
+    },
+    "metric": {
+      "aggregation": "unweighted_mean_across_all_required_targets",
+      "name": "macro_averaged_roc_auc",
+      "point_estimate": {
+        "official_macro_auc": 0.611111111111111,
+        "per_target": {
+          "ACL": {
+            "known": 4,
+            "missing": 0,
+            "negative": 1,
+            "positive": 3,
+            "positive_prevalence": 0.75,
+            "roc_auc": 0.6666666666666666
+          },
+          "Baker's": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25,
+            "roc_auc": 1.0
+          },
+          "Contusion": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5,
+            "roc_auc": 0.75
+          },
+          "Effusion": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5,
+            "roc_auc": 0.75
+          },
+          "Fracture": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25,
+            "roc_auc": 0.0
+          },
+          "Lateral Meniscus": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25,
+            "roc_auc": 1.0
+          },
+          "Lateral OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25,
+            "roc_auc": 0.6666666666666666
+          },
+          "MCL": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25,
+            "roc_auc": 0.0
+          },
+          "Medial Meniscus": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5,
+            "roc_auc": 0.0
+          },
+          "Medial OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5,
+            "roc_auc": 0.5
+          },
+          "PF OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 1,
+            "positive": 3,
+            "positive_prevalence": 0.75,
+            "roc_auc": 1.0
+          },
+          "Synovitis": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5,
+            "roc_auc": 1.0
+          }
+        }
+      }
+    }
+  },
+  "exclusions": {
+    "leaderboard_evidence_used": false,
+    "report_derived_labels_used": false
+  },
+  "execution": {
+    "approved_gpu": true,
+    "batch_size": 1,
+    "best_reload_validation_decode_errors": {},
+    "complete_run_seconds": 306.477350806,
+    "cuda_readiness": {
+      "approved": true,
+      "cuda_version": "12.8",
+      "device_name": "Tesla T4",
+      "device_total_memory_bytes": 15636037632,
+      "operation": "(torch.ones(1, device='cuda') * 2).item()",
+      "result": 2.0
+    },
+    "epoch_training_seconds": 289.667598235,
+    "epochs_completed": 10,
+    "gpu": "Tesla T4",
+    "mixed_precision": true,
+    "peak_cuda_memory_bytes": 1101347328,
+    "training_decode_errors": {},
+    "training_decode_seconds": 241.90116643200088,
+    "training_forward_backward_seconds": 45.71921133800265,
+    "training_slices_per_second": 87.27244660443856,
+    "valid_training_slices": 25280
+  },
+  "model": {
+    "architecture": "torchvision.models.resnet18",
+    "image_size": 224,
+    "initialization_artifact_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec",
+    "initialization_identity": "ResNet18_Weights.IMAGENET1K_V1",
+    "initialization_validated_before_model_construction": true,
+    "network_fallback": false,
+    "series_to_study_pooling": "masked mean",
+    "slice_to_series_pooling": "masked mean"
+  },
+  "output": {
+    "predictions_path": "holdout-predictions-private.csv",
+    "predictions_sha256": "71a25a0db14fb7de755a9419df9871237fd5c8b0b0b5d9d5d7ac56c860914277",
+    "predictions_size_bytes": 1559,
+    "registered_artifact_size_bytes": 268732153,
+    "retained_checkpoint_and_prediction_bytes": 268702619
+  },
+  "privacy": {
+    "competition_data_downloaded": false,
+    "private_artifacts_registered_under_ignored_path": true,
+    "row_level_membership_labels_patient_ids_or_predictions_committed": false
+  },
+  "provenance": {
+    "artifact_hashes": {
+      "baseline-report.json": "eff1fc4d4bbc297081b715274a069b5475a2f74c1e87822f6c7e640f24bb175e",
+      "best-checkpoint.pt": "4bac5d264cd7900fc06b6dc354ea89114ce5d9665836f4b164632f007163b2a0",
+      "holdout-predictions-private.csv": "71a25a0db14fb7de755a9419df9871237fd5c8b0b0b5d9d5d7ac56c860914277",
+      "last-checkpoint.pt": "20890ff267fab7b026582999b0231efc85f9a62b2c79566f2c1460fa8e3342fb"
+    },
+    "baseline_config_sha256": "089ec95b4d160607f219a5f81e06af027c7c03329f32051e67ee36128107694c",
+    "git_commit": "b7bc722a037f56b9fbf6407ad50277ebe07f72bc",
+    "jupytext_source_sha256": "3410e74a95e4a6c04e680bafc6ad19ab4056854cdb9949f774a9c704bc581d9b",
+    "package_archive_sha256": "3df26d776def07edd0f1e6a8d0466977af1acfa04571b0f577c04b23ac02bff0",
+    "run_id": "gold-holdout-baseline-339561a2212740aca14420513c30953d",
+    "source_worktree_dirty": true
+  },
+  "runtime": {
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+    "python": "3.12.13",
+    "torch": "2.10.0+cu128",
+    "torchvision": "0.25.0+cu128"
+  },
+  "schema_version": 1,
+  "scope": "Gold-only frozen-holdout evidence for the limited issue #11 one-change decision; no claim of general statistical sufficiency or competitive performance.",
+  "source_contracts": {
+    "competition_contract_sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292",
+    "evaluation_assignment_digest": "8dccc31852a3e26ec677062a289301004fdce29eb64a556bea8922dfd2bb263d",
+    "gold_supervision_contract_sha256": "80747838d3e88696ab66e100ac1271331d5c69f383126aac7cfaa2a4b02cc1d9",
+    "gold_training_contract_sha256": "10d8e7be3c3c0da497eefd109dd8f4611d8c1d06c604aa373fb571fd008cf3a0",
+    "index_manifest_sha256": "85970899c44c1325ab6d1fe8983dc9e472e6a854d8b6bb8fb65506ec91480caa",
+    "initialization_artifact_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec"
+  },
+  "split": {
+    "allocation_rule_version": "patient-disjoint-exact-backtracking-v1",
+    "allocation_seed": 20260812,
+    "assignment_digest": "8dccc31852a3e26ec677062a289301004fdce29eb64a556bea8922dfd2bb263d",
+    "digest_verified_before_training": true,
+    "grouping_entity": "PatientID",
+    "independently_rederived_before_training": true,
+    "partitions": {
+      "holdout": {
+        "patient_count": 4,
+        "per_target": {
+          "ACL": {
+            "known": 4,
+            "missing": 0,
+            "negative": 1,
+            "positive": 3,
+            "positive_prevalence": 0.75
+          },
+          "Baker's": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25
+          },
+          "Contusion": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5
+          },
+          "Effusion": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5
+          },
+          "Fracture": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25
+          },
+          "Lateral Meniscus": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25
+          },
+          "Lateral OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25
+          },
+          "MCL": {
+            "known": 4,
+            "missing": 0,
+            "negative": 3,
+            "positive": 1,
+            "positive_prevalence": 0.25
+          },
+          "Medial Meniscus": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5
+          },
+          "Medial OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5
+          },
+          "PF OA": {
+            "known": 4,
+            "missing": 0,
+            "negative": 1,
+            "positive": 3,
+            "positive_prevalence": 0.75
+          },
+          "Synovitis": {
+            "known": 4,
+            "missing": 0,
+            "negative": 2,
+            "positive": 2,
+            "positive_prevalence": 0.5
+          }
+        },
+        "study_count": 4
+      },
+      "train": {
+        "patient_count": 54,
+        "per_target": {
+          "ACL": {
+            "known": 54,
+            "missing": 0,
+            "negative": 33,
+            "positive": 21,
+            "positive_prevalence": 0.3888888888888889
+          },
+          "Baker's": {
+            "known": 54,
+            "missing": 0,
+            "negative": 43,
+            "positive": 11,
+            "positive_prevalence": 0.2037037037037037
+          },
+          "Contusion": {
+            "known": 54,
+            "missing": 0,
+            "negative": 37,
+            "positive": 17,
+            "positive_prevalence": 0.3148148148148148
+          },
+          "Effusion": {
+            "known": 54,
+            "missing": 0,
+            "negative": 21,
+            "positive": 33,
+            "positive_prevalence": 0.6111111111111112
+          },
+          "Fracture": {
+            "known": 54,
+            "missing": 0,
+            "negative": 37,
+            "positive": 17,
+            "positive_prevalence": 0.3148148148148148
+          },
+          "Lateral Meniscus": {
+            "known": 54,
+            "missing": 0,
+            "negative": 32,
+            "positive": 22,
+            "positive_prevalence": 0.4074074074074074
+          },
+          "Lateral OA": {
+            "known": 54,
+            "missing": 0,
+            "negative": 44,
+            "positive": 10,
+            "positive_prevalence": 0.18518518518518517
+          },
+          "MCL": {
+            "known": 54,
+            "missing": 0,
+            "negative": 46,
+            "positive": 8,
+            "positive_prevalence": 0.14814814814814814
+          },
+          "Medial Meniscus": {
+            "known": 54,
+            "missing": 0,
+            "negative": 30,
+            "positive": 24,
+            "positive_prevalence": 0.4444444444444444
+          },
+          "Medial OA": {
+            "known": 54,
+            "missing": 0,
+            "negative": 41,
+            "positive": 13,
+            "positive_prevalence": 0.24074074074074073
+          },
+          "PF OA": {
+            "known": 54,
+            "missing": 0,
+            "negative": 36,
+            "positive": 18,
+            "positive_prevalence": 0.3333333333333333
+          },
+          "Synovitis": {
+            "known": 54,
+            "missing": 0,
+            "negative": 29,
+            "positive": 25,
+            "positive_prevalence": 0.46296296296296297
+          }
+        },
+        "study_count": 54
+      }
+    },
+    "patient_overlap_count": 0,
+    "report_hash_grouping_applied": false
+  },
+  "supervision": {
+    "canonical_cohort_digest": "ea739a412709b0ac65429ca47f29161614ba384e2e92643301f817712cd6b7bc",
+    "missing_labels_masked_in_loss": true,
+    "report_derived_labels_used": false,
+    "source": "organizer gold train.csv only",
+    "target_order": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ]
+  },
+  "verification": {
+    "adequacy_for_issue_11": "inadequate",
+    "assignment_digest": "8dccc31852a3e26ec677062a289301004fdce29eb64a556bea8922dfd2bb263d",
+    "best_checkpoint_sha256": "4bac5d264cd7900fc06b6dc354ea89114ce5d9665836f4b164632f007163b2a0",
+    "last_checkpoint_sha256": "20890ff267fab7b026582999b0231efc85f9a62b2c79566f2c1460fa8e3342fb",
+    "macro_undefined_bootstrap_replicates": 9065,
+    "macro_valid_bootstrap_replicates": 935,
+    "official_macro_auc": 0.611111111111111,
+    "run_id": "gold-holdout-baseline-339561a2212740aca14420513c30953d",
+    "valid": true
+  }
+}

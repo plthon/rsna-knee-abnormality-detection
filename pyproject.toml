@@ -34,6 +34,7 @@ packages = ["src/rsna_knee"]
 "contracts/data-index.json" = "rsna_knee/data-index.json"
 "contracts/gold-supervision.json" = "rsna_knee/gold-supervision.json"
 "contracts/gold-training.json" = "rsna_knee/gold-training.json"
+"contracts/gold-baseline.json" = "rsna_knee/gold-baseline.json"
 "contracts/resnet18-imagenet1k-v1.json" = "rsna_knee/resnet18-imagenet1k-v1.json"
 
 [tool.pytest.ini_options]
