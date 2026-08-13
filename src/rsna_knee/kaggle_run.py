@@ -57,12 +57,17 @@ class RegisteredRun:
     registry_path: Path
 
 
-def _dataset_metadata(dataset_id: str) -> dict[str, object]:
+def _dataset_metadata(
+    dataset_id: str,
+    *,
+    description: str = "Private offline package for the RSNA Knee synthetic run.",
+    title: str = "RSNA Knee Offline Wheel",
+) -> dict[str, object]:
     return {
-        "description": "Private offline package for the RSNA Knee synthetic run.",
+        "description": description,
         "id": dataset_id,
         "licenses": [{"name": "other"}],
-        "title": "RSNA Knee Offline Wheel",
+        "title": title,
     }
 
 
@@ -95,6 +100,9 @@ def build_wheel_dataset(
     output_root: Path,
     *,
     dataset_id: str,
+    config_path: Path | None = None,
+    description: str = "Private offline package for the RSNA Knee synthetic run.",
+    title: str = "RSNA Knee Offline Wheel",
 ) -> WheelDataset:
     """Build the project wheel and record its local source provenance."""
     _require_resolved_kaggle_id(dataset_id)
@@ -153,16 +161,24 @@ def build_wheel_dataset(
     )
     metadata_path = output_root / "dataset-metadata.json"
     metadata_path.write_text(
-        json.dumps(_dataset_metadata(dataset_id), indent=2, sort_keys=True) + "\n"
+        json.dumps(
+            _dataset_metadata(dataset_id, description=description, title=title),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
     )
-    config_path = output_root / "kaggle-synthetic.toml"
-    shutil.copyfile(project_root / "configs" / config_path.name, config_path)
+    source_config_path = (
+        config_path or project_root / "configs" / "kaggle-synthetic.toml"
+    )
+    copied_config_path = output_root / source_config_path.name
+    shutil.copyfile(source_config_path, copied_config_path)
     return WheelDataset(
         root=output_root,
         wheel_path=wheel_path,
         provenance_path=provenance_path,
         metadata_path=metadata_path,
-        config_path=config_path,
+        config_path=copied_config_path,
     )
 
 

@@ -157,12 +157,19 @@ def run_gold_holdout_baseline(
     run_id: str | None = None,
     source_provenance: Mapping[str, object] | None = None,
     notebook: Mapping[str, object] | None = None,
+    index_artifact_dir: Path | None = None,
 ) -> BaselineOutcome:
     """Consume the prior duration probe and evaluate the complete baseline."""
     cuda_evidence = require_approved_cuda(approved=approved_gpu)
-    inputs = discover_training_inputs(input_root)
+    inputs = discover_training_inputs(input_root, index_artifact_dir=index_artifact_dir)
+    if inputs.index_verification == "rebuilt_verified_artifact":
+        _verify_rebuilt_index_configuration(inputs.index_artifact_dir, config)
     cohort = derive_gold_training_cohort(
-        inputs.competition_root, inputs.index_artifact_dir
+        inputs.competition_root,
+        inputs.index_artifact_dir,
+        allow_verified_rebuilt_index=(
+            inputs.index_verification == "rebuilt_verified_artifact"
+        ),
     )
     partition = derive_frozen_evaluation_partition(cohort, inputs.index_artifact_dir)
     train_studies = partition.train
@@ -502,6 +509,13 @@ def run_gold_holdout_baseline(
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    accepted_index_manifest_sha256 = _text(
+        _mapping(
+            _mapping(_load_json_contract("data-index.json")[0], "run_provenance"),
+            "outputs",
+        ),
+        "manifest_sha256",
+    )
     write_run_manifest(
         manifest_path,
         run_id=run_id or create_run_id("gold-holdout-baseline"),
@@ -515,6 +529,8 @@ def run_gold_holdout_baseline(
             "index_manifest_sha256": _sha256(
                 inputs.index_artifact_dir / "index-manifest.json"
             ),
+            "index_verification": inputs.index_verification,
+            "accepted_index_manifest_sha256": accepted_index_manifest_sha256,
             "train_csv_sha256": _sha256(inputs.competition_root / "train.csv"),
             "initialization_artifact_sha256": initialization.sha256,
             "evaluation_assignment_digest": partition.assignment_digest,
@@ -576,7 +592,11 @@ def verify_baseline_artifact(artifact_dir: Path) -> dict[str, Any]:
         raise ValueError("Baseline manifest configuration differs from report")
     notebook = _mapping(manifest, "notebook")
     if (
-        notebook.get("kind") != "private_approved_kaggle_gpu_gold_holdout_baseline"
+        notebook.get("kind")
+        not in {
+            "private_approved_kaggle_gpu_gold_holdout_baseline",
+            "private_review_kaggle_gpu_publication_reproduction",
+        }
         or notebook.get("internet_enabled") is not False
         or not isinstance(notebook.get("kernel_id"), str)
     ):
@@ -667,6 +687,12 @@ def verify_baseline_artifact(artifact_dir: Path) -> dict[str, Any]:
             raise ValueError("Baseline checkpoint configuration differs from report")
         if checkpoint.get("runtime") != report.get("runtime"):
             raise ValueError("Baseline checkpoint runtime differs from report")
+        if _mapping(checkpoint, "artifact_hashes").get(
+            "index_manifest_sha256"
+        ) != manifest_source.get("index_manifest_sha256"):
+            raise ValueError(
+                "Baseline checkpoint index provenance differs from manifest"
+            )
         code = _mapping(checkpoint, "code")
         if any(
             code.get(key) != manifest_source.get(key)
@@ -760,6 +786,18 @@ def _verify_frozen_sources(
         _mapping(_mapping(data_index, "run_provenance"), "outputs"),
         "manifest_sha256",
     )
+    index_verification = manifest_source.get(
+        "index_verification", "accepted_frozen_artifact"
+    )
+    index_matches_contract = (
+        index_verification == "accepted_frozen_artifact"
+        and manifest_source.get("index_manifest_sha256") == expected_index_manifest
+    ) or (
+        index_verification == "rebuilt_verified_artifact"
+        and _is_sha256(manifest_source.get("index_manifest_sha256"))
+        and manifest_source.get("accepted_index_manifest_sha256")
+        == expected_index_manifest
+    )
     target_order = _mapping(competition, "targets").get("order")
     evaluation = _mapping(supervision, "evaluation_eligibility")
     assignment_digest = _mapping(evaluation, "assignment_digest").get("value")
@@ -768,7 +806,7 @@ def _verify_frozen_sources(
         manifest_source.get("competition_contract_sha256") != competition_sha256
         or manifest_source.get("gold_supervision_contract_sha256") != supervision_sha256
         or manifest_source.get("gold_training_contract_sha256") != prior_training_sha256
-        or manifest_source.get("index_manifest_sha256") != expected_index_manifest
+        or not index_matches_contract
         or manifest_source.get("initialization_artifact_sha256")
         != initialization_artifact.get("sha256")
         or manifest_source.get("evaluation_assignment_digest") != assignment_digest
@@ -791,6 +829,23 @@ def _verify_frozen_sources(
         != prior_training_record.get("training_seconds")
     ):
         raise ValueError("Baseline duration estimate differs from approved #8 evidence")
+
+
+def _verify_rebuilt_index_configuration(
+    artifact_dir: Path, config: BaselineTrainingConfig
+) -> None:
+    manifest = cast(
+        dict[str, Any],
+        json.loads((artifact_dir / "index-manifest.json").read_text()),
+    )
+    preprocessing = _mapping(manifest, "preprocessing")
+    expected = {
+        **asdict(config.preprocessing),
+        "normalization_status": "provisional",
+        "resize": "bilinear_aspect_preserving_center_pad",
+    }
+    if preprocessing != expected:
+        raise ValueError("Rebuilt index preprocessing differs from baseline contract")
 
 
 def export_public_baseline_contract(

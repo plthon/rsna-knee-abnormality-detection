@@ -36,9 +36,15 @@ from .competition_contract import (
 )
 from .config import PreprocessingConfig
 from .gold_audit import GoldAuditInputs, discover_gold_audit_inputs
+from .indexing import verify_index_artifact
 from .preprocessing import preprocess_series_result
 from .provenance import create_run_id, write_run_manifest
-from .submission import discover_submission_inputs, write_submission
+from .submission import (
+    SubmissionArtifacts,
+    SubmissionInputs,
+    discover_submission_inputs,
+    write_submission,
+)
 
 type Label = Literal[0, 1] | None
 
@@ -143,6 +149,7 @@ class TrainingInputs:
     competition_root: Path
     index_artifact_dir: Path
     weight_path: Path
+    index_verification: Literal["accepted_frozen_artifact", "rebuilt_verified_artifact"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +160,27 @@ class TrainingOutcome:
     submission_path: Path
     validation_report_path: Path
     manifest_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointPredictionOutcome:
+    submission_path: Path
+    fallbacks_path: Path
+    validation_report_path: Path
+    inference_seconds: float
+    prediction_count: int
+    fallback_count: int
+    decode_errors: dict[str, int]
+    checkpoint_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SubmissionPrediction:
+    artifacts: SubmissionArtifacts
+    inference_seconds: float
+    prediction_count: int
+    fallback_count: int
+    decode_errors: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,9 +290,24 @@ def load_smoke_training_config(path: Path) -> SmokeTrainingConfig:
     return config
 
 
-def discover_training_inputs(input_root: Path) -> TrainingInputs:
+def discover_training_inputs(
+    input_root: Path,
+    *,
+    index_artifact_dir: Path | None = None,
+) -> TrainingInputs:
     """Discover accepted index, competition data, and one exact offline weight."""
-    audit_inputs: GoldAuditInputs = discover_gold_audit_inputs(input_root)
+    if index_artifact_dir is None:
+        audit_inputs: GoldAuditInputs = discover_gold_audit_inputs(input_root)
+        competition_root = audit_inputs.competition_root
+        resolved_index_artifact_dir = audit_inputs.index_artifact_dir
+        index_verification: Literal[
+            "accepted_frozen_artifact", "rebuilt_verified_artifact"
+        ] = "accepted_frozen_artifact"
+    else:
+        verify_index_artifact(index_artifact_dir)
+        competition_root = discover_submission_inputs(input_root).competition_root
+        resolved_index_artifact_dir = index_artifact_dir
+        index_verification = "rebuilt_verified_artifact"
     contract, _ = _load_json_contract("resnet18-imagenet1k-v1.json", None)
     artifact = _mapping(contract, "artifact")
     expected_name = _text(artifact, "filename")
@@ -282,9 +325,10 @@ def discover_training_inputs(input_root: Path) -> TrainingInputs:
             "Expected exactly one offline ResNet-18 artifact with the approved hash"
         )
     return TrainingInputs(
-        competition_root=audit_inputs.competition_root,
-        index_artifact_dir=audit_inputs.index_artifact_dir,
+        competition_root=competition_root,
+        index_artifact_dir=resolved_index_artifact_dir,
         weight_path=candidates[0],
+        index_verification=index_verification,
     )
 
 
@@ -366,6 +410,7 @@ def derive_gold_training_cohort(
     competition_contract_path: Path | None = None,
     gold_supervision_contract_path: Path | None = None,
     data_index_contract_path: Path | None = None,
+    allow_verified_rebuilt_index: bool = False,
 ) -> GoldTrainingCohort:
     """Independently rebuild #7's all-eligible cohort and reject any digest drift."""
     gold_contract = load_verified_gold_contract(competition_contract_path)
@@ -373,11 +418,14 @@ def derive_gold_training_cohort(
         "gold-supervision.json", gold_supervision_contract_path
     )
     _validate_frozen_supervision(supervision, gold_contract)
-    _verify_accepted_training_index(
-        index_artifact_dir,
-        gold_contract,
-        data_index_contract_path=data_index_contract_path,
-    )
+    if allow_verified_rebuilt_index:
+        verify_index_artifact(index_artifact_dir)
+    else:
+        _verify_accepted_training_index(
+            index_artifact_dir,
+            gold_contract,
+            data_index_contract_path=data_index_contract_path,
+        )
 
     index_rows = _read_csv(index_artifact_dir / "studies.csv", _STUDY_COLUMNS)
     index_by_uid: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -587,7 +635,11 @@ def run_gold_smoke_training(
     if submission_inputs.competition_root != inputs.competition_root:
         raise ValueError("Training and submission competition roots differ")
     cohort = derive_gold_training_cohort(
-        inputs.competition_root, inputs.index_artifact_dir
+        inputs.competition_root,
+        inputs.index_artifact_dir,
+        allow_verified_rebuilt_index=(
+            inputs.index_verification == "rebuilt_verified_artifact"
+        ),
     )
     if cohort.target_names != submission_inputs.contract.target_names:
         raise ValueError("Training head target order differs from submission contract")
@@ -723,45 +775,17 @@ def run_gold_smoke_training(
     if loaded_checkpoint["cohort"]["membership_label_digest"] != cohort.digest:
         raise ValueError("Reloaded checkpoint cohort digest mismatch")
 
-    predictions: dict[str, tuple[float, ...]] = {}
-    failures: dict[str, str] = {}
-    inference_decode_errors: Counter[str] = Counter()
-    reloaded.eval()
-    inference_start = time.perf_counter()
-    with torch.no_grad():
-        for study_uid in submission_inputs.entity_ids:
-            indexed = test_index[study_uid]
-            if not indexed.series:
-                failures[study_uid] = "no_selected_index_series"
-                continue
-            decoded_study = _decode_study(indexed, config.preprocessing, labels=None)
-            inference_decode_errors.update(decoded_study.decode_error_counts)
-            if decoded_study.valid_slice_count == 0:
-                failures[study_uid] = "no_decodable_selected_slices"
-                continue
-            pixels = decoded_study.pixels.unsqueeze(0).to(device)
-            slice_mask = decoded_study.slice_mask.unsqueeze(0).to(device)
-            series_mask = decoded_study.series_mask.unsqueeze(0).to(device)
-            with torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16,
-                enabled=config.mixed_precision,
-            ):
-                probabilities = torch.sigmoid(
-                    reloaded(pixels, slice_mask, series_mask)
-                )[0]
-            predictions[study_uid] = tuple(
-                float(value) for value in probabilities.float().cpu()
-            )
-    torch.cuda.synchronize()
-    inference_seconds = time.perf_counter() - inference_start
-    submission = write_submission(
-        inputs=submission_inputs,
+    prediction = _predict_submission_with_model(
+        model=reloaded,
+        submission_inputs=submission_inputs,
+        indexed=test_index,
         work_root=artifact_dir,
-        predictions=predictions,
-        failures=failures,
-        fallback_probability=priors,
+        preprocessing=config.preprocessing,
+        priors=priors,
+        mixed_precision=config.mixed_precision,
+        device=device,
     )
+    submission = prediction.artifacts
 
     report_path = artifact_dir / "training-report.json"
     report = {
@@ -797,14 +821,14 @@ def run_gold_smoke_training(
             "attempted_cohort_studies": attempted_studies,
             "optimized_cohort_studies": optimized_studies,
             "training_seconds": training_seconds,
-            "inference_seconds": inference_seconds,
+            "inference_seconds": prediction.inference_seconds,
             "valid_training_slices": valid_slices,
             "training_slices_per_second": (
                 valid_slices / training_seconds if training_seconds else None
             ),
             "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(device),
             "training_decode_errors": dict(sorted(decode_errors.items())),
-            "inference_decode_errors": dict(sorted(inference_decode_errors.items())),
+            "inference_decode_errors": prediction.decode_errors,
             "mean_training_loss": sum(epoch_losses) / len(epoch_losses),
             "batch_losses": epoch_losses,
             "smoke_metrics": metrics,
@@ -819,9 +843,9 @@ def run_gold_smoke_training(
         "submission": {
             "path": submission.submission_path.name,
             "validation_path": submission.validation_report_path.name,
-            "fallback_count": len(failures),
+            "fallback_count": prediction.fallback_count,
             "fallback_strategy": "per-target organizer-gold cohort priors",
-            "prediction_count": len(predictions),
+            "prediction_count": prediction.prediction_count,
             "reloaded_checkpoint_used": True,
             "validator_passed": True,
         },
@@ -862,6 +886,140 @@ def run_gold_smoke_training(
         submission_path=submission.submission_path,
         validation_report_path=submission.validation_report_path,
         manifest_path=manifest_path,
+    )
+
+
+def predict_submission_from_checkpoint(
+    *,
+    input_root: Path,
+    work_root: Path,
+    checkpoint_path: Path,
+    approved_gpu: bool = False,
+    index_artifact_dir: Path | None = None,
+) -> CheckpointPredictionOutcome:
+    """Reload a gold checkpoint and predict through the shared submission path."""
+    require_approved_cuda(approved=approved_gpu)
+    inputs = discover_training_inputs(input_root, index_artifact_dir=index_artifact_dir)
+    submission_inputs = discover_submission_inputs(input_root)
+    if submission_inputs.competition_root != inputs.competition_root:
+        raise ValueError("Training and submission competition roots differ")
+
+    device = torch.device("cuda")
+    model, checkpoint = load_training_checkpoint(checkpoint_path, device=device)
+    targets = checkpoint.get("targets")
+    if targets != list(submission_inputs.contract.target_names):
+        raise ValueError("Checkpoint target order differs from submission contract")
+    label_contract = _mapping(checkpoint, "label_contract")
+    if (
+        label_contract.get("report_derived_labels_used") is not False
+        or label_contract.get("unknown_labels_masked") is not True
+    ):
+        raise ValueError("Checkpoint violates the gold-only label contract")
+    artifact_hashes = _mapping(checkpoint, "artifact_hashes")
+    if artifact_hashes.get("index_manifest_sha256") != _sha256(
+        inputs.index_artifact_dir / "index-manifest.json"
+    ):
+        raise ValueError("Checkpoint and accepted index artifact differ")
+
+    preprocessing_raw = _mapping(checkpoint, "preprocessing")
+    preprocessing = PreprocessingConfig(
+        slice_count=_positive_int(preprocessing_raw, "slice_count"),
+        lower_percentile=_number(preprocessing_raw, "lower_percentile"),
+        upper_percentile=_number(preprocessing_raw, "upper_percentile"),
+        image_size=_positive_int(preprocessing_raw, "image_size"),
+    )
+    training = _mapping(_mapping(checkpoint, "configuration"), "training")
+    mixed_precision = _boolean(training, "mixed_precision")
+    raw_priors = checkpoint.get("priors")
+    if not isinstance(raw_priors, list) or len(raw_priors) != len(targets):
+        raise TypeError("Checkpoint fallback priors are malformed")
+    priors = tuple(float(value) for value in raw_priors)
+    if any(not math.isfinite(value) or not 0 <= value <= 1 for value in priors):
+        raise ValueError("Checkpoint fallback priors are outside [0,1]")
+
+    test_index = load_indexed_studies(
+        inputs.competition_root,
+        inputs.index_artifact_dir,
+        submission_inputs.entity_ids,
+        split="test",
+    )
+    prediction = _predict_submission_with_model(
+        model=model,
+        submission_inputs=submission_inputs,
+        indexed=test_index,
+        work_root=work_root,
+        preprocessing=preprocessing,
+        priors=priors,
+        mixed_precision=mixed_precision,
+        device=device,
+    )
+    return CheckpointPredictionOutcome(
+        submission_path=prediction.artifacts.submission_path,
+        fallbacks_path=prediction.artifacts.fallbacks_path,
+        validation_report_path=prediction.artifacts.validation_report_path,
+        inference_seconds=prediction.inference_seconds,
+        prediction_count=prediction.prediction_count,
+        fallback_count=prediction.fallback_count,
+        decode_errors=prediction.decode_errors,
+        checkpoint_sha256=_sha256(checkpoint_path),
+    )
+
+
+def _predict_submission_with_model(
+    *,
+    model: GoldResNet18,
+    submission_inputs: SubmissionInputs,
+    indexed: Mapping[str, IndexedStudy],
+    work_root: Path,
+    preprocessing: PreprocessingConfig,
+    priors: Sequence[float],
+    mixed_precision: bool,
+    device: torch.device,
+) -> _SubmissionPrediction:
+    predictions: dict[str, tuple[float, ...]] = {}
+    failures: dict[str, str] = {}
+    decode_errors: Counter[str] = Counter()
+    model.eval()
+    inference_start = time.perf_counter()
+    with torch.no_grad():
+        for study_uid in submission_inputs.entity_ids:
+            indexed_study = indexed[study_uid]
+            if not indexed_study.series:
+                failures[study_uid] = "no_selected_index_series"
+                continue
+            decoded = _decode_study(indexed_study, preprocessing, labels=None)
+            decode_errors.update(decoded.decode_error_counts)
+            if decoded.valid_slice_count == 0:
+                failures[study_uid] = "no_decodable_selected_slices"
+                continue
+            pixels = decoded.pixels.unsqueeze(0).to(device)
+            slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
+            series_mask = decoded.series_mask.unsqueeze(0).to(device)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=mixed_precision and device.type == "cuda",
+            ):
+                probabilities = torch.sigmoid(model(pixels, slice_mask, series_mask))[0]
+            predictions[study_uid] = tuple(
+                float(value) for value in probabilities.float().cpu()
+            )
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    inference_seconds = time.perf_counter() - inference_start
+    artifacts = write_submission(
+        inputs=submission_inputs,
+        work_root=work_root,
+        predictions=predictions,
+        failures=failures,
+        fallback_probability=priors,
+    )
+    return _SubmissionPrediction(
+        artifacts=artifacts,
+        inference_seconds=inference_seconds,
+        prediction_count=len(predictions),
+        fallback_count=len(failures),
+        decode_errors=dict(sorted(decode_errors.items())),
     )
 
 

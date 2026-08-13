@@ -22,6 +22,7 @@ from rsna_knee.training import (
     load_indexed_studies,
     load_smoke_training_config,
     masked_binary_cross_entropy,
+    predict_submission_from_checkpoint,
     require_approved_cuda,
     run_local_cpu_check,
     verify_initialization_artifact,
@@ -131,6 +132,17 @@ def test_masked_bce_ignores_unknown_targets() -> None:
 def test_gpu_execution_is_refused_before_cuda_is_inspected() -> None:
     with pytest.raises(PermissionError, match="explicit approval"):
         require_approved_cuda(approved=False)
+
+
+def test_checkpoint_prediction_is_refused_without_gpu_approval(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(PermissionError, match="explicit approval"):
+        predict_submission_from_checkpoint(
+            input_root=tmp_path / "input",
+            work_root=tmp_path / "work",
+            checkpoint_path=tmp_path / "checkpoint.pt",
+        )
 
 
 def test_initialization_contract_rejects_byte_drift(tmp_path: Path) -> None:

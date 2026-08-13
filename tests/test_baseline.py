@@ -17,6 +17,8 @@ from rsna_knee.baseline import (
     _duration_estimate_from_issue_8,
     _predict_partition,
     _train_epoch,
+    _verify_frozen_sources,
+    _verify_rebuilt_index_configuration,
     load_baseline_training_config,
 )
 from rsna_knee.holdout import BOOTSTRAP_METHOD_VERSION, PartitionedGoldStudy
@@ -61,6 +63,52 @@ def test_public_gold_contract_still_declares_candidate_witness() -> None:
     assert evaluation["assignment_digest"]["value"] == (
         "8dccc31852a3e26ec677062a289301004fdce29eb64a556bea8922dfd2bb263d"
     )
+
+
+def test_public_reproduction_accepts_a_verified_rebuilt_index_digest() -> None:
+    report = json.loads((PROJECT_ROOT / "contracts/gold-baseline.json").read_text())
+    source = dict(report["source_contracts"])
+    source.update(
+        {
+            "index_manifest_sha256": "1" * 64,
+            "index_verification": "rebuilt_verified_artifact",
+            "accepted_index_manifest_sha256": report["source_contracts"][
+                "index_manifest_sha256"
+            ],
+        }
+    )
+
+    _verify_frozen_sources(source, report)
+
+
+def test_rebuilt_index_must_use_the_frozen_preprocessing_configuration(
+    tmp_path: Path,
+) -> None:
+    config = load_baseline_training_config(
+        PROJECT_ROOT / "configs" / "kaggle-baseline.toml"
+    )
+    manifest_path = tmp_path / "index-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "preprocessing": {
+                    "slice_count": 8,
+                    "lower_percentile": 1.0,
+                    "upper_percentile": 99.0,
+                    "image_size": 224,
+                    "normalization_status": "provisional",
+                    "resize": "bilinear_aspect_preserving_center_pad",
+                }
+            }
+        )
+    )
+    _verify_rebuilt_index_configuration(tmp_path, config)
+
+    manifest = json.loads(manifest_path.read_text())
+    manifest["preprocessing"]["slice_count"] = 7
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="differs from baseline contract"):
+        _verify_rebuilt_index_configuration(tmp_path, config)
 
 
 def test_baseline_consumes_approved_issue_8_epoch_duration_before_predictions() -> None:

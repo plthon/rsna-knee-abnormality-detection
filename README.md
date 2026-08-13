@@ -147,6 +147,44 @@ statistics, code, plots, ordering claims, takeaways, and runtime before making
 any visibility change. Publication is a separate human approval gate and is not
 performed by either script.
 
+## Public gold-only reference baseline notebook
+
+Build the publication bundle locally without Kaggle authentication or
+competition data:
+
+```bash
+uv run --extra training python scripts/build_public_baseline_notebook.py \
+  --approve-gpu
+```
+
+The ignored `build/kaggle/public-gold-baseline/` directory contains a tested
+pure-Python project wheel, fixed baseline configuration, and private-by-default
+GPU notebook metadata. The notebook explains the prediction task, patient-level
+split, class balance, DICOM preprocessing, hierarchical ResNet-18 model,
+training recipe, validation result, runtime, and submission checks. It rebuilds
+the DICOM header index inside the temporary execution workspace rather than
+attaching or publishing private row-level data.
+
+The recorded 0.6111 macro AUC is presented as a result from four holdout
+patients, not as a robust benchmark. The uncertainty section explains why 9,065
+of 10,000 patient bootstrap resamples had no valid macro AUC and why this run
+cannot support model comparison. Checkpoints, row-level predictions, and the
+generated submission are removed before the notebook completes.
+
+No build command contacts Kaggle. A private review execution requires both
+remote and GPU approval:
+
+```bash
+uv run --extra training python scripts/push_public_baseline_notebook.py \
+  --approve-remote \
+  --approve-gpu
+```
+
+The push script creates the private wheel Dataset and starts a private,
+internet-disabled T4 notebook. It does not make the Dataset or notebook public.
+Any Kaggle publication or visibility update remains a separate explicit human
+approval action.
+
 ## Real-data index and preprocessing check
 
 Build the private, CPU-only, internet-off indexing notebook without contacting
