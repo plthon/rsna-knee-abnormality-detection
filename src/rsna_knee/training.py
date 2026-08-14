@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 import numpy as np
 import torch
@@ -35,7 +35,6 @@ from .competition_contract import (
     load_verified_submission_contract,
 )
 from .config import PreprocessingConfig
-from .gold_audit import GoldAuditInputs, discover_gold_audit_inputs
 from .indexing import verify_index_artifact
 from .preprocessing import preprocess_series_result
 from .provenance import create_run_id, write_run_manifest
@@ -144,6 +143,19 @@ class IndexedStudy:
     series: tuple[IndexedSeries, ...]
 
 
+class LabeledStudy(Protocol):
+    @property
+    def study_uid(self) -> str: ...
+
+    @property
+    def labels(self) -> Sequence[Label]: ...
+
+
+class PartitionStudy(LabeledStudy, Protocol):
+    @property
+    def patient_id(self) -> str: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingInputs:
     competition_root: Path
@@ -184,7 +196,7 @@ class _SubmissionPrediction:
 
 
 @dataclass(frozen=True, slots=True)
-class _DecodedStudy:
+class DecodedStudy:
     pixels: Tensor
     slice_mask: Tensor
     series_mask: Tensor
@@ -192,6 +204,16 @@ class _DecodedStudy:
     label_mask: Tensor | None
     valid_slice_count: int
     decode_error_counts: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class PartitionPrediction:
+    studies: tuple[PartitionStudy, ...]
+    probabilities: tuple[tuple[float, ...], ...]
+    decode_seconds: float
+    forward_seconds: float
+    valid_slice_count: int
+    decode_errors: dict[str, int]
 
 
 class GoldResNet18(nn.Module):
@@ -296,16 +318,33 @@ def discover_training_inputs(
     index_artifact_dir: Path | None = None,
 ) -> TrainingInputs:
     """Discover accepted index, competition data, and one exact offline weight."""
+    competition_root = discover_submission_inputs(input_root).competition_root
     if index_artifact_dir is None:
-        audit_inputs: GoldAuditInputs = discover_gold_audit_inputs(input_root)
-        competition_root = audit_inputs.competition_root
-        resolved_index_artifact_dir = audit_inputs.index_artifact_dir
+        index_contract, _ = _load_json_contract("data-index.json", None)
+        artifact = _mapping(index_contract, "artifact")
+        studies_record = _mapping(_mapping(artifact, "files"), "studies.csv")
+        outputs = _mapping(_mapping(index_contract, "run_provenance"), "outputs")
+        expected_size = _positive_int(studies_record, "size_bytes")
+        expected_hash = _text(studies_record, "sha256")
+        expected_manifest_hash = _text(outputs, "manifest_sha256")
+        candidates = [
+            path.parent
+            for path in sorted(input_root.rglob("studies.csv"))
+            if path.stat().st_size == expected_size
+            and _sha256(path) == expected_hash
+            and (path.parent / "index-manifest.json").is_file()
+            and _sha256(path.parent / "index-manifest.json") == expected_manifest_hash
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                "Expected exactly one attached index matching the accepted evidence"
+            )
+        resolved_index_artifact_dir = candidates[0]
         index_verification: Literal[
             "accepted_frozen_artifact", "rebuilt_verified_artifact"
         ] = "accepted_frozen_artifact"
     else:
         verify_index_artifact(index_artifact_dir)
-        competition_root = discover_submission_inputs(input_root).competition_root
         resolved_index_artifact_dir = index_artifact_dir
         index_verification = "rebuilt_verified_artifact"
     contract, _ = _load_json_contract("resnet18-imagenet1k-v1.json", None)
@@ -596,6 +635,162 @@ def masked_binary_cross_entropy(
     return losses[known].mean()
 
 
+def train_epoch(
+    *,
+    model: GoldResNet18,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.GradScaler,
+    indexed: Mapping[str, IndexedStudy],
+    studies: Sequence[LabeledStudy],
+    preprocessing: PreprocessingConfig,
+    batch_size: int,
+    seed: int,
+    mixed_precision: bool,
+    device: torch.device,
+    epoch: int,
+    collect_diagnostics: bool = False,
+) -> dict[str, Any]:
+    """Train one partition epoch with the shared decode, mask, and pooling path."""
+    if batch_size <= 0:
+        raise ValueError("Training batch size must be positive")
+    ordered = list(studies)
+    random.Random(seed + epoch).shuffle(ordered)
+    losses: list[float] = []
+    decode_errors: Counter[str] = Counter()
+    decode_seconds = 0.0
+    forward_backward_seconds = 0.0
+    valid_slices = 0
+    attempted = 0
+    optimized = 0
+    optimizer_steps = 0
+    all_logits: list[Tensor] = []
+    all_labels: list[Tensor] = []
+    all_known: list[Tensor] = []
+    start = time.perf_counter()
+    model.train()
+    for start_index in range(0, len(ordered), batch_size):
+        batch = ordered[start_index : start_index + batch_size]
+        decoded: list[DecodedStudy] = []
+        decode_start = time.perf_counter()
+        for study in batch:
+            attempted += 1
+            item = decode_study(
+                indexed[study.study_uid], preprocessing, labels=study.labels
+            )
+            decode_errors.update(item.decode_error_counts)
+            valid_slices += item.valid_slice_count
+            if item.valid_slice_count:
+                decoded.append(item)
+        decode_seconds += time.perf_counter() - decode_start
+        if not decoded:
+            continue
+        pixels, slice_mask, series_mask, labels, known = collate_studies(decoded)
+        pixels = pixels.to(device)
+        slice_mask = slice_mask.to(device)
+        series_mask = series_mask.to(device)
+        labels = labels.to(device)
+        known = known.to(device)
+        compute_start = time.perf_counter()
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.float16,
+            enabled=mixed_precision and device.type == "cuda",
+        ):
+            logits = model(pixels, slice_mask, series_mask)
+            loss = masked_binary_cross_entropy(logits, labels, known)
+        scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
+        scaler.step(optimizer)
+        scaler.update()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        forward_backward_seconds += time.perf_counter() - compute_start
+        optimized += len(decoded)
+        optimizer_steps += 1
+        losses.append(float(loss.detach().cpu()))
+        if collect_diagnostics:
+            all_logits.append(logits.detach().float().cpu())
+            all_labels.append(labels.detach().cpu())
+            all_known.append(known.detach().cpu())
+    training_seconds = time.perf_counter() - start
+    if not losses:
+        raise RuntimeError("No training study completed an optimizer update")
+    record: dict[str, Any] = {
+        "training_seconds": training_seconds,
+        "decode_seconds": decode_seconds,
+        "forward_backward_seconds": forward_backward_seconds,
+        "attempted_study_count": attempted,
+        "optimized_study_count": optimized,
+        "optimizer_step_count": optimizer_steps,
+        "valid_slice_count": valid_slices,
+        "mean_loss": sum(losses) / len(losses),
+        "decode_errors": dict(sorted(decode_errors.items())),
+    }
+    if collect_diagnostics:
+        record.update(
+            {
+                "batch_losses": losses,
+                "logits": torch.cat(all_logits),
+                "labels": torch.cat(all_labels),
+                "known": torch.cat(all_known),
+            }
+        )
+    return record
+
+
+def predict_partition(
+    *,
+    model: GoldResNet18,
+    indexed: Mapping[str, IndexedStudy],
+    studies: Sequence[PartitionStudy],
+    preprocessing: PreprocessingConfig,
+    mixed_precision: bool,
+    device: torch.device,
+) -> PartitionPrediction:
+    """Predict one labeled partition with shared decode and padding semantics."""
+    probabilities: list[tuple[float, ...]] = []
+    successful: list[PartitionStudy] = []
+    decode_errors: Counter[str] = Counter()
+    decode_seconds = 0.0
+    forward_seconds = 0.0
+    valid_slices = 0
+    model.eval()
+    with torch.no_grad():
+        for study in studies:
+            decode_start = time.perf_counter()
+            decoded = decode_study(
+                indexed[study.study_uid], preprocessing, labels=study.labels
+            )
+            decode_seconds += time.perf_counter() - decode_start
+            decode_errors.update(decoded.decode_error_counts)
+            valid_slices += decoded.valid_slice_count
+            if not decoded.valid_slice_count:
+                raise RuntimeError("Prediction study has no decodable selected slices")
+            pixels = decoded.pixels.unsqueeze(0).to(device)
+            slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
+            series_mask = decoded.series_mask.unsqueeze(0).to(device)
+            forward_start = time.perf_counter()
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=mixed_precision and device.type == "cuda",
+            ):
+                output = torch.sigmoid(model(pixels, slice_mask, series_mask))[0]
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            forward_seconds += time.perf_counter() - forward_start
+            probabilities.append(tuple(float(value) for value in output.float().cpu()))
+            successful.append(study)
+    return PartitionPrediction(
+        studies=tuple(successful),
+        probabilities=tuple(probabilities),
+        decode_seconds=decode_seconds,
+        forward_seconds=forward_seconds,
+        valid_slice_count=valid_slices,
+        decode_errors=dict(sorted(decode_errors.items())),
+    )
+
+
 def require_approved_cuda(*, approved: bool) -> dict[str, object]:
     """Refuse GPU access without approval and prove a real CUDA operation."""
     if not approved:
@@ -659,7 +854,7 @@ def run_gold_smoke_training(
         split="test",
     )
 
-    _seed_everything(config.seed)
+    seed_everything(config.seed)
     device = torch.device("cuda")
     torch.cuda.reset_peak_memory_stats(device)
     model, initialization = build_initialized_model(
@@ -675,62 +870,30 @@ def run_gold_smoke_training(
         cohort.per_target[target]["positive"] / cohort.per_target[target]["known"]
         for target in cohort.target_names
     )
-    ordered_studies = list(cohort.studies)
-    random.Random(config.seed).shuffle(ordered_studies)
-    epoch_losses: list[float] = []
-    all_logits: list[Tensor] = []
-    all_labels: list[Tensor] = []
-    all_known: list[Tensor] = []
-    decode_errors: Counter[str] = Counter()
-    attempted_studies = 0
-    optimized_studies = 0
-    valid_slices = 0
-    start = time.perf_counter()
-    model.train()
-    for start_index in range(0, len(ordered_studies), config.batch_size):
-        batch_studies = ordered_studies[start_index : start_index + config.batch_size]
-        decoded: list[_DecodedStudy] = []
-        for gold_study in batch_studies:
-            attempted_studies += 1
-            item = _decode_study(
-                training_index[gold_study.study_uid],
-                config.preprocessing,
-                labels=gold_study.labels,
-            )
-            decode_errors.update(item.decode_error_counts)
-            valid_slices += item.valid_slice_count
-            if item.valid_slice_count > 0:
-                decoded.append(item)
-        if not decoded:
-            continue
-        pixels, slice_mask, series_mask, labels, known = _collate(decoded)
-        pixels = pixels.to(device)
-        slice_mask = slice_mask.to(device)
-        series_mask = series_mask.to(device)
-        labels = labels.to(device)
-        known = known.to(device)
-        optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(
-            device_type="cuda", dtype=torch.float16, enabled=config.mixed_precision
-        ):
-            logits = model(pixels, slice_mask, series_mask)
-            loss = masked_binary_cross_entropy(logits, labels, known)
-        scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
-        scaler.step(optimizer)
-        scaler.update()
-        optimized_studies += len(decoded)
-        epoch_losses.append(float(loss.detach().cpu()))
-        all_logits.append(logits.detach().float().cpu())
-        all_labels.append(labels.detach().cpu())
-        all_known.append(known.detach().cpu())
-    torch.cuda.synchronize()
-    training_seconds = time.perf_counter() - start
-    if optimized_studies == 0 or not epoch_losses:
-        raise RuntimeError("No canonical cohort study completed an optimizer update")
+    training_record = train_epoch(
+        model=model,
+        optimizer=optimizer,
+        scaler=scaler,
+        indexed=training_index,
+        studies=cohort.studies,
+        preprocessing=config.preprocessing,
+        batch_size=config.batch_size,
+        seed=config.seed,
+        mixed_precision=config.mixed_precision,
+        device=device,
+        epoch=0,
+        collect_diagnostics=True,
+    )
+    epoch_losses = cast(list[float], training_record["batch_losses"])
+    decode_errors = cast(dict[str, int], training_record["decode_errors"])
+    attempted_studies = int(training_record["attempted_study_count"])
+    optimized_studies = int(training_record["optimized_study_count"])
+    valid_slices = int(training_record["valid_slice_count"])
+    training_seconds = float(training_record["training_seconds"])
     metrics = _smoke_metrics(
-        torch.cat(all_logits),
-        torch.cat(all_labels),
-        torch.cat(all_known),
+        cast(Tensor, training_record["logits"]),
+        cast(Tensor, training_record["labels"]),
+        cast(Tensor, training_record["known"]),
         cohort.target_names,
     )
 
@@ -739,7 +902,7 @@ def run_gold_smoke_training(
         raise FileExistsError(f"Training artifact already exists: {artifact_dir}")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = artifact_dir / "checkpoint.pt"
-    checkpoint_payload = _checkpoint_payload(
+    checkpoint_payload = build_checkpoint_payload(
         model=model,
         optimizer=optimizer,
         scaler=scaler,
@@ -749,7 +912,7 @@ def run_gold_smoke_training(
         preprocessing=config.preprocessing,
         cohort=cohort,
         initialization=initialization,
-        configuration=config,
+        configuration=_configuration_record(config),
         source_provenance=source_provenance or {},
         artifact_hashes={
             "index_manifest_sha256": _sha256(
@@ -762,7 +925,7 @@ def run_gold_smoke_training(
             ),
         },
     )
-    _save_checkpoint(checkpoint_path, checkpoint_payload)
+    save_checkpoint(checkpoint_path, checkpoint_payload)
 
     del model
     torch.cuda.empty_cache()
@@ -849,7 +1012,7 @@ def run_gold_smoke_training(
             "reloaded_checkpoint_used": True,
             "validator_passed": True,
         },
-        "runtime": _runtime_record(),
+        "runtime": runtime_record(),
     }
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -987,7 +1150,7 @@ def _predict_submission_with_model(
             if not indexed_study.series:
                 failures[study_uid] = "no_selected_index_series"
                 continue
-            decoded = _decode_study(indexed_study, preprocessing, labels=None)
+            decoded = decode_study(indexed_study, preprocessing, labels=None)
             decode_errors.update(decoded.decode_error_counts)
             if decoded.valid_slice_count == 0:
                 failures[study_uid] = "no_decodable_selected_slices"
@@ -1033,7 +1196,7 @@ def run_local_cpu_check(
     """Exercise forward/backward/optimizer/checkpoint/reload/predict on CPU."""
     if not target_names:
         raise ValueError("CPU check requires at least one target")
-    _seed_everything(20260812)
+    seed_everything(20260812)
     model, initialization = build_initialized_model(
         weight_path,
         target_names,
@@ -1081,7 +1244,7 @@ def run_local_cpu_check(
         architecture="torchvision.models.resnet18",
         weight_identity="ResNet18_Weights.IMAGENET1K_V1",
     )
-    payload = _checkpoint_payload(
+    payload = build_checkpoint_payload(
         model=model,
         optimizer=optimizer,
         scaler=scaler,
@@ -1091,11 +1254,11 @@ def run_local_cpu_check(
         preprocessing=preprocessing,
         cohort=cohort,
         initialization=initialization,
-        configuration=config,
+        configuration=_configuration_record(config),
         source_provenance={"kind": "local_synthetic_cpu_check"},
         artifact_hashes={"initialization_artifact_sha256": initialization.sha256},
     )
-    _save_checkpoint(checkpoint_path, payload)
+    save_checkpoint(checkpoint_path, payload)
     reloaded, reloaded_optimizer, reloaded_scaler, reloaded_payload = (
         restore_training_state(checkpoint_path, device=torch.device("cpu"))
     )
@@ -1602,14 +1765,14 @@ def _new_uninitialized_model(target_count: int) -> GoldResNet18:
     return GoldResNet18(backbone, feature_count, target_count)
 
 
-def _decode_study(
+def decode_study(
     indexed: IndexedStudy,
     preprocessing: PreprocessingConfig,
     *,
     labels: Sequence[Label] | None,
-) -> _DecodedStudy:
+) -> DecodedStudy:
     if not indexed.series:
-        return _DecodedStudy(
+        return DecodedStudy(
             pixels=torch.zeros(0, preprocessing.slice_count, 224, 224),
             slice_mask=torch.zeros(0, preprocessing.slice_count, dtype=torch.bool),
             series_mask=torch.zeros(0, dtype=torch.bool),
@@ -1635,7 +1798,7 @@ def _decode_study(
             [0.0 if value is None else float(value) for value in labels]
         )
         label_mask = torch.tensor([value is not None for value in labels])
-    return _DecodedStudy(
+    return DecodedStudy(
         pixels=pixel_tensor,
         slice_mask=mask_tensor,
         series_mask=mask_tensor.any(dim=1),
@@ -1646,8 +1809,8 @@ def _decode_study(
     )
 
 
-def _collate(
-    studies: Sequence[_DecodedStudy],
+def collate_studies(
+    studies: Sequence[DecodedStudy],
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     if not studies or any(item.labels is None for item in studies):
         raise ValueError("Training collation requires labeled studies")
@@ -1669,7 +1832,7 @@ def _collate(
     return pixels, slice_mask, series_mask, labels, known
 
 
-def _checkpoint_payload(
+def build_checkpoint_payload(
     *,
     model: GoldResNet18,
     optimizer: torch.optim.Optimizer,
@@ -1680,7 +1843,7 @@ def _checkpoint_payload(
     preprocessing: PreprocessingConfig,
     cohort: GoldTrainingCohort,
     initialization: InitializationArtifact,
-    configuration: SmokeTrainingConfig,
+    configuration: Mapping[str, object],
     source_provenance: Mapping[str, object],
     artifact_hashes: Mapping[str, str],
 ) -> dict[str, object]:
@@ -1715,9 +1878,9 @@ def _checkpoint_payload(
             "artifact_sha256": initialization.sha256,
             "artifact_size_bytes": initialization.size_bytes,
         },
-        "configuration": _configuration_record(configuration),
+        "configuration": dict(configuration),
         "code": dict(source_provenance),
-        "runtime": _runtime_record(),
+        "runtime": runtime_record(),
         "artifact_hashes": dict(artifact_hashes),
         "rng_state": {
             "python": random.getstate(),
@@ -1730,7 +1893,7 @@ def _checkpoint_payload(
     }
 
 
-def _save_checkpoint(path: Path, payload: Mapping[str, object]) -> None:
+def save_checkpoint(path: Path, payload: Mapping[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(dict(payload), temporary)
     temporary.replace(path)
@@ -1752,7 +1915,7 @@ def _configuration_record(config: SmokeTrainingConfig) -> dict[str, object]:
     }
 
 
-def _runtime_record() -> dict[str, object]:
+def runtime_record() -> dict[str, object]:
     return {
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -1811,7 +1974,7 @@ def _restore_rng_state(state: Mapping[str, Any], *, device: torch.device) -> Non
         torch.cuda.set_rng_state_all([value.cpu() for value in torch_cuda])
 
 
-def _seed_everything(seed: int) -> None:
+def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

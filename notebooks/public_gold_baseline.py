@@ -45,10 +45,12 @@
 import base64
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import cast
 
 notebook_started = time.perf_counter()
 
@@ -88,14 +90,29 @@ subprocess.run(
     check=True,
 )
 
+import rsna_knee
+
+for contract_name in (
+    "data-index.json",
+    "gold-baseline.json",
+    "gold-supervision.json",
+    "gold-training.json",
+    "resnet18-imagenet1k-v1.json",
+):
+    contract_source = wheel_path.parent / contract_name
+    if not contract_source.is_file():
+        raise FileNotFoundError(f"Missing attached runtime contract: {contract_name}")
+    shutil.copy2(contract_source, Path(rsna_knee.__file__).with_name(contract_name))
+
 # %%
-import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+import matplotlib.pyplot as plt  # type: ignore[import-not-found]
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import torch
 import torch.nn.functional as F
 from IPython.display import display  # type: ignore[import-not-found]
 from pydicom import dcmread
+from pydicom.dataset import Dataset
 
 from rsna_knee import (
     PreprocessingConfig,
@@ -188,7 +205,7 @@ study_rows = (
 )
 
 series_files: dict[str, list[Path]] = {}
-series_inventory = []
+series_inventory: list[dict[str, object]] = []
 patient_ids: set[str] = set()
 for row in study_rows.itertuples(index=False):
     series_uid = str(row.SeriesInstanceUID)
@@ -234,7 +251,7 @@ display(series_inventory_frame)
 # %%
 print(f"train_series/{study_uid}/")
 for record in series_inventory:
-    series_uid = record["SeriesInstanceUID"]
+    series_uid = str(record["SeriesInstanceUID"])
     paths = series_files[series_uid]
     print(f"  {series_uid}/")
     print(f"    {paths[0].name} ... {paths[-1].name}  ({len(paths)} DICOM files)")
@@ -257,7 +274,7 @@ for record in series_inventory:
 
 
 # %%
-def slice_geometry(dataset):
+def slice_geometry(dataset: Dataset) -> tuple[np.ndarray, float] | None:
     try:
         orientation = np.asarray(dataset.ImageOrientationPatient, dtype=np.float64)
         position = np.asarray(dataset.ImagePositionPatient, dtype=np.float64)
@@ -307,15 +324,21 @@ def order_series(paths: list[Path]) -> tuple[list[Path], str]:
                 "ImagePositionPatient geometry",
             )
 
-    instances = [getattr(dataset, "InstanceNumber", None) for _, dataset in headers]
+    instances: list[object | None] = [
+        getattr(dataset, "InstanceNumber", None) for _, dataset in headers
+    ]
     if all(value is not None for value in instances) and len(set(instances)) == len(
         instances
     ):
+        numeric_instances = [
+            int(cast(str | int, value)) for value in instances if value is not None
+        ]
         return (
             [
                 path
                 for _, path in sorted(
-                    zip(instances, paths, strict=True), key=lambda item: int(item[0])
+                    zip(numeric_instances, paths, strict=True),
+                    key=lambda item: item[0],
                 )
             ],
             "InstanceNumber fallback",
@@ -482,8 +505,10 @@ example_path = ordered_paths[source_index]
 example_dataset = dcmread(example_path)
 stored_pixels = np.asarray(example_dataset.pixel_array)
 decoded_pixels = decode_pixels(example_path)
-lower = float(processed_series.lower_value)
-upper = float(processed_series.upper_value)
+lower = processed_series.lower_value
+upper = processed_series.upper_value
+if lower is None or upper is None:
+    raise ValueError("Preprocessing did not produce percentile bounds")
 scaled_pixels = (
     np.zeros_like(decoded_pixels, dtype=np.float32)
     if lower == upper
@@ -775,7 +800,7 @@ production_loss = masked_binary_cross_entropy(
     example_logits, example_targets, known_mask
 )
 assert torch.allclose(teaching_loss, production_loss)
-teaching_loss.backward()
+teaching_loss.backward()  # type: ignore[no-untyped-call]
 
 display(
     pd.DataFrame(
@@ -789,9 +814,11 @@ display(
     )
 )
 print(f"Mean BCE over known targets: {teaching_loss.item():.4f}")
+gradient = example_logits.grad
+assert gradient is not None
 print(
     "Gradient for the two unknown targets:",
-    example_logits.grad[0, -2:].tolist(),
+    gradient[0, -2:].tolist(),
 )
 
 # %% [markdown]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import random
 import time
 import tomllib
 from collections import Counter
@@ -23,7 +22,6 @@ from .holdout import (
     BOOTSTRAP_METHOD_VERSION,
     GoldEvaluationPartition,
     Label,
-    PartitionedGoldStudy,
     PatientBootstrapConfig,
     counts_with_prevalence,
     derive_frozen_evaluation_partition,
@@ -34,22 +32,21 @@ from .provenance import create_run_id, write_run_manifest
 from .training import (
     GoldResNet18,
     GoldTrainingCohort,
-    IndexedStudy,
     InitializationArtifact,
+    PartitionPrediction,
     TrainingInputs,
-    _checkpoint_payload,
-    _collate,
-    _decode_study,
-    _runtime_record,
-    _save_checkpoint,
-    _seed_everything,
+    build_checkpoint_payload,
     build_initialized_model,
     derive_gold_training_cohort,
     discover_training_inputs,
     load_indexed_studies,
-    masked_binary_cross_entropy,
+    predict_partition,
     require_approved_cuda,
     restore_training_state,
+    runtime_record,
+    save_checkpoint,
+    seed_everything,
+    train_epoch,
 )
 
 _ARTIFACT_DIRECTORY = "rsna-knee-gold-baseline-v1"
@@ -85,16 +82,6 @@ class BaselineOutcome:
     predictions_path: Path
     report_path: Path
     manifest_path: Path
-
-
-@dataclass(frozen=True, slots=True)
-class _PredictionSet:
-    studies: tuple[PartitionedGoldStudy, ...]
-    probabilities: tuple[tuple[float, ...], ...]
-    decode_seconds: float
-    forward_seconds: float
-    valid_slice_count: int
-    decode_errors: dict[str, int]
 
 
 def load_baseline_training_config(path: Path) -> BaselineTrainingConfig:
@@ -197,7 +184,7 @@ def run_gold_holdout_baseline(
         config=config,
     )
 
-    _seed_everything(config.seed)
+    seed_everything(config.seed)
     torch.cuda.reset_peak_memory_stats(device)
     model, initialization = build_initialized_model(
         inputs.weight_path, cohort.target_names
@@ -229,20 +216,23 @@ def run_gold_holdout_baseline(
     total_training_start = time.perf_counter()
     best_metric = float("-inf")
     best_epoch = 0
-    best_predictions: _PredictionSet | None = None
+    best_predictions: PartitionPrediction | None = None
     best_point: dict[str, Any] | None = None
     for epoch in range(1, config.epochs + 1):
-        train_record = _train_epoch(
+        train_record = train_epoch(
             model=model,
             optimizer=optimizer,
             scaler=scaler,
             indexed=indexed,
             studies=train_studies,
-            config=config,
+            preprocessing=config.preprocessing,
+            batch_size=config.batch_size,
+            seed=config.seed,
+            mixed_precision=config.mixed_precision,
             device=device,
             epoch=epoch,
         )
-        validation = _predict_partition(
+        validation = predict_partition(
             model=model,
             indexed=indexed,
             studies=holdout_studies,
@@ -272,13 +262,13 @@ def run_gold_holdout_baseline(
             inputs=inputs,
             validation_metric=macro,
         )
-        _save_checkpoint(last_checkpoint_path, checkpoint)
+        save_checkpoint(last_checkpoint_path, checkpoint)
         if macro > best_metric:
             best_metric = macro
             best_epoch = epoch
             best_predictions = validation
             best_point = point
-            _save_checkpoint(best_checkpoint_path, checkpoint)
+            save_checkpoint(best_checkpoint_path, checkpoint)
         epoch_records.append(
             {
                 "epoch": epoch,
@@ -312,7 +302,7 @@ def run_gold_holdout_baseline(
     ):
         raise ValueError("Reloaded best checkpoint split digest mismatch")
     del reloaded_optimizer, reloaded_scaler
-    reloaded_predictions = _predict_partition(
+    reloaded_predictions = predict_partition(
         model=reloaded,
         indexed=indexed,
         studies=holdout_studies,
@@ -500,7 +490,7 @@ def run_gold_holdout_baseline(
             ),
         },
         "adequacy_for_issue_11": _adequacy_decision(partition, evaluation),
-        "runtime": _runtime_record(),
+        "runtime": runtime_record(),
         "exclusions": {
             "leaderboard_evidence_used": False,
             "report_derived_labels_used": False,
@@ -981,141 +971,6 @@ def _duration_estimate_from_issue_8(
     }
 
 
-def _train_epoch(
-    *,
-    model: GoldResNet18,
-    optimizer: torch.optim.Optimizer,
-    scaler: torch.GradScaler,
-    indexed: Mapping[str, IndexedStudy],
-    studies: Sequence[PartitionedGoldStudy],
-    config: BaselineTrainingConfig,
-    device: torch.device,
-    epoch: int,
-) -> dict[str, Any]:
-    ordered = list(studies)
-    random.Random(config.seed + epoch).shuffle(ordered)
-    losses: list[float] = []
-    decode_errors: Counter[str] = Counter()
-    decode_seconds = 0.0
-    forward_backward_seconds = 0.0
-    valid_slices = 0
-    attempted = 0
-    optimized = 0
-    optimizer_steps = 0
-    start = time.perf_counter()
-    model.train()
-    for start_index in range(0, len(ordered), config.batch_size):
-        batch = ordered[start_index : start_index + config.batch_size]
-        decoded = []
-        decode_start = time.perf_counter()
-        for study in batch:
-            attempted += 1
-            item = _decode_study(
-                indexed[study.study_uid], config.preprocessing, labels=study.labels
-            )
-            decode_errors.update(item.decode_error_counts)
-            valid_slices += item.valid_slice_count
-            if item.valid_slice_count:
-                decoded.append(item)
-        decode_seconds += time.perf_counter() - decode_start
-        if not decoded:
-            continue
-        pixels, slice_mask, series_mask, labels, known = _collate(decoded)
-        pixels = pixels.to(device)
-        slice_mask = slice_mask.to(device)
-        series_mask = series_mask.to(device)
-        labels = labels.to(device)
-        known = known.to(device)
-        compute_start = time.perf_counter()
-        optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(
-            device_type=device.type,
-            dtype=torch.float16,
-            enabled=config.mixed_precision and device.type == "cuda",
-        ):
-            logits = model(pixels, slice_mask, series_mask)
-            loss = masked_binary_cross_entropy(logits, labels, known)
-        scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
-        scaler.step(optimizer)
-        scaler.update()
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        forward_backward_seconds += time.perf_counter() - compute_start
-        optimized += len(decoded)
-        optimizer_steps += 1
-        losses.append(float(loss.detach().cpu()))
-    training_seconds = time.perf_counter() - start
-    if not losses:
-        raise RuntimeError("No training study completed an optimizer update")
-    return {
-        "training_seconds": training_seconds,
-        "decode_seconds": decode_seconds,
-        "forward_backward_seconds": forward_backward_seconds,
-        "attempted_study_count": attempted,
-        "optimized_study_count": optimized,
-        "optimizer_step_count": optimizer_steps,
-        "valid_slice_count": valid_slices,
-        "mean_loss": sum(losses) / len(losses),
-        "decode_errors": dict(sorted(decode_errors.items())),
-    }
-
-
-def _predict_partition(
-    *,
-    model: GoldResNet18,
-    indexed: Mapping[str, IndexedStudy],
-    studies: Sequence[PartitionedGoldStudy],
-    preprocessing: PreprocessingConfig,
-    mixed_precision: bool,
-    device: torch.device,
-) -> _PredictionSet:
-    probabilities: list[tuple[float, ...]] = []
-    successful: list[PartitionedGoldStudy] = []
-    decode_errors: Counter[str] = Counter()
-    decode_seconds = 0.0
-    forward_seconds = 0.0
-    valid_slices = 0
-    model.eval()
-    with torch.no_grad():
-        for study in studies:
-            decode_start = time.perf_counter()
-            decoded = _decode_study(
-                indexed[study.study_uid], preprocessing, labels=study.labels
-            )
-            decode_seconds += time.perf_counter() - decode_start
-            decode_errors.update(decoded.decode_error_counts)
-            valid_slices += decoded.valid_slice_count
-            if not decoded.valid_slice_count:
-                raise RuntimeError(
-                    "Frozen holdout study has no decodable selected slices"
-                )
-            pixels = decoded.pixels.unsqueeze(0).to(device)
-            slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
-            series_mask = decoded.series_mask.unsqueeze(0).to(device)
-            forward_start = time.perf_counter()
-            with torch.autocast(
-                device_type=device.type,
-                dtype=torch.float16,
-                enabled=mixed_precision and device.type == "cuda",
-            ):
-                output = torch.sigmoid(model(pixels, slice_mask, series_mask))[0]
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            forward_seconds += time.perf_counter() - forward_start
-            probabilities.append(tuple(float(value) for value in output.float().cpu()))
-            successful.append(study)
-    if len(successful) != len(studies):
-        raise RuntimeError("Frozen holdout predictions are incomplete")
-    return _PredictionSet(
-        studies=tuple(successful),
-        probabilities=tuple(probabilities),
-        decode_seconds=decode_seconds,
-        forward_seconds=forward_seconds,
-        valid_slice_count=valid_slices,
-        decode_errors=dict(sorted(decode_errors.items())),
-    )
-
-
 def _baseline_checkpoint_payload(
     *,
     model: GoldResNet18,
@@ -1131,7 +986,7 @@ def _baseline_checkpoint_payload(
     inputs: TrainingInputs,
     validation_metric: float,
 ) -> dict[str, object]:
-    payload = _checkpoint_payload(
+    payload = build_checkpoint_payload(
         model=model,
         optimizer=optimizer,
         scaler=scaler,
@@ -1141,7 +996,7 @@ def _baseline_checkpoint_payload(
         preprocessing=config.preprocessing,
         cohort=cohort,
         initialization=initialization,
-        configuration=cast(Any, config),
+        configuration=_configuration_record(config),
         source_provenance=source_provenance,
         artifact_hashes={
             "index_manifest_sha256": _sha256(
@@ -1175,7 +1030,7 @@ def _baseline_checkpoint_payload(
 
 
 def _write_private_predictions(
-    path: Path, predictions: _PredictionSet, targets: Sequence[str]
+    path: Path, predictions: PartitionPrediction, targets: Sequence[str]
 ) -> None:
     columns = [
         "StudyInstanceUID",

@@ -12,17 +12,21 @@ pytest.importorskip("torchvision")
 import torch
 from torch import Tensor, nn
 
-import rsna_knee.baseline as baseline_module
+import rsna_knee.training as training_module
 from rsna_knee.baseline import (
     _duration_estimate_from_issue_8,
-    _predict_partition,
-    _train_epoch,
     _verify_frozen_sources,
     _verify_rebuilt_index_configuration,
     load_baseline_training_config,
 )
 from rsna_knee.holdout import BOOTSTRAP_METHOD_VERSION, PartitionedGoldStudy
-from rsna_knee.training import GoldResNet18, IndexedStudy, _DecodedStudy
+from rsna_knee.training import (
+    DecodedStudy,
+    GoldResNet18,
+    IndexedStudy,
+    predict_partition,
+    train_epoch,
+)
 
 PROJECT_ROOT = Path(__file__).parents[1]
 
@@ -175,11 +179,11 @@ def test_baseline_epoch_and_holdout_prediction_run_on_synthetic_cpu_seam(
 
     def decode(
         study: IndexedStudy, preprocessing: object, *, labels: object
-    ) -> _DecodedStudy:
+    ) -> DecodedStudy:
         del preprocessing
         value = 0.2 if study.study_uid == "study-a" else 0.8
         typed_labels = cast(tuple[int | None, ...], labels)
-        return _DecodedStudy(
+        return DecodedStudy(
             pixels=torch.full((1, 1, 2, 2), value),
             slice_mask=torch.ones((1, 1), dtype=torch.bool),
             series_mask=torch.ones(1, dtype=torch.bool),
@@ -194,24 +198,28 @@ def test_baseline_epoch_and_holdout_prediction_run_on_synthetic_cpu_seam(
             decode_error_counts={},
         )
 
-    monkeypatch.setattr(baseline_module, "_decode_study", decode)
+    monkeypatch.setattr(training_module, "decode_study", decode)
     model = GoldResNet18(_MeanBackbone(), feature_count=2, target_count=2)
     model.imagenet_mean.zero_()
     model.imagenet_std.fill_(1)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     scaler = torch.GradScaler("cuda", enabled=False)
 
-    record = _train_epoch(
+    record = train_epoch(
         model=model,
         optimizer=optimizer,
         scaler=scaler,
         indexed=indexed,
         studies=studies,
-        config=config,
+        preprocessing=config.preprocessing,
+        batch_size=config.batch_size,
+        seed=config.seed,
+        mixed_precision=config.mixed_precision,
         device=torch.device("cpu"),
         epoch=1,
+        collect_diagnostics=True,
     )
-    predictions = _predict_partition(
+    predictions = predict_partition(
         model=model,
         indexed=indexed,
         studies=studies,
@@ -223,5 +231,7 @@ def test_baseline_epoch_and_holdout_prediction_run_on_synthetic_cpu_seam(
     assert record["optimized_study_count"] == 2
     assert record["optimizer_step_count"] == 2
     assert record["valid_slice_count"] == 2
+    assert len(record["batch_losses"]) == 2
+    assert record["logits"].shape == (2, 2)
     assert len(predictions.probabilities) == 2
     assert all(0 <= value <= 1 for row in predictions.probabilities for value in row)

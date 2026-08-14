@@ -212,8 +212,15 @@ def test_cohort_is_rederived_from_authoritative_rows_and_digest_checked(
         )
 
 
-def test_smoke_configuration_is_exactly_one_epoch_at_224() -> None:
-    config = load_smoke_training_config(PROJECT_ROOT / "configs/kaggle-training.toml")
+def test_smoke_configuration_is_exactly_one_epoch_at_224(tmp_path: Path) -> None:
+    config_path = tmp_path / "smoke.toml"
+    config_path.write_text(
+        (PROJECT_ROOT / "configs/kaggle-baseline.toml")
+        .read_text()
+        .replace("epochs = 10", "epochs = 1")
+        .split("[bootstrap]", 1)[0]
+    )
+    config = load_smoke_training_config(config_path)
     assert config.epochs == 1
     assert config.preprocessing.image_size == 224
     assert config.weight_identity == "ResNet18_Weights.IMAGENET1K_V1"
