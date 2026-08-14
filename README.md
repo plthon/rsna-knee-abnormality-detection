@@ -1,9 +1,8 @@
 # RSNA Knee Abnormality Detection
 
-This repository is a small, CPU-first research platform for the RSNA 2024
-Musculoskeletal Radiograph Classification competition. It reads knee MRI DICOM
-series and emits one probability for each of the 12 verified abnormality
-targets.
+This repository is a small, CPU-first research platform for the RSNA Knee
+Abnormalities Detection competition. It reads knee MRI DICOM series and emits
+one probability for each of the 12 verified abnormality targets.
 
 ## Verified project facts
 
@@ -92,7 +91,8 @@ resource.
 ## Project status
 
 The DICOM, indexing, preprocessing, training, evaluation, submission, and
-Kaggle-safety foundations are complete. The next research direction is OOF and
-supervision experiments after this architecture cleanup. Model improvements,
-pseudo-labels, new folds, leaderboard decisions, and new remote runs are not
-part of the current repository workflow.
+Kaggle-safety foundations are complete, and the repository architecture cleanup
+is finished. The post-baseline evaluation and supervision roadmap is now being
+realigned before further model development. Model improvements, pseudo-labels,
+new folds, leaderboard decisions, and new remote runs are intentionally deferred
+until that roadmap is defined.
