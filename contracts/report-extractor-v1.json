@@ -1,0 +1,518 @@
+{
+  "schema_version": 1,
+  "extractor_version": "report-extractor-v1",
+  "audit_artifact_sha256": "51227b82f16c3c060a36f0932df6c0ce72e0f615a044af9a1051d8a4197b28a7",
+  "target_order": [
+    "ACL",
+    "MCL",
+    "Medial Meniscus",
+    "Lateral Meniscus",
+    "Medial OA",
+    "Lateral OA",
+    "PF OA",
+    "Effusion",
+    "Synovitis",
+    "Baker's",
+    "Contusion",
+    "Fracture"
+  ],
+  "normalization_version": "unicode-nfc-horizontal-whitespace-v1",
+  "section_rules": [
+    {
+      "id": "GLOBAL.SECTION.001",
+      "sections": [
+        "history",
+        "clinical history",
+        "indication",
+        "clinical indication",
+        "technique",
+        "comparison",
+        "prior imaging",
+        "exam type"
+      ],
+      "assertion_type": "contextual_exclusion",
+      "audit_evidence": {
+        "history_of_document_frequency": 55,
+        "section_document_frequencies": {
+          "clinical history": 51,
+          "clinical indication": 30,
+          "comparison": 454,
+          "indication": 406,
+          "prior imaging": 34,
+          "technique": 602
+        }
+      }
+    }
+  ],
+  "assertion_scope_rules": {
+    "window_tokens": 5,
+    "scope_terminators": [
+      "[;]",
+      "\\b(?:but|however|yet)\\b"
+    ],
+    "negation": [
+      {
+        "id": "GLOBAL.NEG.001",
+        "pattern": "\\bno\\b",
+        "direction": "forward",
+        "audit_document_frequency": 1901
+      },
+      {
+        "id": "GLOBAL.NEG.002",
+        "pattern": "\\bwithout\\b",
+        "direction": "forward",
+        "audit_document_frequency": 623
+      },
+      {
+        "id": "GLOBAL.NEG.003",
+        "pattern": "\\bnot\\b",
+        "direction": "forward",
+        "audit_document_frequency": 586
+      },
+      {
+        "id": "GLOBAL.NEG.004",
+        "pattern": "\\babsent\\b",
+        "direction": "bidirectional",
+        "audit_document_frequency": 7
+      }
+    ],
+    "uncertainty": [
+      {
+        "id": "GLOBAL.UNCERTAIN.001",
+        "pattern": "\\bpossible\\b",
+        "direction": "bidirectional",
+        "audit_document_frequency": 39
+      },
+      {
+        "id": "GLOBAL.UNCERTAIN.002",
+        "pattern": "\\bpossibly\\b",
+        "direction": "bidirectional",
+        "audit_document_frequency": 14
+      },
+      {
+        "id": "GLOBAL.UNCERTAIN.003",
+        "pattern": "\\bmay\\b",
+        "direction": "bidirectional",
+        "audit_document_frequency": 68
+      }
+    ],
+    "contextual_exclusions": [
+      {
+        "id": "GLOBAL.EXCLUDE.001",
+        "pattern": "\\bhistory of\\b",
+        "direction": "forward",
+        "audit_document_frequency": 55
+      },
+      {
+        "id": "GLOBAL.EXCLUDE.002",
+        "pattern": "\\bremote\\b",
+        "direction": "forward",
+        "audit_document_frequency": 16
+      }
+    ]
+  },
+  "targets": [
+    {
+      "canonical_name": "ACL",
+      "target_key": "ACL",
+      "concept_patterns": [
+        {
+          "id": "ACL.CONCEPT.001",
+          "pattern": "\\bACL\\b",
+          "audit_document_frequency": 1348
+        },
+        {
+          "id": "ACL.CONCEPT.002",
+          "pattern": "\\banterior cruciate ligament\\b",
+          "audit_document_frequency": 648
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [
+        {
+          "id": "ACL.NEG.001",
+          "pattern": "\\bnormal\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "acl_normal_document_frequency": 440,
+            "normal_acl_document_frequency": 281
+          }
+        },
+        {
+          "id": "ACL.NEG.002",
+          "pattern": "\\bintact\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "intact_anterior_cruciate_document_frequency": 43
+          }
+        }
+      ],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "ACL.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "MCL",
+      "target_key": "MCL",
+      "concept_patterns": [
+        {
+          "id": "MCL.CONCEPT.001",
+          "pattern": "\\bMCL\\b",
+          "audit_document_frequency": 1240
+        },
+        {
+          "id": "MCL.CONCEPT.002",
+          "pattern": "\\bmedial collateral ligament\\b",
+          "audit_document_frequency": 691
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [
+        {
+          "id": "MCL.NEG.001",
+          "pattern": "\\bnormal\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "mcl_normal_document_frequency": 478
+          }
+        },
+        {
+          "id": "MCL.NEG.002",
+          "pattern": "\\bintact\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "mcl_intact_document_frequency": 20
+          }
+        }
+      ],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "MCL.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Medial Meniscus",
+      "target_key": "MEDIAL_MENISCUS",
+      "concept_patterns": [
+        {
+          "id": "MEDIAL_MENISCUS.CONCEPT.001",
+          "pattern": "\\bmedial meniscus\\b",
+          "audit_document_frequency": 1278
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [
+        {
+          "id": "MEDIAL_MENISCUS.NEG.001",
+          "pattern": "\\bnormal\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "medial_meniscus_normal_document_frequency": 62,
+            "normal_medial_meniscus_document_frequency": 179
+          }
+        },
+        {
+          "id": "MEDIAL_MENISCUS.NEG.002",
+          "pattern": "\\bintact\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "meniscus_is_intact_document_frequency": 42
+          }
+        }
+      ],
+      "uncertainty_rules": [
+        {
+          "id": "MEDIAL_MENISCUS.UNCERTAIN.001",
+          "pattern": "\\bmaybe\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "medial_meniscus_maybe_document_frequency": 30
+          }
+        }
+      ],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "MEDIAL_MENISCUS.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Lateral Meniscus",
+      "target_key": "LATERAL_MENISCUS",
+      "concept_patterns": [
+        {
+          "id": "LATERAL_MENISCUS.CONCEPT.001",
+          "pattern": "\\blateral meniscus\\b",
+          "audit_document_frequency": 1340
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [
+        {
+          "id": "LATERAL_MENISCUS.NEG.001",
+          "pattern": "\\bnormal\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "lateral_meniscus_normal_document_frequency": 155,
+            "normal_lateral_meniscus_document_frequency": 178
+          }
+        },
+        {
+          "id": "LATERAL_MENISCUS.NEG.002",
+          "pattern": "\\bintact\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "meniscus_is_intact_document_frequency": 77
+          }
+        }
+      ],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "LATERAL_MENISCUS.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Medial OA",
+      "target_key": "MEDIAL_OA",
+      "concept_patterns": [
+        {
+          "id": "MEDIAL_OA.CONCEPT.001",
+          "pattern": "\\bmedial OA\\b",
+          "audit_evidence": {
+            "source": "canonical target name",
+            "aggregate_document_frequency": "below privacy threshold"
+          }
+        },
+        {
+          "id": "MEDIAL_OA.CONCEPT.002",
+          "pattern": "\\bmedial osteoarthritis\\b",
+          "audit_evidence": {
+            "source": "canonical OA expansion",
+            "aggregate_document_frequency": "below privacy threshold"
+          }
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "MEDIAL_OA.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Lateral OA",
+      "target_key": "LATERAL_OA",
+      "concept_patterns": [
+        {
+          "id": "LATERAL_OA.CONCEPT.001",
+          "pattern": "\\blateral OA\\b",
+          "audit_evidence": {
+            "source": "canonical target name",
+            "aggregate_document_frequency": "below privacy threshold"
+          }
+        },
+        {
+          "id": "LATERAL_OA.CONCEPT.002",
+          "pattern": "\\blateral osteoarthritis\\b",
+          "audit_evidence": {
+            "source": "canonical OA expansion",
+            "aggregate_document_frequency": "below privacy threshold"
+          }
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "LATERAL_OA.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "PF OA",
+      "target_key": "PF_OA",
+      "concept_patterns": [
+        {
+          "id": "PF_OA.CONCEPT.001",
+          "pattern": "\\bPF OA\\b",
+          "audit_evidence": {
+            "source": "canonical target name",
+            "aggregate_document_frequency": "below privacy threshold"
+          }
+        },
+        {
+          "id": "PF_OA.CONCEPT.002",
+          "pattern": "\\bpatellofemoral (?:OA|osteoarthritis)\\b",
+          "audit_document_frequency": 20
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "PF_OA.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Effusion",
+      "target_key": "EFFUSION",
+      "concept_patterns": [
+        {
+          "id": "EFFUSION.CONCEPT.001",
+          "pattern": "\\b(?:joint |knee |suprapatellar )?effusion\\b",
+          "audit_evidence": {
+            "effusion_document_frequency": 1571,
+            "joint_effusion_document_frequency": 835,
+            "knee_effusion_document_frequency": 502,
+            "suprapatellar_effusion_document_frequency": 16
+          }
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [
+        {
+          "id": "EFFUSION.NEG.001",
+          "pattern": "\\bnormal\\b",
+          "direction": "bidirectional",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "effusion_normal_document_frequency": 148
+          }
+        },
+        {
+          "id": "EFFUSION.NEG.002",
+          "pattern": "\\bno\\b",
+          "direction": "backward",
+          "window_tokens": 3,
+          "audit_evidence": {
+            "effusion_no_document_frequency": 403
+          }
+        }
+      ],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "EFFUSION.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Synovitis",
+      "target_key": "SYNOVITIS",
+      "concept_patterns": [
+        {
+          "id": "SYNOVITIS.CONCEPT.001",
+          "pattern": "\\bsynovitis\\b",
+          "audit_document_frequency": 297
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "SYNOVITIS.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Baker's",
+      "target_key": "BAKER",
+      "concept_patterns": [
+        {
+          "id": "BAKER.CONCEPT.001",
+          "pattern": "\\bbaker(?:'s)? cyst\\b",
+          "audit_evidence": {
+            "bakers_cyst_document_frequency": 754,
+            "baker_cyst_document_frequency": 42
+          }
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "BAKER.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Contusion",
+      "target_key": "CONTUSION",
+      "concept_patterns": [
+        {
+          "id": "CONTUSION.CONCEPT.001",
+          "pattern": "\\b(?:(?:bone|osseous|marrow|soft tissue) )?contusion\\b",
+          "audit_evidence": {
+            "contusion_document_frequency": 337,
+            "bone_contusion_document_frequency": 264,
+            "osseous_contusion_document_frequency": 23,
+            "marrow_contusion_document_frequency": 6,
+            "soft_tissue_contusion_document_frequency": 7
+          }
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "CONTUSION.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    },
+    {
+      "canonical_name": "Fracture",
+      "target_key": "FRACTURE",
+      "concept_patterns": [
+        {
+          "id": "FRACTURE.CONCEPT.001",
+          "pattern": "\\bfracture\\b",
+          "audit_document_frequency": 613
+        }
+      ],
+      "positive_rules": [],
+      "negative_rules": [],
+      "uncertainty_rules": [],
+      "contextual_exclusions": [],
+      "section_context_rules": [],
+      "conflict_policy": {
+        "id": "FRACTURE.CONFLICT.001",
+        "policy": "unresolved_to_uncertain"
+      }
+    }
+  ]
+}

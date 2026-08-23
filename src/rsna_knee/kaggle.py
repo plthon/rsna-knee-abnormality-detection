@@ -416,7 +416,7 @@ def build_reports_bundle(
         contract_names = (contract_path.name,)
     source_path = project_root / "notebooks" / "report_labels.py"
     git_commit, git_dirty = _git_state(project_root)
-    return build_kaggle_bundle(
+    bundle = build_kaggle_bundle(
         project_root,
         output_root,
         KaggleSpec(
@@ -431,6 +431,7 @@ def build_reports_bundle(
                 "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
                     source_path.read_bytes()
                 ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
                 "__RSNA_KNEE_REPORT_STAGE__": stage,
             },
             embed_package=True,
@@ -438,6 +439,26 @@ def build_reports_bundle(
             validator="reports",
         ),
     )
+    rendered = bundle.notebook_path.read_text(encoding="utf-8")
+    zero_hash = "0" * 64
+    if zero_hash not in rendered:
+        raise ValueError("Report notebook must contain its rendered-hash field")
+    canonical_sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    bundle.notebook_path.write_text(
+        rendered.replace(zero_hash, canonical_sha256), encoding="utf-8"
+    )
+    provenance = json.loads(bundle.provenance_path.read_text(encoding="utf-8"))
+    provenance["rendered_notebook"] = {
+        "sha256": canonical_sha256,
+        "canonicalization": (
+            "rendered notebook with its recorded SHA-256 replaced by 64 zeroes"
+        ),
+    }
+    bundle.provenance_path.write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    _validate_bundle(bundle)
+    return bundle
 
 
 def build_public_baseline_bundle(

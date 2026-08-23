@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from importlib.resources import files
 from pathlib import Path
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -24,7 +25,12 @@ sys.path.insert(0, str(PACKAGE_ARCHIVE))
 
 # %%
 from rsna_knee.competition_contract import load_verified_submission_contract
-from rsna_knee.reports import audit_report_corpus, read_report_csv
+from rsna_knee.reports import (
+    audit_report_corpus,
+    load_rule_contract,
+    read_report_csv,
+    write_extraction_artifacts,
+)
 
 started = time.monotonic()
 competition_contract = load_verified_submission_contract()
@@ -45,6 +51,7 @@ if STAGE == "audit":
             "git_commit": "__RSNA_KNEE_GIT_COMMIT__",
             "git_dirty": json.loads("__RSNA_KNEE_GIT_DIRTY__"),
             "jupytext_source_sha256": "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__",
+            "rendered_notebook_sha256": "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__",
             "package_archive_sha256": hashlib.sha256(
                 PACKAGE_ARCHIVE.read_bytes()
             ).hexdigest(),
@@ -73,8 +80,33 @@ if STAGE == "audit":
     print(audit_path)
     print(manifest_path)
 elif STAGE == "extract":
-    raise RuntimeError(
-        "The extract stage requires the rule contract frozen from report-audit.json"
+    rule_contract_bytes = (
+        files("rsna_knee").joinpath("report-extractor-v1.json").read_bytes()
     )
+    rule_contract = load_rule_contract(
+        json.loads(rule_contract_bytes),
+        expected_target_order=competition_contract.target_names,
+    )
+    artifact_paths = write_extraction_artifacts(
+        report_rows,
+        rule_contract,
+        WORK_ROOT,
+        competition_contract_sha256=competition_contract.sha256,
+        rule_contract_sha256=hashlib.sha256(rule_contract_bytes).hexdigest(),
+        source_provenance={
+            "git_commit": "__RSNA_KNEE_GIT_COMMIT__",
+            "git_dirty": json.loads("__RSNA_KNEE_GIT_DIRTY__"),
+            "notebook_source_sha256": "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__",
+            "rendered_notebook_sha256": "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__",
+            "rendered_notebook_sha256_canonicalization": (
+                "rendered notebook with its recorded SHA-256 replaced by 64 zeroes"
+            ),
+            "package_archive_sha256": hashlib.sha256(
+                PACKAGE_ARCHIVE.read_bytes()
+            ).hexdigest(),
+        },
+    )
+    for artifact_path in artifact_paths.values():
+        print(artifact_path)
 else:
     raise ValueError(f"Unsupported report stage: {STAGE}")

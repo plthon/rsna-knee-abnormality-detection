@@ -7,10 +7,12 @@ import hashlib
 import json
 import math
 import re
+import time
 import unicodedata
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from io import StringIO
 from pathlib import Path
 from typing import Literal, cast
 
@@ -556,6 +558,261 @@ def audit_report_corpus(
     }
     _validate_audit_privacy(audit)
     return audit
+
+
+def write_extraction_artifacts(
+    rows: Sequence[ReportRow],
+    contract: RuleContract,
+    output_root: Path,
+    *,
+    expected_study_count: int = 4407,
+    competition_contract_sha256: str,
+    rule_contract_sha256: str,
+    source_provenance: Mapping[str, object],
+    runtime_seconds: float | None = None,
+) -> dict[str, Path]:
+    """Write the fixed private extraction artifacts after a repeatability check."""
+    started = time.monotonic()
+    _validate_sha256("competition_contract_sha256", competition_contract_sha256)
+    _validate_sha256("rule_contract_sha256", rule_contract_sha256)
+    if runtime_seconds is not None and (
+        isinstance(runtime_seconds, bool) or runtime_seconds < 0
+    ):
+        raise ValueError("runtime_seconds must be nonnegative")
+    source = _validated_source_provenance(source_provenance)
+    paths = {
+        "labels": output_root / "report-labels-v1.csv",
+        "evidence": output_root / "report-evidence-v1.jsonl",
+        "manifest": output_root / "report-extraction-manifest.json",
+        "summary": output_root / "report-extraction-summary.json",
+    }
+    existing = [path for path in paths.values() if path.exists()]
+    if existing:
+        raise FileExistsError(f"Extraction artifacts already exist: {existing}")
+
+    first = extract_corpus(rows, contract, expected_study_count=expected_study_count)
+    second = extract_corpus(rows, contract, expected_study_count=expected_study_count)
+    if first != second:
+        raise RuntimeError("Repeated in-memory report extraction differs")
+    label_bytes = _label_csv_bytes(first.labels)
+    evidence_bytes = _evidence_jsonl_bytes(first.evidence)
+    if label_bytes != _label_csv_bytes(
+        second.labels
+    ) or evidence_bytes != _evidence_jsonl_bytes(second.evidence):
+        raise RuntimeError("Repeated serialized extraction differs")
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    paths["labels"].write_bytes(label_bytes)
+    paths["evidence"].write_bytes(evidence_bytes)
+    state_counts, coverage_rates = _state_counts(first.labels, contract.target_order)
+    rule_use_counts = Counter(
+        rule_id
+        for item in first.evidence
+        for rule_id in (
+            *item.rule_ids,
+            *([item.conflict_rule] if item.conflict_rule else []),
+        )
+    )
+    conflict_counts = {
+        target: len(
+            {
+                item.provenance_key
+                for item in first.evidence
+                if item.target == target and item.conflict_rule
+            }
+        )
+        for target in contract.target_order
+    }
+    exclusion_counts = Counter(
+        item.target
+        for item in first.evidence
+        if item.assertion_type == "contextual_exclusion"
+    )
+    private_artifacts = {
+        paths["labels"].name: _artifact_record(paths["labels"]),
+        paths["evidence"].name: _artifact_record(paths["evidence"]),
+    }
+    summary: dict[str, object] = {
+        "schema_version": 1,
+        "extractor_version": contract.extractor_version,
+        "normalization_version": contract.normalization_version,
+        "audit_artifact_sha256": contract.audit_artifact_sha256,
+        "rule_contract_sha256": rule_contract_sha256,
+        "per_target_state_counts": state_counts,
+        "per_target_coverage_rates": coverage_rates,
+        "rule_use_counts": dict(sorted(rule_use_counts.items())),
+        "conflict_ambiguity_counts": conflict_counts,
+        "aggregate_failure_modes": {
+            "contextual_exclusion_evidence_counts": {
+                target: exclusion_counts[target] for target in contract.target_order
+            },
+            "malformed_reports": 0,
+            "extraction_errors": 0,
+        },
+        "artifact_identities": private_artifacts,
+        "exact_label_row_count_complete": len(first.labels)
+        == expected_study_count * len(contract.target_order),
+        "validation_readiness": {
+            "status": "technically_ready_for_issue_21_manual_validation",
+            "label_correctness_established": False,
+        },
+    }
+    paths["summary"].write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    expected_label_count = expected_study_count * len(contract.target_order)
+    manifest: dict[str, object] = {
+        "schema_version": 1,
+        "extractor_version": contract.extractor_version,
+        "normalization_version": contract.normalization_version,
+        "git": {
+            "commit": source["git_commit"],
+            "dirty": source["git_dirty"],
+        },
+        "notebook": {
+            "source_sha256": source["notebook_source_sha256"],
+            "rendered_sha256": source["rendered_notebook_sha256"],
+            "rendered_sha256_canonicalization": source[
+                "rendered_notebook_sha256_canonicalization"
+            ],
+        },
+        "package_archive_sha256": source["package_archive_sha256"],
+        "competition_contract_sha256": competition_contract_sha256,
+        "rule_contract_sha256": rule_contract_sha256,
+        "audit_artifact_sha256": contract.audit_artifact_sha256,
+        "input_competition_identity": {
+            "slug": "rsna-knee-abnormality-detection",
+            "mount": "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+            "table": "train.csv",
+            "columns_read": ["StudyInstanceUID", "Report"],
+        },
+        "normalized_report_count": len(rows),
+        "expected_label_row_count": expected_label_count,
+        "actual_label_row_count": len(first.labels),
+        "evidence_row_count": len(first.evidence),
+        "target_order": list(contract.target_order),
+        "per_target_state_counts": state_counts,
+        "per_target_coverage_rates": coverage_rates,
+        "artifacts": {
+            **private_artifacts,
+            paths["summary"].name: _artifact_record(paths["summary"]),
+        },
+        "runtime_seconds": (
+            runtime_seconds
+            if runtime_seconds is not None
+            else time.monotonic() - started
+        ),
+        "runtime_policy": {
+            "cpu_only": True,
+            "internet_enabled": False,
+            "gpu_enabled": False,
+            "tpu_enabled": False,
+        },
+        "malformed_report_or_extraction_errors": [],
+        "deterministic_equality_verified": True,
+    }
+    paths["manifest"].write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return paths
+
+
+def _label_csv_bytes(labels: Sequence[LabelRecord]) -> bytes:
+    columns = (
+        "StudyInstanceUID",
+        "target",
+        "state",
+        "extractor_version",
+        "normalized_report_sha256",
+        "evidence_count",
+        "provenance_key",
+    )
+    output = StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(label.as_dict() for label in labels)
+    return output.getvalue().encode("utf-8")
+
+
+def _evidence_jsonl_bytes(evidence: Sequence[EvidenceRecord]) -> bytes:
+    return "".join(
+        json.dumps(
+            item.as_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        + "\n"
+        for item in evidence
+    ).encode("utf-8")
+
+
+def _state_counts(
+    labels: Sequence[LabelRecord], target_order: Sequence[str]
+) -> tuple[dict[str, dict[str, int]], dict[str, float]]:
+    states = ("positive", "negative", "uncertain", "unknown")
+    counts = {
+        target: {
+            state: sum(
+                label.target == target and label.state == state for label in labels
+            )
+            for state in states
+        }
+        for target in target_order
+    }
+    study_count = len(labels) // len(target_order)
+    coverage = {
+        target: (
+            (study_count - target_counts["unknown"]) / study_count
+            if study_count
+            else 0.0
+        )
+        for target, target_counts in counts.items()
+    }
+    return counts, coverage
+
+
+def _artifact_record(path: Path) -> dict[str, object]:
+    return {
+        "size_bytes": path.stat().st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def _validated_source_provenance(
+    source: Mapping[str, object],
+) -> dict[str, object]:
+    required_hashes = (
+        "notebook_source_sha256",
+        "rendered_notebook_sha256",
+        "package_archive_sha256",
+    )
+    for key in required_hashes:
+        value = source.get(key)
+        if not isinstance(value, str):
+            raise TypeError(f"Source provenance {key} must be a string")
+        _validate_sha256(key, value)
+    git_commit = source.get("git_commit")
+    git_dirty = source.get("git_dirty")
+    canonicalization = source.get("rendered_notebook_sha256_canonicalization")
+    if not isinstance(git_commit, str) or not git_commit:
+        raise TypeError("Source provenance git_commit must be nonempty")
+    if not isinstance(git_dirty, bool):
+        raise TypeError("Source provenance git_dirty must be boolean")
+    if not isinstance(canonicalization, str) or not canonicalization:
+        raise TypeError("Rendered notebook hash canonicalization must be nonempty")
+    return {
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
+        "notebook_source_sha256": source["notebook_source_sha256"],
+        "rendered_notebook_sha256": source["rendered_notebook_sha256"],
+        "rendered_notebook_sha256_canonicalization": canonicalization,
+        "package_archive_sha256": source["package_archive_sha256"],
+    }
+
+
+def _validate_sha256(name: str, value: str) -> None:
+    if _HEX_SHA256.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a lowercase SHA-256")
 
 
 def _phrase_records(

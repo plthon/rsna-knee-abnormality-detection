@@ -1,9 +1,12 @@
+import base64
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -446,6 +449,38 @@ def test_reports_builder_rejects_invalid_stage_before_writing(tmp_path: Path) ->
     assert not (tmp_path / "reports").exists()
 
 
+def test_reports_extract_bundle_embeds_frozen_contract_and_canonical_hash(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+
+    bundle = build_reports_bundle(
+        project, tmp_path / "reports-extract", stage="extract"
+    )
+    rendered = bundle.notebook_path.read_text(encoding="utf-8")
+    notebook = json.loads(rendered)
+    source = "\n".join(
+        "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    )
+    provenance = json.loads(bundle.provenance_path.read_text(encoding="utf-8"))
+    rendered_record = provenance["rendered_notebook"]
+    rendered_sha256 = rendered_record["sha256"]
+    canonical = rendered.replace(rendered_sha256, "0" * 64)
+    archive_match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)"\)', source)
+
+    assert 'STAGE = "extract"' in source
+    assert "write_extraction_artifacts" in source
+    assert rendered_record["canonicalization"] == (
+        "rendered notebook with its recorded SHA-256 replaced by 64 zeroes"
+    )
+    assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() == rendered_sha256
+    assert archive_match is not None
+    with zipfile.ZipFile(BytesIO(base64.b64decode(archive_match.group(1)))) as archive:
+        assert "rsna_knee/report-extractor-v1.json" in archive.namelist()
+
+
 def test_kaggle_output_pull_is_read_only_and_confined_to_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -496,5 +531,13 @@ def test_kaggle_output_pull_is_read_only_and_confined_to_artifacts(
             tmp_path / "committed-output",
             artifact_root=artifact_root,
             filenames=("report-audit.json",),
+            runner=runner,
+        )
+    with pytest.raises(PermissionError, match="row-level"):
+        pull_kaggle_output(
+            bundle,
+            output,
+            artifact_root=artifact_root,
+            filenames=("report-labels-v1.csv",),
             runner=runner,
         )

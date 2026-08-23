@@ -1,11 +1,14 @@
+import csv
 import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from rsna_knee.competition_contract import load_verified_submission_contract
 from rsna_knee.reports import (
     ReportRow,
+    RuleContract,
     audit_report_corpus,
     extract_corpus,
     extract_report,
@@ -15,6 +18,7 @@ from rsna_knee.reports import (
     provenance_key,
     read_report_csv,
     segment_report,
+    write_extraction_artifacts,
 )
 
 
@@ -114,6 +118,17 @@ def _rule_contract() -> dict[str, object]:
             },
         ],
     }
+
+
+def _frozen_contract() -> RuleContract:
+    project = Path(__file__).parents[1]
+    target_order = load_verified_submission_contract(
+        project / "contracts" / "competition.json"
+    ).target_names
+    return load_rule_contract(
+        project / "contracts" / "report-extractor-v1.json",
+        expected_target_order=target_order,
+    )
 
 
 def test_report_normalization_and_hash_preserve_clinical_structure() -> None:
@@ -430,3 +445,146 @@ def test_audit_csv_reader_never_requests_organizer_gold(tmp_path: Path) -> None:
             requested_columns=("StudyInstanceUID", "Report", "ACL"),
             target_names=("ACL", "Effusion"),
         )
+
+
+@pytest.mark.parametrize(
+    ("target", "text"),
+    [
+        ("ACL", "ACL tear."),
+        ("MCL", "MCL sprain."),
+        ("Medial Meniscus", "Medial meniscus tear."),
+        ("Lateral Meniscus", "Lateral meniscus tear."),
+        ("Medial OA", "Medial osteoarthritis."),
+        ("Lateral OA", "Lateral osteoarthritis."),
+        ("PF OA", "Patellofemoral osteoarthritis."),
+        ("Effusion", "Joint effusion is present."),
+        ("Synovitis", "Synovitis is present."),
+        ("Baker's", "Baker's cyst is present."),
+        ("Contusion", "Osseous contusion is present."),
+        ("Fracture", "Fracture is present."),
+    ],
+)
+def test_frozen_contract_recognizes_each_target(target: str, text: str) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert {row.target: row.state for row in extraction.labels}[target] == "positive"
+
+
+@pytest.mark.parametrize(
+    ("target", "text"),
+    [
+        ("ACL", "ACL normal."),
+        ("MCL", "The MCL is intact."),
+        ("Medial Meniscus", "Medial meniscus normal."),
+        ("Lateral Meniscus", "The lateral meniscus is intact."),
+        ("Effusion", "Effusion no intra-articular bodies."),
+        ("Synovitis", "No synovitis."),
+        ("Baker's", "No Baker's cyst."),
+        ("Contusion", "No bone contusion."),
+        ("Fracture", "No acute fracture."),
+    ],
+)
+def test_frozen_contract_recognizes_explicit_negative_evidence(
+    target: str, text: str
+) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert {row.target: row.state for row in extraction.labels}[target] == "negative"
+
+
+def test_frozen_contract_handles_uncertainty_context_and_conflicts() -> None:
+    contract = _frozen_contract()
+
+    uncertain = extract_report("study-1", "Possible ACL tear.", contract)
+    history = extract_report("study-2", "HISTORY: ACL tear.", contract)
+    remote = extract_report("study-3", "Remote bone contusion.", contract)
+    conflict = extract_report("study-4", "No ACL tear. ACL tear is present.", contract)
+
+    assert uncertain.labels[0].state == "uncertain"
+    assert history.labels[0].state == "unknown"
+    assert remote.labels[10].state == "unknown"
+    assert conflict.labels[0].state == "uncertain"
+    assert {item.conflict_rule for item in conflict.evidence} == {"ACL.CONFLICT.001"}
+
+
+def test_private_extraction_artifacts_are_complete_deterministic_and_public_safe(
+    tmp_path: Path,
+) -> None:
+    contract = load_rule_contract(
+        _rule_contract(), expected_target_order=("ACL", "Effusion")
+    )
+    rows = (
+        ReportRow("study-2", "Effusion is present."),
+        ReportRow("study-1", "No ACL tear."),
+    )
+    provenance = {
+        "git_commit": "test-commit",
+        "git_dirty": False,
+        "notebook_source_sha256": "b" * 64,
+        "rendered_notebook_sha256": "c" * 64,
+        "rendered_notebook_sha256_canonicalization": (
+            "recorded field replaced by 64 zeroes"
+        ),
+        "package_archive_sha256": "d" * 64,
+    }
+
+    first = write_extraction_artifacts(
+        rows,
+        contract,
+        tmp_path / "first",
+        expected_study_count=2,
+        competition_contract_sha256="e" * 64,
+        rule_contract_sha256="f" * 64,
+        source_provenance=provenance,
+        runtime_seconds=1.25,
+    )
+    second = write_extraction_artifacts(
+        rows,
+        contract,
+        tmp_path / "second",
+        expected_study_count=2,
+        competition_contract_sha256="e" * 64,
+        rule_contract_sha256="f" * 64,
+        source_provenance=provenance,
+        runtime_seconds=1.25,
+    )
+
+    with first["labels"].open(newline="", encoding="utf-8") as source:
+        label_reader = csv.DictReader(source)
+        label_rows = list(label_reader)
+    evidence_rows = [
+        json.loads(line)
+        for line in first["evidence"].read_text(encoding="utf-8").splitlines()
+    ]
+    manifest = json.loads(first["manifest"].read_text(encoding="utf-8"))
+    summary = json.loads(first["summary"].read_text(encoding="utf-8"))
+
+    assert label_reader.fieldnames == [
+        "StudyInstanceUID",
+        "target",
+        "state",
+        "extractor_version",
+        "normalized_report_sha256",
+        "evidence_count",
+        "provenance_key",
+    ]
+    assert [(row["StudyInstanceUID"], row["target"]) for row in label_rows] == [
+        ("study-2", "ACL"),
+        ("study-2", "Effusion"),
+        ("study-1", "ACL"),
+        ("study-1", "Effusion"),
+    ]
+    assert len(evidence_rows) == 2
+    assert "Effusion is present" not in first["evidence"].read_text(encoding="utf-8")
+    assert manifest["expected_label_row_count"] == 4
+    assert manifest["actual_label_row_count"] == 4
+    assert manifest["deterministic_equality_verified"] is True
+    assert summary["validation_readiness"] == {
+        "label_correctness_established": False,
+        "status": "technically_ready_for_issue_21_manual_validation",
+    }
+    assert "study-1" not in json.dumps(summary)
+    assert "study-2" not in json.dumps(manifest)
+    assert {
+        name: first[name].read_bytes() for name in ("labels", "evidence", "summary")
+    } == {name: second[name].read_bytes() for name in ("labels", "evidence", "summary")}
