@@ -290,6 +290,8 @@ def pull_kaggle_output(
         "report-llm-labels-v1.csv",
         "report-llm-study-status-v1.csv",
         "report-llm-checkpoint.json",
+        "report-llm-stability-first.json",
+        "report-llm-stability-second.json",
     }
     if private_row_outputs & set(filenames):
         raise PermissionError(
@@ -939,6 +941,7 @@ def _validate_report_llm_source(source: str) -> None:
         "count=32",
         'salt="report-llm-stability-v1"',
         "count=64",
+        'expected_study_count = 32 if STAGE == "smoke" else 4_407',
         "write_llm_artifacts",
     )
     if any(value not in source for value in required):

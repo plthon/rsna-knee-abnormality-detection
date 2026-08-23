@@ -105,6 +105,12 @@ elif STAGE == "extract":
     selected_rows = report_rows
 else:
     raise ValueError(f"Unsupported report LLM stage: {STAGE}")
+expected_study_count = 32 if STAGE == "smoke" else 4_407
+if len(selected_rows) != expected_study_count:
+    raise RuntimeError(
+        f"Frozen {STAGE} study count mismatch: "
+        f"{len(selected_rows)} != {expected_study_count}"
+    )
 
 rule_labels = read_rule_label_csv(
     RULE_LABEL_PATH,
@@ -252,7 +258,7 @@ artifact_paths = write_llm_artifacts(
     results,
     llm_contract,
     WORK_ROOT,
-    expected_study_count=len(selected_rows),
+    expected_study_count=expected_study_count,
     competition_contract_sha256=competition_contract.sha256,
     llm_contract_sha256=hashlib.sha256(llm_contract_bytes).hexdigest(),
     source_provenance={

@@ -572,6 +572,8 @@ def test_report_llm_bundle_is_private_offline_gpu_and_frozen(
     assert "verify_model_asset" in source
     assert "read_non_gold_study_uids" in source
     assert 'requested_columns=("StudyInstanceUID", "Report")' in source
+    assert 'expected_study_count = 32 if STAGE == "smoke" else 4_407' in source
+    assert "if len(selected_rows) != expected_study_count:" in source
     assert "__RSNA_KNEE_" not in source
 
     calls: list[list[str]] = []
@@ -585,6 +587,28 @@ def test_report_llm_bundle_is_private_offline_gpu_and_frozen(
     with pytest.raises(PermissionError, match="GPU approval"):
         push_kaggle_bundle(bundle, approved=True, runner=runner)
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ("report-llm-stability-first.json", "report-llm-stability-second.json"),
+)
+def test_report_llm_stability_checkpoints_cannot_be_pulled(
+    tmp_path: Path, filename: str
+) -> None:
+    project = Path(__file__).parents[1]
+    bundle = build_report_llm_bundle(
+        project, tmp_path / "report-llm-extract", stage="extract"
+    )
+
+    with pytest.raises(PermissionError, match="row-level"):
+        pull_kaggle_output(
+            bundle,
+            tmp_path / ".artifacts" / "report-llm",
+            artifact_root=tmp_path / ".artifacts",
+            filenames=(filename,),
+            runner=lambda command: CompletedProcess(command, 0),
+        )
 
 
 def test_report_llm_cli_builds_smoke_without_remote_action(tmp_path: Path) -> None:
