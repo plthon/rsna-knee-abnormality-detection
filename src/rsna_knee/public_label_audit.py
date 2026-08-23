@@ -67,9 +67,18 @@ class LabelAudit:
         }
 
 
-def resolve_dataset_root(candidates: Sequence[Path], marker: str) -> Path:
+def resolve_dataset_root(
+    candidates: Sequence[Path], marker: str, *, search_roots: Sequence[Path] = ()
+) -> Path:
     """Resolve one hash-checkable attachment from Kaggle's known mount layouts."""
     matches = {root.resolve() for root in candidates if (root / marker).is_file()}
+    matches.update(
+        path.parent.resolve()
+        for root in search_roots
+        if root.is_dir()
+        for path in root.rglob(marker)
+        if path.is_file()
+    )
     if len(matches) != 1:
         raise FileNotFoundError(
             f"Expected one attached dataset containing {marker}; found {len(matches)}"

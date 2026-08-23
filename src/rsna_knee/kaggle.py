@@ -971,6 +971,7 @@ def _validate_public_label_source(source: str) -> None:
         "/kaggle/input/datasets/pilkwang/rsna-knee-llm-labels",
         "/kaggle/input/rsna-knee-llm-labels",
         "/kaggle/input/kernels/plthon/rsna-knee-report-labels",
+        "private_search_roots",
         "resolve_dataset_root",
         'usecols=["StudyInstanceUID", *target_order]',
         "summarize_coverage",

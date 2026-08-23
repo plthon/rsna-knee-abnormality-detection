@@ -29,14 +29,15 @@ TARGETS = ("ACL", "MCL")
 
 
 def test_dataset_root_falls_back_to_one_attached_marker(tmp_path: Path) -> None:
-    mounted = tmp_path / "datasets" / "pilkwang" / "rsna-knee-llm-labels"
+    mounted = tmp_path / "kernels" / "plthon" / "rsna-knee-report-labels" / "1"
     mounted.mkdir(parents=True)
-    (mounted / "report_labels_v2.csv").touch()
+    (mounted / "report-labels-v1.csv").touch()
 
     assert (
         resolve_dataset_root(
-            (tmp_path / "rsna-knee-llm-labels", mounted),
-            "report_labels_v2.csv",
+            (tmp_path / "rsna-knee-report-labels",),
+            "report-labels-v1.csv",
+            search_roots=(tmp_path / "kernels",),
         )
         == mounted
     )
