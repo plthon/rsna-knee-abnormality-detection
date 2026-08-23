@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "extractor_version": "report-llm-qwen2.5-3b-v1",
+  "model_repository": "Qwen/Qwen2.5-3B-Instruct",
+  "model_revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+  "tokenizer_revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+  "model_license": {
+    "compatibility": "compatible for non-commercial research and evaluation only",
+    "identifier": "qwen-research",
+    "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+    "text_location": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/blob/aa8e72537993ba99e69dfaafa59ed015b17504d1/LICENSE"
+  },
+  "model_asset_identity": {
+    "accessibility": "public Kaggle Model",
+    "kaggle_model": "qwen-lm/qwen2.5/transformers/3b-instruct/1",
+    "mount_path": "/kaggle/input/qwen2.5/transformers/3b-instruct/1",
+    "source_revision_match": "file names and sizes match the pinned upstream revision"
+  },
+  "model_file_hashes": {
+    ".gitattributes": {
+      "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "size_bytes": 1519
+    },
+    "LICENSE": {
+      "sha256": "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9",
+      "size_bytes": 7388
+    },
+    "README.md": {
+      "sha256": "2c74693e6ae36ba878124d465195b4dad0f71035b54ece1c9fd1553cc497ef8c",
+      "size_bytes": 4930
+    },
+    "config.json": {
+      "sha256": "eed00b17e22553979d090fa492e587e92885e328914c8e0b0b78f0a0d3576b3b",
+      "size_bytes": 661
+    },
+    "generation_config.json": {
+      "sha256": "ea35dfb6fc5051b01114f9b995820d55dab01ed33ee490f6378b442af82c09f9",
+      "size_bytes": 242
+    },
+    "merges.txt": {
+      "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "size_bytes": 1671839
+    },
+    "model-00001-of-00002.safetensors": {
+      "sha256": "67347b23fb4165b652eb6611f5e1f2a06dfcddba8e909df1b2b0b1857bee06c2",
+      "size_bytes": 3968658944
+    },
+    "model-00002-of-00002.safetensors": {
+      "sha256": "a40d941d0e7e0b966ad8b62bb6d6b7c88cce1299197b599d9d0a4ce59aabfc1d",
+      "size_bytes": 2203268048
+    },
+    "model.safetensors.index.json": {
+      "sha256": "bc8aaa0c87d4335177e01c765f1de0db81661c67c1a72fbfb0d521b09f5ddc56",
+      "size_bytes": 35581
+    },
+    "tokenizer.json": {
+      "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+      "size_bytes": 7031645
+    },
+    "tokenizer_config.json": {
+      "sha256": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+      "size_bytes": 7305
+    },
+    "vocab.json": {
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "size_bytes": 2776833
+    }
+  },
+  "target_order": [
+    "ACL",
+    "MCL",
+    "Medial Meniscus",
+    "Lateral Meniscus",
+    "Medial OA",
+    "Lateral OA",
+    "PF OA",
+    "Effusion",
+    "Synovitis",
+    "Baker's",
+    "Contusion",
+    "Fracture"
+  ],
+  "prompt_version": "rsna-knee-12target-fourstate-v1",
+  "system_prompt_sha256": "172f2d83d05f15deb928b879d2401cd5fd76f414431b6e43af9c7c5afd9b2826",
+  "output_schema": {
+    "keys": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ],
+    "states": [
+      "positive",
+      "negative",
+      "uncertain",
+      "unknown"
+    ],
+    "type": "single_json_object_with_exact_keys"
+  },
+  "decoding": {
+    "default_batch_size": 8,
+    "do_sample": false,
+    "dtype": "float16",
+    "max_new_tokens": 256,
+    "quantization": "none",
+    "temperature": null
+  },
+  "input_token_policy": {
+    "max_input_tokens": 32512,
+    "model_context_tokens": 32768,
+    "preserved_regions": "equal token counts from beginning and end",
+    "truncation": "preserve_beginning_and_end"
+  },
+  "parse_retry_policy": {
+    "max_retries": 1,
+    "same_contract": true
+  },
+  "checkpoint_policy": {
+    "clean_shutdown": true,
+    "completed_study_interval": 50,
+    "resume_key": "StudyInstanceUID"
+  },
+  "normalization_version": "unicode-nfc-horizontal-whitespace-v1",
+  "runtime": {
+    "cuda": "12.8",
+    "gpu": "Tesla T4",
+    "python": "3.12.13",
+    "torch": "2.10.0+cu128",
+    "transformers": "5.0.0"
+  }
+}

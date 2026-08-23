@@ -17,6 +17,7 @@ from rsna_knee.kaggle import (
     WheelDataset,
     build_kaggle_bundle,
     build_public_baseline_bundle,
+    build_report_llm_bundle,
     build_reports_bundle,
     build_wheel_dataset,
     pull_kaggle_output,
@@ -541,3 +542,82 @@ def test_kaggle_output_pull_is_read_only_and_confined_to_artifacts(
             filenames=("report-labels-v1.csv",),
             runner=runner,
         )
+
+
+@pytest.mark.parametrize("stage", ["smoke", "extract"])
+def test_report_llm_bundle_is_private_offline_gpu_and_frozen(
+    tmp_path: Path, stage: str
+) -> None:
+    project = Path(__file__).parents[1]
+
+    bundle = build_report_llm_bundle(
+        project, tmp_path / f"report-llm-{stage}", stage=stage
+    )
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join(
+        "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    )
+
+    assert metadata["competition_sources"] == ["rsna-knee-abnormality-detection"]
+    assert metadata["kernel_sources"] == ["plthon/rsna-knee-report-labels"]
+    assert metadata["model_sources"] == ["qwen-lm/qwen2.5/transformers/3b-instruct/1"]
+    assert metadata["enable_gpu"] == "true"
+    assert metadata["enable_internet"] == "false"
+    assert metadata["is_private"] == "true"
+    assert f'STAGE = "{stage}"' in source
+    assert "Qwen/Qwen2.5-3B-Instruct" not in source
+    assert "verify_model_asset" in source
+    assert "read_non_gold_study_uids" in source
+    assert 'requested_columns=("StudyInstanceUID", "Report")' in source
+    assert "__RSNA_KNEE_" not in source
+
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0)
+
+    with pytest.raises(PermissionError, match="explicit remote approval"):
+        push_kaggle_bundle(bundle, runner=runner)
+    with pytest.raises(PermissionError, match="GPU approval"):
+        push_kaggle_bundle(bundle, approved=True, runner=runner)
+    assert calls == []
+
+
+def test_report_llm_cli_builds_smoke_without_remote_action(tmp_path: Path) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "report-llm-smoke"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/kaggle.py",
+            "build",
+            "report-llm",
+            "--stage",
+            "smoke",
+            "--output",
+            str(output),
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == str(output)
+    assert (output / "kernel" / "report_llm_labels.ipynb").is_file()
+
+
+def test_report_llm_builder_rejects_invalid_stage_before_writing(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+
+    with pytest.raises(ValueError, match="smoke or extract"):
+        build_report_llm_bundle(project, tmp_path / "report-llm", stage="acquire")
+
+    assert not (tmp_path / "report-llm").exists()

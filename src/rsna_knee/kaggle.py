@@ -22,6 +22,10 @@ type Waiter = Callable[[float], object]
 
 _PACKAGE_MARKER = "__RSNA_KNEE_PACKAGE_ARCHIVE__"
 _KAGGLE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_-]*")
+_KAGGLE_MODEL_SOURCE_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/"
+    r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/[1-9][0-9]*"
+)
 _PLACEHOLDER_PARTS = {
     "DATASET_ID",
     "DATASET_SLUG",
@@ -93,6 +97,7 @@ class KaggleSpec:
     competition_sources: tuple[str, ...] = ()
     dataset_sources: tuple[str, ...] = ()
     kernel_sources: tuple[str, ...] = ()
+    model_sources: tuple[str, ...] = ()
     gpu: bool = False
     machine_shape: str = ""
     replacements: Mapping[str, str] = field(default_factory=dict)
@@ -278,7 +283,13 @@ def pull_kaggle_output(
         raise ValueError("Kaggle output must stay inside the ignored artifact root")
     if not filenames:
         raise ValueError("At least one Kaggle output filename is required")
-    private_row_outputs = {"report-labels-v1.csv", "report-evidence-v1.jsonl"}
+    private_row_outputs = {
+        "report-labels-v1.csv",
+        "report-evidence-v1.jsonl",
+        "report-llm-labels-v1.csv",
+        "report-llm-study-status-v1.csv",
+        "report-llm-checkpoint.json",
+    }
     if private_row_outputs & set(filenames):
         raise PermissionError(
             "Private row-level report artifacts must remain on Kaggle"
@@ -439,10 +450,58 @@ def build_reports_bundle(
             validator="reports",
         ),
     )
+    return _record_rendered_notebook_hash(bundle, label="Report")
+
+
+def build_report_llm_bundle(
+    project_root: Path, output_root: Path, *, stage: str
+) -> KaggleBundle:
+    """Build the private offline Qwen report-label notebook."""
+    if stage not in {"smoke", "extract"}:
+        raise ValueError("Report LLM stage must be smoke or extract")
+    contract_path = project_root / "contracts" / "report-llm-extractor-v1.json"
+    if not contract_path.is_file():
+        raise FileNotFoundError(
+            "Report LLM requires contracts/report-llm-extractor-v1.json"
+        )
+    source_path = project_root / "notebooks" / "report_llm_labels.py"
+    git_commit, git_dirty = _git_state(project_root)
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="report_llm_labels.ipynb",
+            kernel_id="plthon/rsna-knee-report-llm-labels",
+            title="RSNA Knee Report LLM Labels",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            kernel_sources=("plthon/rsna-knee-report-labels",),
+            model_sources=("qwen-lm/qwen2.5/transformers/3b-instruct/1",),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_REPORT_LLM_STAGE__": stage,
+            },
+            embed_package=True,
+            package_contracts=(contract_path.name,),
+            validator="report_llm",
+        ),
+        gpu_approved=True,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Report LLM")
+
+
+def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
     if zero_hash not in rendered:
-        raise ValueError("Report notebook must contain its rendered-hash field")
+        raise ValueError(f"{label} notebook must contain its rendered-hash field")
     canonical_sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
     bundle.notebook_path.write_text(
         rendered.replace(zero_hash, canonical_sha256), encoding="utf-8"
@@ -547,6 +606,11 @@ def _validate_spec(spec: KaggleSpec, *, gpu_approved: bool) -> None:
         _require_resolved_kaggle_id(dataset_id)
     for kernel_source in spec.kernel_sources:
         _require_resolved_kaggle_id(kernel_source)
+    for model_source in spec.model_sources:
+        if _KAGGLE_MODEL_SOURCE_PATTERN.fullmatch(model_source) is None:
+            raise ValueError(
+                f"Invalid or unresolved Kaggle model source: {model_source}"
+            )
     if len(spec.title) > _KERNEL_TITLE_MAX_LENGTH:
         raise ValueError("Kaggle kernel title is too long")
     slug = _kernel_title_slug(spec.title)
@@ -580,7 +644,7 @@ def _kernel_metadata(spec: KaggleSpec) -> dict[str, object]:
         "kernel_type": "notebook",
         "language": "python",
         "machine_shape": machine_shape,
-        "model_sources": [],
+        "model_sources": list(spec.model_sources),
         "title": spec.title,
     }
 
@@ -636,6 +700,8 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         _validate_public_baseline_source(_notebook_source(source))
     elif validator == "reports":
         _validate_reports_source(_notebook_source(source))
+    elif validator == "report_llm":
+        _validate_report_llm_source(_notebook_source(source))
     if bundle.dataset is not None:
         if provenance.get("config_sha256") != _sha256(bundle.dataset.config_path):
             raise ValueError("Configuration digest does not match the rendered bundle")
@@ -812,6 +878,42 @@ def _validate_reports_source(source: str) -> None:
     folded = source.casefold()
     if any(value in folded for value in ("pydicom", ".dcm", "train_series.csv")):
         raise ValueError("Report notebook must not read DICOM or train_series.csv")
+
+
+def _validate_report_llm_source(source: str) -> None:
+    required = (
+        "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+        "train.csv",
+        'requested_columns=("StudyInstanceUID", "Report")',
+        'os.environ["HF_HUB_OFFLINE"] = "1"',
+        'os.environ["TRANSFORMERS_OFFLINE"] = "1"',
+        "read_non_gold_study_uids",
+        "verify_model_asset",
+        "local_files_only=True",
+        "do_sample=False",
+        'salt="report-llm-smoke-v1"',
+        "count=32",
+        'salt="report-llm-stability-v1"',
+        "count=64",
+        "write_llm_artifacts",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Report LLM notebook omits a frozen privacy or runtime guard")
+    folded = source.casefold()
+    forbidden = (
+        "openai",
+        "anthropic",
+        "gemini",
+        "openrouter",
+        "inference api",
+        "requests.",
+        "leaderboard",
+        "pydicom",
+        ".dcm",
+        "train_series.csv",
+    )
+    if any(value in folded for value in forbidden):
+        raise ValueError("Report LLM notebook contains a prohibited external path")
 
 
 def _notebook_source(rendered: str) -> str:

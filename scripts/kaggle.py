@@ -5,6 +5,7 @@ from pathlib import Path
 from rsna_knee.kaggle import (
     build_public_baseline_bundle,
     build_public_notebook_bundle,
+    build_report_llm_bundle,
     build_reports_bundle,
     load_kaggle_bundle,
     pull_kaggle_output,
@@ -19,9 +20,17 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build = subparsers.add_parser("build", help="render a notebook bundle locally")
-    build.add_argument("target", choices=("ordering", "baseline", "reports"))
+    build.add_argument(
+        "target",
+        choices=(
+            "ordering",
+            "baseline",
+            "reports",
+            "report-llm",
+        ),
+    )
     build.add_argument("--output", type=Path)
-    build.add_argument("--stage", choices=("audit", "extract"))
+    build.add_argument("--stage", choices=("audit", "smoke", "extract"))
     build.add_argument(
         "--wheel-dataset-id", default="plthon/rsna-knee-gold-baseline-package"
     )
@@ -52,6 +61,7 @@ def main() -> None:
                 "ordering": "public-dicom-ordering",
                 "baseline": "public-gold-baseline",
                 "reports": f"reports-{arguments.stage}",
+                "report-llm": f"report-llm-{arguments.stage}",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -65,10 +75,18 @@ def main() -> None:
                 kernel_id=arguments.kernel_id,
                 gpu_approved=arguments.approve_gpu,
             )
-        else:
+        elif arguments.target == "reports":
             if arguments.stage is None:
                 parser.error("reports build requires --stage audit|extract")
+            if arguments.stage not in {"audit", "extract"}:
+                parser.error("reports build requires --stage audit|extract")
             bundle = build_reports_bundle(
+                project_root, arguments.output, stage=arguments.stage
+            )
+        elif arguments.target == "report-llm":
+            if arguments.stage not in {"smoke", "extract"}:
+                parser.error("report-llm build requires --stage smoke|extract")
+            bundle = build_report_llm_bundle(
                 project_root, arguments.output, stage=arguments.stage
             )
         print(bundle.root)
