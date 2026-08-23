@@ -21,7 +21,10 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 STAGE = "__RSNA_KNEE_REPORT_LLM_STAGE__"
 COMPETITION_ROOT = Path("/kaggle/input/competitions/rsna-knee-abnormality-detection")
-RULE_LABEL_PATH = Path("/kaggle/input/rsna-knee-report-labels/report-labels-v1.csv")
+RULE_LABEL_ROOTS = (
+    Path("/kaggle/input/kernels/plthon/rsna-knee-report-labels"),
+    Path("/kaggle/input/rsna-knee-report-labels"),
+)
 WORK_ROOT = Path("/kaggle/working")
 PACKAGE_ARCHIVE = WORK_ROOT / "rsna_knee_source.zip"
 PACKAGE_ARCHIVE.write_bytes(base64.b64decode("__RSNA_KNEE_PACKAGE_ARCHIVE__"))
@@ -36,6 +39,7 @@ from transformers import (  # type: ignore[import-not-found]
 )
 
 from rsna_knee.competition_contract import load_verified_submission_contract
+from rsna_knee.public_label_audit import resolve_dataset_root
 from rsna_knee.report_llm import (
     GenerationRequest,
     GenerationResponse,
@@ -112,8 +116,12 @@ if len(selected_rows) != expected_study_count:
         f"{len(selected_rows)} != {expected_study_count}"
     )
 
+rule_label_path = (
+    resolve_dataset_root(RULE_LABEL_ROOTS, "report-labels-v1.csv")
+    / "report-labels-v1.csv"
+)
 rule_labels = read_rule_label_csv(
-    RULE_LABEL_PATH,
+    rule_label_path,
     expected_sha256="6651f60b00e5bec292e8c98e7fa83c75e8aa5af5931414a9a68c8ce10a52d527",
     target_order=competition_contract.target_names,
 )

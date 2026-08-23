@@ -571,6 +571,8 @@ def test_report_llm_bundle_is_private_offline_gpu_and_frozen(
     assert "Qwen/Qwen2.5-3B-Instruct" not in source
     assert "verify_model_asset" in source
     assert "read_non_gold_study_uids" in source
+    assert "/kaggle/input/kernels/plthon/rsna-knee-report-labels" in source
+    assert "resolve_dataset_root" in source
     assert 'requested_columns=("StudyInstanceUID", "Report")' in source
     assert 'expected_study_count = 32 if STAGE == "smoke" else 4_407' in source
     assert "if len(selected_rows) != expected_study_count:" in source

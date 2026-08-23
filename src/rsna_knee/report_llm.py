@@ -1067,11 +1067,19 @@ def load_llm_contract(
         or model_asset.get("mount_path")
         != "/kaggle/input/qwen2.5/transformers/3b-instruct/1"
         or model_asset.get("accessibility") != "public Kaggle Model"
+        or model_asset.get("mount_omitted_source_files")
+        != {
+            ".gitattributes": {
+                "sha256": (
+                    "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+                ),
+                "size_bytes": 1519,
+            }
+        }
     ):
         raise ValueError("LLM Kaggle model asset differs from frozen v1")
     model_files = _required_mapping(data, "model_file_hashes")
     expected_model_files = {
-        ".gitattributes",
         "LICENSE",
         "README.md",
         "config.json",

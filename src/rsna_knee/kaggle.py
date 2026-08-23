@@ -929,11 +929,13 @@ def _validate_reports_source(source: str) -> None:
 def _validate_report_llm_source(source: str) -> None:
     required = (
         "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+        "/kaggle/input/kernels/plthon/rsna-knee-report-labels",
         "train.csv",
         'requested_columns=("StudyInstanceUID", "Report")',
         'os.environ["HF_HUB_OFFLINE"] = "1"',
         'os.environ["TRANSFORMERS_OFFLINE"] = "1"',
         "read_non_gold_study_uids",
+        "resolve_dataset_root",
         "verify_model_asset",
         "local_files_only=True",
         "do_sample=False",
