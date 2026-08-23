@@ -14,7 +14,9 @@ from rsna_knee.kaggle import (
     WheelDataset,
     build_kaggle_bundle,
     build_public_baseline_bundle,
+    build_reports_bundle,
     build_wheel_dataset,
+    pull_kaggle_output,
     push_kaggle_bundle,
 )
 
@@ -387,3 +389,112 @@ def test_public_baseline_builder_attaches_runtime_contracts(
         "gold-training.json",
         "resnet18-imagenet1k-v1.json",
     } <= attached
+
+
+def test_reports_audit_bundle_is_private_offline_cpu_and_stage_resolved(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+
+    bundle = build_reports_bundle(project, tmp_path / "reports-audit", stage="audit")
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join(
+        "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    )
+
+    assert bundle.dataset is None
+    assert metadata == {
+        "code_file": "report_labels.ipynb",
+        "competition_sources": ["rsna-knee-abnormality-detection"],
+        "dataset_sources": [],
+        "enable_gpu": "false",
+        "enable_internet": "false",
+        "enable_tpu": "false",
+        "id": "plthon/rsna-knee-report-labels",
+        "is_private": "true",
+        "kernel_sources": [],
+        "kernel_type": "notebook",
+        "language": "python",
+        "machine_shape": "",
+        "model_sources": [],
+        "title": "RSNA Knee Report Labels",
+    }
+    assert 'STAGE = "audit"' in source
+    assert "__RSNA_KNEE_" not in source
+    assert "rsna_knee_source.zip" in source
+
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0)
+
+    with pytest.raises(PermissionError, match="explicit remote approval"):
+        push_kaggle_bundle(bundle, runner=runner)
+    assert calls == []
+
+
+def test_reports_builder_rejects_invalid_stage_before_writing(tmp_path: Path) -> None:
+    project = Path(__file__).parents[1]
+
+    with pytest.raises(ValueError, match="audit or extract"):
+        build_reports_bundle(project, tmp_path / "reports", stage="discover")
+
+    assert not (tmp_path / "reports").exists()
+
+
+def test_kaggle_output_pull_is_read_only_and_confined_to_artifacts(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+    bundle = build_reports_bundle(project, tmp_path / "reports-audit", stage="audit")
+    artifact_root = tmp_path / ".artifacts"
+    output = artifact_root / "report-audit"
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0)
+
+    pull_kaggle_output(
+        bundle,
+        output,
+        artifact_root=artifact_root,
+        filenames=("report-audit.json", "report-audit-manifest.json"),
+        runner=runner,
+    )
+
+    assert calls == [
+        [
+            "kaggle",
+            "kernels",
+            "output",
+            "plthon/rsna-knee-report-labels",
+            "-p",
+            str(output),
+            "--file-pattern",
+            r"^report\-audit\.json$",
+        ],
+        [
+            "kaggle",
+            "kernels",
+            "output",
+            "plthon/rsna-knee-report-labels",
+            "-p",
+            str(output),
+            "--file-pattern",
+            r"^report\-audit\-manifest\.json$",
+        ],
+    ]
+
+    with pytest.raises(ValueError, match="ignored artifact root"):
+        pull_kaggle_output(
+            bundle,
+            tmp_path / "committed-output",
+            artifact_root=artifact_root,
+            filenames=("report-audit.json",),
+            runner=runner,
+        )

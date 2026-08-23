@@ -96,6 +96,7 @@ class KaggleSpec:
     gpu: bool = False
     machine_shape: str = ""
     replacements: Mapping[str, str] = field(default_factory=dict)
+    embed_package: bool = False
     package_contracts: tuple[str, ...] = ()
     validator: str = ""
 
@@ -133,7 +134,7 @@ def build_kaggle_bundle(
     source = source_path.read_text(encoding="utf-8")
     if spec.validator == "ordering":
         _validate_public_ordering_source(source)
-    if spec.package_contracts:
+    if spec.embed_package:
         if source.count(_PACKAGE_MARKER) != 1:
             raise ValueError(
                 "Packaged notebook source must contain exactly one package marker"
@@ -155,6 +156,8 @@ def build_kaggle_bundle(
         raise ValueError("Notebook contains an unresolved Kaggle placeholder")
     if spec.validator == "baseline":
         _validate_public_baseline_source(source)
+    elif spec.validator == "reports":
+        _validate_reports_source(source)
 
     metadata = _kernel_metadata(spec)
     kernel_root = output_root / "kernel"
@@ -255,6 +258,54 @@ def push_kaggle_bundle(
         )
     kernel_result = run(["kaggle", "kernels", "push", "-p", str(bundle.kernel_root)])
     return dataset_result, kernel_result
+
+
+def pull_kaggle_output(
+    bundle: KaggleBundle,
+    output_root: Path,
+    *,
+    artifact_root: Path,
+    filenames: tuple[str, ...],
+    runner: CommandRunner | None = None,
+) -> tuple[CompletedProcess[str], ...]:
+    """Retrieve selected kernel outputs into the ignored local artifact tree."""
+    _validate_bundle(bundle)
+    resolved_artifacts = artifact_root.resolve()
+    resolved_output = output_root.resolve()
+    if artifact_root.name != ".artifacts" or not resolved_output.is_relative_to(
+        resolved_artifacts
+    ):
+        raise ValueError("Kaggle output must stay inside the ignored artifact root")
+    if not filenames:
+        raise ValueError("At least one Kaggle output filename is required")
+    private_row_outputs = {"report-labels-v1.csv", "report-evidence-v1.jsonl"}
+    if private_row_outputs & set(filenames):
+        raise PermissionError(
+            "Private row-level report artifacts must remain on Kaggle"
+        )
+    if any(Path(filename).name != filename for filename in filenames):
+        raise ValueError("Kaggle output filenames must be basenames")
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    kernel_id = metadata.get("id")
+    if not isinstance(kernel_id, str):
+        raise TypeError("Kaggle kernel ID is malformed")
+    output_root.mkdir(parents=True, exist_ok=True)
+    run = runner or _run_command
+    return tuple(
+        run(
+            [
+                "kaggle",
+                "kernels",
+                "output",
+                kernel_id,
+                "-p",
+                str(output_root),
+                "--file-pattern",
+                f"^{re.escape(filename)}$",
+            ]
+        )
+        for filename in filenames
+    )
 
 
 def build_wheel_dataset(
@@ -360,6 +411,61 @@ def build_public_notebook_bundle(project_root: Path, output_root: Path) -> Kaggl
             title="RSNA Knee MRI | Correct DICOM Ordering & Sampling",
             competition_sources=("rsna-knee-abnormality-detection",),
             validator="ordering",
+        ),
+    )
+
+
+def build_reports_bundle(
+    project_root: Path, output_root: Path, *, stage: str
+) -> KaggleBundle:
+    """Build the private CPU report audit or extraction notebook."""
+    if stage not in {"audit", "extract"}:
+        raise ValueError("Report stage must be audit or extract")
+    contract_names: tuple[str, ...] = ()
+    if stage == "extract":
+        contract_path = project_root / "contracts" / "report-extractor-v1.json"
+        if not contract_path.is_file():
+            raise FileNotFoundError(
+                "The extract stage requires frozen contracts/report-extractor-v1.json"
+            )
+        contract_names = (contract_path.name,)
+    source_path = project_root / "notebooks" / "report_labels.py"
+    git_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="report_labels.ipynb",
+            kernel_id="plthon/rsna-knee-report-labels",
+            title="RSNA Knee Report Labels",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            replacements={
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_REPORT_STAGE__": stage,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="reports",
         ),
     )
 
@@ -537,6 +643,8 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         _validate_public_ordering_source(_notebook_source(source))
     elif validator == "baseline":
         _validate_public_baseline_source(_notebook_source(source))
+    elif validator == "reports":
+        _validate_reports_source(_notebook_source(source))
     if bundle.dataset is not None:
         if provenance.get("config_sha256") != _sha256(bundle.dataset.config_path):
             raise ValueError("Configuration digest does not match the rendered bundle")
@@ -676,6 +784,25 @@ def _validate_public_baseline_source(source: str) -> None:
         raise ValueError("Public baseline notebook contains a prohibited claim")
 
 
+def _validate_reports_source(source: str) -> None:
+    required = (
+        "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+        "train.csv",
+        '("StudyInstanceUID", "Report")',
+        "read_report_csv",
+        "audit_report_corpus",
+        "report-audit.json",
+        'os.environ["CUDA_VISIBLE_DEVICES"] = ""',
+    )
+    if any(value not in source for value in required):
+        raise ValueError(
+            "Report notebook omits a required privacy or runtime safeguard"
+        )
+    folded = source.casefold()
+    if any(value in folded for value in ("pydicom", ".dcm", "train_series.csv")):
+        raise ValueError("Report notebook must not read DICOM or train_series.csv")
+
+
 def _notebook_source(rendered: str) -> str:
     notebook = json.loads(rendered)
     cells = notebook.get("cells")
@@ -700,7 +827,7 @@ def _package_archive(
         for source_path in sorted(package_root.rglob("*.py")):
             relative_path = source_path.relative_to(package_root.parent).as_posix()
             _write_archive_entry(archive, relative_path, source_path)
-        for contract_name in ("competition.json", *additional_contracts):
+        for contract_name in dict.fromkeys(("competition.json", *additional_contracts)):
             contract_path = package_root.parents[1] / "contracts" / contract_name
             if not contract_path.is_file():
                 raise FileNotFoundError(f"Missing package contract: {contract_path}")
