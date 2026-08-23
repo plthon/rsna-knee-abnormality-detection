@@ -966,8 +966,10 @@ def _validate_report_llm_source(source: str) -> None:
 def _validate_public_label_source(source: str) -> None:
     required = (
         "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+        "/kaggle/input/datasets/pilkwang/rsna-knee-llm-labels",
         "/kaggle/input/rsna-knee-llm-labels",
-        "/kaggle/input/rsna-knee-report-labels/report-labels-v1.csv",
+        "/kaggle/input/kernels/plthon/rsna-knee-report-labels",
+        "resolve_dataset_root",
         'usecols=["StudyInstanceUID", *target_order]',
         "summarize_coverage",
         "compare_label_sources",

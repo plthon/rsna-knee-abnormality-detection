@@ -67,16 +67,14 @@ class LabelAudit:
         }
 
 
-def resolve_dataset_root(expected_root: Path, marker: str) -> Path:
-    """Use Kaggle's slug mount when present, otherwise require one exact marker."""
-    if expected_root.is_dir():
-        return expected_root
-    matches = [path.parent for path in expected_root.parent.rglob(marker)]
+def resolve_dataset_root(candidates: Sequence[Path], marker: str) -> Path:
+    """Resolve one hash-checkable attachment from Kaggle's known mount layouts."""
+    matches = {root.resolve() for root in candidates if (root / marker).is_file()}
     if len(matches) != 1:
         raise FileNotFoundError(
             f"Expected one attached dataset containing {marker}; found {len(matches)}"
         )
-    return matches[0]
+    return next(iter(matches))
 
 
 def validate_wide_labels(

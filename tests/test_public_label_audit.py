@@ -34,7 +34,10 @@ def test_dataset_root_falls_back_to_one_attached_marker(tmp_path: Path) -> None:
     (mounted / "report_labels_v2.csv").touch()
 
     assert (
-        resolve_dataset_root(tmp_path / "rsna-knee-llm-labels", "report_labels_v2.csv")
+        resolve_dataset_root(
+            (tmp_path / "rsna-knee-llm-labels", mounted),
+            "report_labels_v2.csv",
+        )
         == mounted
     )
 

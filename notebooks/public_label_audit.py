@@ -26,9 +26,13 @@ if STAGE != "audit":
     raise ValueError(f"Unsupported public-label stage: {STAGE}")
 
 COMPETITION_ROOT = Path("/kaggle/input/competitions/rsna-knee-abnormality-detection")
-EXPECTED_PUBLIC_DATASET_ROOT = Path("/kaggle/input/rsna-knee-llm-labels")
-PRIVATE_REPORT_LABEL_PATH = Path(
-    "/kaggle/input/rsna-knee-report-labels/report-labels-v1.csv"
+PUBLIC_DATASET_ROOTS = (
+    Path("/kaggle/input/datasets/pilkwang/rsna-knee-llm-labels"),
+    Path("/kaggle/input/rsna-knee-llm-labels"),
+)
+PRIVATE_REPORT_LABEL_ROOTS = (
+    Path("/kaggle/input/kernels/plthon/rsna-knee-report-labels"),
+    Path("/kaggle/input/rsna-knee-report-labels"),
 )
 WORK_ROOT = Path("/kaggle/working")
 PACKAGE_ARCHIVE = WORK_ROOT / "rsna_knee_source.zip"
@@ -48,8 +52,10 @@ from rsna_knee.public_label_audit import (
 )
 
 started = time.monotonic()
-PUBLIC_DATASET_ROOT = resolve_dataset_root(
-    EXPECTED_PUBLIC_DATASET_ROOT, "report_labels_v2.csv"
+PUBLIC_DATASET_ROOT = resolve_dataset_root(PUBLIC_DATASET_ROOTS, "report_labels_v2.csv")
+PRIVATE_REPORT_LABEL_PATH = (
+    resolve_dataset_root(PRIVATE_REPORT_LABEL_ROOTS, "report-labels-v1.csv")
+    / "report-labels-v1.csv"
 )
 contract_bytes = (
     files("rsna_knee").joinpath("public-report-label-dataset-v1.json").read_bytes()
