@@ -67,6 +67,18 @@ class LabelAudit:
         }
 
 
+def resolve_dataset_root(expected_root: Path, marker: str) -> Path:
+    """Use Kaggle's slug mount when present, otherwise require one exact marker."""
+    if expected_root.is_dir():
+        return expected_root
+    matches = [path.parent for path in expected_root.parent.rglob(marker)]
+    if len(matches) != 1:
+        raise FileNotFoundError(
+            f"Expected one attached dataset containing {marker}; found {len(matches)}"
+        )
+    return matches[0]
+
+
 def validate_wide_labels(
     rows: Sequence[Mapping[str, object]],
     columns: Sequence[str],

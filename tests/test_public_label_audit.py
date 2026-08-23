@@ -20,11 +20,23 @@ from rsna_knee.public_label_audit import (
     compare_label_sources,
     decide_usability,
     public_safe_summary,
+    resolve_dataset_root,
     summarize_coverage,
     validate_wide_labels,
 )
 
 TARGETS = ("ACL", "MCL")
+
+
+def test_dataset_root_falls_back_to_one_attached_marker(tmp_path: Path) -> None:
+    mounted = tmp_path / "datasets" / "pilkwang" / "rsna-knee-llm-labels"
+    mounted.mkdir(parents=True)
+    (mounted / "report_labels_v2.csv").touch()
+
+    assert (
+        resolve_dataset_root(tmp_path / "rsna-knee-llm-labels", "report_labels_v2.csv")
+        == mounted
+    )
 
 
 def test_valid_wide_binary_labels_are_accepted() -> None:

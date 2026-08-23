@@ -26,7 +26,7 @@ if STAGE != "audit":
     raise ValueError(f"Unsupported public-label stage: {STAGE}")
 
 COMPETITION_ROOT = Path("/kaggle/input/competitions/rsna-knee-abnormality-detection")
-PUBLIC_DATASET_ROOT = Path("/kaggle/input/rsna-knee-llm-labels")
+EXPECTED_PUBLIC_DATASET_ROOT = Path("/kaggle/input/rsna-knee-llm-labels")
 PRIVATE_REPORT_LABEL_PATH = Path(
     "/kaggle/input/rsna-knee-report-labels/report-labels-v1.csv"
 )
@@ -42,11 +42,15 @@ from rsna_knee.public_label_audit import (
     compare_label_sources,
     decide_usability,
     public_safe_summary,
+    resolve_dataset_root,
     summarize_coverage,
     validate_wide_labels,
 )
 
 started = time.monotonic()
+PUBLIC_DATASET_ROOT = resolve_dataset_root(
+    EXPECTED_PUBLIC_DATASET_ROOT, "report_labels_v2.csv"
+)
 contract_bytes = (
     files("rsna_knee").joinpath("public-report-label-dataset-v1.json").read_bytes()
 )
