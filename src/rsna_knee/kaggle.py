@@ -134,7 +134,7 @@ def build_kaggle_bundle(
     source = source_path.read_text(encoding="utf-8")
     if spec.validator == "ordering":
         _validate_public_ordering_source(source)
-    if spec.embed_package:
+    if spec.embed_package or spec.package_contracts:
         if source.count(_PACKAGE_MARKER) != 1:
             raise ValueError(
                 "Packaged notebook source must contain exactly one package marker"
@@ -320,22 +320,7 @@ def build_wheel_dataset(
 ) -> WheelDataset:
     """Build a pure-Python wheel and attach only explicitly requested files."""
     _require_resolved_kaggle_id(dataset_id)
-    git_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    git_dirty = bool(
-        subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
+    git_commit, git_dirty = _git_state(project_root)
     output_root.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
@@ -430,22 +415,7 @@ def build_reports_bundle(
             )
         contract_names = (contract_path.name,)
     source_path = project_root / "notebooks" / "report_labels.py"
-    git_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    git_dirty = bool(
-        subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
-            cwd=project_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
+    git_commit, git_dirty = _git_state(project_root)
     return build_kaggle_bundle(
         project_root,
         output_root,
@@ -697,6 +667,26 @@ def _dataset_id(dataset: WheelDataset | None) -> str | None:
     if not isinstance(value, str):
         raise TypeError("Dataset metadata ID is malformed")
     return value
+
+
+def _git_state(project_root: Path) -> tuple[str, bool]:
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return commit, dirty
 
 
 def _dataset_metadata(

@@ -259,6 +259,11 @@ def test_provenance_contract_and_evidence_spans_are_stable() -> None:
 
 
 def test_rule_contract_rejects_drift_and_unstable_ids() -> None:
+    wrong_version = _rule_contract()
+    wrong_version["schema_version"] = 2
+    with pytest.raises(ValueError, match="schema version"):
+        load_rule_contract(wrong_version, expected_target_order=("ACL", "Effusion"))
+
     wrong_order = _rule_contract()
     wrong_order["target_order"] = ["Effusion", "ACL"]
     with pytest.raises(ValueError, match="verified order"):
@@ -357,6 +362,54 @@ def test_audit_is_aggregate_only_and_enforces_document_frequency_privacy() -> No
         isinstance(item["document_frequency"], int) and item["document_frequency"] >= 5
         for item in lexical_records(audit)
     )
+    contradictions = audit["potentially_contradictory_assertion_patterns"]
+    assert isinstance(contradictions, dict)
+    assert contradictions["ACL"] == {
+        "reports_with_potential_contradiction": 0,
+        "patterns": [],
+    }
+    assert contradictions["Effusion"] == {
+        "reports_with_potential_contradiction": 0,
+        "patterns": [],
+    }
+
+
+def test_audit_neighbors_and_contradictions_are_anchored_to_each_target() -> None:
+    rows = tuple(
+        ReportRow(
+            f"study-{index}",
+            (
+                "FINDINGS: Medial meniscus tear. Medial compartment narrowing. "
+                "No ACL tear. ACL tear is present."
+            ),
+        )
+        for index in range(5)
+    )
+
+    audit = audit_report_corpus(rows, ("Medial Meniscus", "ACL"))
+    terminology = audit["target_oriented_candidate_terminology"]
+    assert isinstance(terminology, dict)
+    meniscus = terminology["Medial Meniscus"]
+    assert isinstance(meniscus, dict)
+    neighbors = meniscus["corpus_observed_neighbors"]
+    assert isinstance(neighbors, list)
+
+    assert {item["phrase"] for item in neighbors} >= {"meniscus tear"}
+    assert "medial compartment" not in {item["phrase"] for item in neighbors}
+    contradictions = audit["potentially_contradictory_assertion_patterns"]
+    assert isinstance(contradictions, dict)
+    acl = contradictions["ACL"]
+    assert isinstance(acl, dict)
+    assert acl == {
+        "reports_with_potential_contradiction": 5,
+        "patterns": [
+            {
+                "positive_cue": "present",
+                "negative_cue": "no",
+                "document_frequency": 5,
+            }
+        ],
+    }
 
 
 def test_audit_csv_reader_never_requests_organizer_gold(tmp_path: Path) -> None:

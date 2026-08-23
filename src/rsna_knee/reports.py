@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -160,7 +161,7 @@ class LabelRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class ReportExtraction:
+class ExtractionResult:
     labels: tuple[LabelRecord, ...]
     evidence: tuple[EvidenceRecord, ...]
 
@@ -169,12 +170,6 @@ class ReportExtraction:
 class ReportRow:
     study_uid: str
     report: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class CorpusExtraction:
-    labels: tuple[LabelRecord, ...]
-    evidence: tuple[EvidenceRecord, ...]
 
 
 def normalize_report(text: str | None) -> str:
@@ -256,6 +251,8 @@ def load_rule_contract(
     else:
         data = dict(source)
     schema_version = _required_int(data, "schema_version")
+    if schema_version != 1:
+        raise ValueError(f"Unsupported rule contract schema version: {schema_version}")
     extractor_version = _required_text(data, "extractor_version")
     audit_sha256 = _required_text(data, "audit_artifact_sha256")
     if _HEX_SHA256.fullmatch(audit_sha256) is None:
@@ -330,7 +327,7 @@ def extract_report(
     study_uid: str,
     report: str | None,
     contract: RuleContract,
-) -> ReportExtraction:
+) -> ExtractionResult:
     """Extract all ordered target states and auditable evidence for one report."""
     if not isinstance(study_uid, str) or not study_uid:
         raise ValueError("StudyInstanceUID must be a nonempty string")
@@ -370,7 +367,7 @@ def extract_report(
             )
         )
         all_evidence.extend(evidence)
-    return ReportExtraction(labels=tuple(labels), evidence=tuple(all_evidence))
+    return ExtractionResult(labels=tuple(labels), evidence=tuple(all_evidence))
 
 
 def extract_corpus(
@@ -378,7 +375,7 @@ def extract_corpus(
     contract: RuleContract,
     *,
     expected_study_count: int | None = None,
-) -> CorpusExtraction:
+) -> ExtractionResult:
     """Extract deterministic long-form rows in source-study and target order."""
     if expected_study_count is not None and len(rows) != expected_study_count:
         raise ValueError(
@@ -395,7 +392,7 @@ def extract_corpus(
         extraction = extract_report(row.study_uid, row.report, contract)
         labels.extend(extraction.labels)
         evidence.extend(extraction.evidence)
-    outcome = CorpusExtraction(labels=tuple(labels), evidence=tuple(evidence))
+    outcome = ExtractionResult(labels=tuple(labels), evidence=tuple(evidence))
     _validate_corpus_extraction(outcome, rows, contract, normalized_lengths)
     return outcome
 
@@ -476,9 +473,6 @@ def audit_report_corpus(
         heading_count_histogram[len(headings)] += 1
 
     lengths = [len(report) for report in normalized]
-    phrase_frequencies = Counter[str]()
-    for frequencies in ngram_frequencies.values():
-        phrase_frequencies.update(frequencies)
     target_terminology: dict[str, object] = {}
     near_misses: dict[str, object] = {}
     for target in target_names:
@@ -486,16 +480,11 @@ def audit_report_corpus(
         seed_records = _phrase_records(
             Counter({seed: _document_frequency(normalized, seed) for seed in seeds})
         )
-        seed_tokens = {token for seed in seeds for token in _TOKEN.findall(seed)}
-        neighbors = Counter(
-            {
-                phrase: frequency
-                for phrase, frequency in phrase_frequencies.items()
-                if phrase not in seeds
-                and len(phrase.split()) > 1
-                and set(phrase.split()) & seed_tokens
-            }
-        )
+        neighbors = _target_neighbor_frequencies(normalized, seeds)
+        for seed in seeds:
+            neighbors.pop(
+                " ".join(token.casefold() for token in _TOKEN.findall(seed)), None
+            )
         neighbor_records = _phrase_records(neighbors, limit=100)
         target_terminology[target] = {
             "seed_terms": seed_records,
@@ -511,13 +500,6 @@ def audit_report_corpus(
         )
         for category, candidates in _AUDIT_CUES.items()
     }
-    positive_cues = _AUDIT_CUES["positive"]
-    negative_cues = _AUDIT_CUES["explicit_negative"]
-    contradiction_count = sum(
-        any(_contains_phrase(report, cue) for cue in positive_cues)
-        and any(_contains_phrase(report, cue) for cue in negative_cues)
-        for report in normalized
-    )
     selected_input_sha256 = hashlib.sha256(
         "".join(
             json.dumps(
@@ -567,9 +549,9 @@ def audit_report_corpus(
         },
         "target_oriented_candidate_terminology": target_terminology,
         "cue_candidates": cue_candidates,
-        "potentially_contradictory_assertion_patterns": {
-            "reports_with_positive_and_negative_cue_candidates": contradiction_count
-        },
+        "potentially_contradictory_assertion_patterns": (
+            _target_contradiction_statistics(normalized, target_names)
+        ),
         "near_miss_ambiguity_candidates": near_misses,
     }
     _validate_audit_privacy(audit)
@@ -602,6 +584,86 @@ def _contains_phrase(report: str, phrase: str) -> bool:
     return re.search(pattern, report, flags=re.IGNORECASE | re.UNICODE) is not None
 
 
+def _target_neighbor_frequencies(
+    reports: Sequence[str], seeds: Sequence[str]
+) -> Counter[str]:
+    frequencies: Counter[str] = Counter()
+    seed_tokens = [
+        tuple(token.casefold() for token in _TOKEN.findall(seed)) for seed in seeds
+    ]
+    for report in reports:
+        report_candidates: set[str] = set()
+        for segment in segment_report(report):
+            tokens = [token.casefold() for token in _TOKEN.findall(segment.text)]
+            for seed in seed_tokens:
+                for index in range(len(tokens) - len(seed) + 1):
+                    if tuple(tokens[index : index + len(seed)]) != seed:
+                        continue
+                    for size in (2, 3):
+                        for start in range(index - size + 1, index + len(seed)):
+                            end = start + size
+                            if start >= 0 and end <= len(tokens):
+                                report_candidates.add(" ".join(tokens[start:end]))
+        frequencies.update(report_candidates)
+    return frequencies
+
+
+def _target_contradiction_statistics(
+    reports: Sequence[str], target_names: Sequence[str]
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for target in target_names:
+        seeds = (target.casefold(), *_TARGET_AUDIT_EXPANSIONS.get(target, ()))
+        pair_frequencies: Counter[tuple[str, str]] = Counter()
+        contradiction_reports = 0
+        for report in reports:
+            positive: set[str] = set()
+            negative: set[str] = set()
+            for segment in segment_report(report):
+                if not any(_contains_phrase(segment.text, seed) for seed in seeds):
+                    continue
+                positive.update(
+                    cue
+                    for cue in _AUDIT_CUES["positive"]
+                    if _contains_phrase(segment.text, cue)
+                )
+                negative.update(
+                    cue
+                    for cue in _AUDIT_CUES["explicit_negative"]
+                    if _contains_phrase(segment.text, cue)
+                )
+            if positive and negative:
+                contradiction_reports += 1
+                pair_frequencies.update(
+                    {
+                        (positive_cue, negative_cue)
+                        for positive_cue in positive
+                        for negative_cue in negative
+                    }
+                )
+        patterns = [
+            {
+                "positive_cue": positive_cue,
+                "negative_cue": negative_cue,
+                "document_frequency": frequency,
+            }
+            for (positive_cue, negative_cue), frequency in pair_frequencies.items()
+            if frequency >= AUDIT_MIN_DOCUMENT_FREQUENCY
+        ]
+        patterns.sort(
+            key=lambda item: (
+                -cast(int, item["document_frequency"]),
+                cast(str, item["positive_cue"]),
+                cast(str, item["negative_cue"]),
+            )
+        )
+        result[target] = {
+            "reports_with_potential_contradiction": contradiction_reports,
+            "patterns": patterns,
+        }
+    return result
+
+
 def _length_distribution(lengths: Sequence[int]) -> dict[str, object]:
     if not lengths:
         return {
@@ -626,7 +688,7 @@ def _length_distribution(lengths: Sequence[int]) -> dict[str, object]:
 
 
 def _nearest_rank(ordered: Sequence[int], quantile: float) -> int:
-    return ordered[max(0, int(len(ordered) * quantile + 0.999999999) - 1)]
+    return ordered[max(0, math.ceil(len(ordered) * quantile) - 1)]
 
 
 def _script_family_counts(reports: Sequence[str]) -> dict[str, object]:
@@ -685,7 +747,7 @@ def _validate_audit_privacy(audit: Mapping[str, object]) -> None:
             raise ValueError(
                 f"Audit output contains prohibited private field: {forbidden}"
             )
-    for record in _walk_phrase_records(audit):
+    for record in _walk_lexical_records(audit):
         frequency = record.get("document_frequency")
         if (
             isinstance(frequency, bool)
@@ -695,20 +757,23 @@ def _validate_audit_privacy(audit: Mapping[str, object]) -> None:
             raise ValueError("Audit lexical output violates the privacy threshold")
 
 
-def _walk_phrase_records(value: object) -> list[Mapping[str, object]]:
+def _walk_lexical_records(value: object) -> list[Mapping[str, object]]:
     if isinstance(value, dict):
         mapping = cast(dict[str, object], value)
-        found: list[Mapping[str, object]] = [mapping] if "phrase" in mapping else []
+        lexical_keys = {"phrase", "positive_cue", "negative_cue"}
+        found: list[Mapping[str, object]] = (
+            [mapping] if lexical_keys & mapping.keys() else []
+        )
         for child in mapping.values():
-            found.extend(_walk_phrase_records(child))
+            found.extend(_walk_lexical_records(child))
         return found
     if isinstance(value, list):
-        return [record for child in value for record in _walk_phrase_records(child)]
+        return [record for child in value for record in _walk_lexical_records(child)]
     return []
 
 
 def _validate_corpus_extraction(
-    extraction: CorpusExtraction,
+    extraction: ExtractionResult,
     rows: Sequence[ReportRow],
     contract: RuleContract,
     normalized_lengths: Mapping[str, int],
