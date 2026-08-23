@@ -284,6 +284,7 @@ def pull_kaggle_output(
     if not filenames:
         raise ValueError("At least one Kaggle output filename is required")
     private_row_outputs = {
+        "public-label-row-validation.csv",
         "report-labels-v1.csv",
         "report-evidence-v1.jsonl",
         "report-llm-labels-v1.csv",
@@ -451,6 +452,47 @@ def build_reports_bundle(
         ),
     )
     return _record_rendered_notebook_hash(bundle, label="Report")
+
+
+def build_public_label_audit_bundle(
+    project_root: Path, output_root: Path, *, stage: str
+) -> KaggleBundle:
+    """Build the private CPU audit of the frozen public label dataset."""
+    if stage != "audit":
+        raise ValueError("Public label audit stage must be audit")
+    contract_path = project_root / "contracts" / "public-report-label-dataset-v1.json"
+    if not contract_path.is_file():
+        raise FileNotFoundError(
+            "Public label audit requires its frozen dataset contract"
+        )
+    source_path = project_root / "notebooks" / "public_label_audit.py"
+    git_commit, git_dirty = _git_state(project_root)
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="public_label_audit.ipynb",
+            kernel_id="plthon/rsna-knee-public-label-audit",
+            title="RSNA Knee Public Label Audit",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=("pilkwang/rsna-knee-llm-labels",),
+            kernel_sources=("plthon/rsna-knee-report-labels",),
+            replacements={
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_PUBLIC_LABEL_STAGE__": stage,
+            },
+            embed_package=True,
+            package_contracts=(contract_path.name,),
+            validator="public_labels",
+        ),
+    )
+    return _record_rendered_notebook_hash(bundle, label="Public label audit")
 
 
 def build_report_llm_bundle(
@@ -702,6 +744,8 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         _validate_reports_source(_notebook_source(source))
     elif validator == "report_llm":
         _validate_report_llm_source(_notebook_source(source))
+    elif validator == "public_labels":
+        _validate_public_label_source(_notebook_source(source))
     if bundle.dataset is not None:
         if provenance.get("config_sha256") != _sha256(bundle.dataset.config_path):
             raise ValueError("Configuration digest does not match the rendered bundle")
@@ -914,6 +958,27 @@ def _validate_report_llm_source(source: str) -> None:
     )
     if any(value in folded for value in forbidden):
         raise ValueError("Report LLM notebook contains a prohibited external path")
+
+
+def _validate_public_label_source(source: str) -> None:
+    required = (
+        "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+        "/kaggle/input/rsna-knee-llm-labels",
+        "/kaggle/input/rsna-knee-report-labels/report-labels-v1.csv",
+        'usecols=["StudyInstanceUID", *target_order]',
+        "summarize_coverage",
+        "compare_label_sources",
+        "public_safe_summary",
+        "public-label-audit-manifest.json",
+        "public-label-comparison-summary.json",
+        "public-label-audit-summary.json",
+        'os.environ["CUDA_VISIBLE_DEVICES"] = ""',
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Public label audit omits a privacy or runtime safeguard")
+    folded = source.casefold()
+    if any(value in folded for value in ("pydicom", ".dcm", "train_series.csv")):
+        raise ValueError("Public label audit must not read DICOM or series metadata")
 
 
 def _notebook_source(rendered: str) -> str:

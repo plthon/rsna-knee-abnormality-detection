@@ -4,6 +4,7 @@ from pathlib import Path
 
 from rsna_knee.kaggle import (
     build_public_baseline_bundle,
+    build_public_label_audit_bundle,
     build_public_notebook_bundle,
     build_report_llm_bundle,
     build_reports_bundle,
@@ -27,6 +28,7 @@ def main() -> None:
             "baseline",
             "reports",
             "report-llm",
+            "public-label-audit",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -62,6 +64,7 @@ def main() -> None:
                 "baseline": "public-gold-baseline",
                 "reports": f"reports-{arguments.stage}",
                 "report-llm": f"report-llm-{arguments.stage}",
+                "public-label-audit": "public-label-audit",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -87,6 +90,12 @@ def main() -> None:
             if arguments.stage not in {"smoke", "extract"}:
                 parser.error("report-llm build requires --stage smoke|extract")
             bundle = build_report_llm_bundle(
+                project_root, arguments.output, stage=arguments.stage
+            )
+        else:
+            if arguments.stage != "audit":
+                parser.error("public-label-audit build requires --stage audit")
+            bundle = build_public_label_audit_bundle(
                 project_root, arguments.output, stage=arguments.stage
             )
         print(bundle.root)
