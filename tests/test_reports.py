@@ -33,6 +33,14 @@ def _rule_contract() -> dict[str, object]:
         "assertion_scope_rules": {
             "window_tokens": 5,
             "scope_terminators": [r"\bbut\b", r"\bhowever\b", r"\byet\b"],
+            "coordination_terminators": [r"[,]", r"\band\b"],
+            "affirmation": [
+                {
+                    "id": "GLOBAL.POS.001",
+                    "pattern": r"\bpresent\b",
+                    "direction": "backward",
+                }
+            ],
             "negation": [
                 {
                     "id": "GLOBAL.NEG.001",
@@ -151,8 +159,8 @@ def test_report_segmentation_keeps_sections_sentences_and_offsets() -> None:
     segments = segment_report(report)
 
     assert [(item.section, item.text) for item in segments] == [
-        ("history", "Remote injury."),
-        ("findings", "No ACL tear."),
+        ("history", "HISTORY: Remote injury."),
+        ("findings", "FINDINGS:\nNo ACL tear."),
         ("findings", "Effusion is present."),
     ]
     assert all(
@@ -451,16 +459,29 @@ def test_audit_csv_reader_never_requests_organizer_gold(tmp_path: Path) -> None:
     ("target", "text"),
     [
         ("ACL", "ACL tear."),
+        ("ACL", "Anterior cruciate ligament tear."),
         ("MCL", "MCL sprain."),
+        ("MCL", "Medial collateral ligament sprain."),
         ("Medial Meniscus", "Medial meniscus tear."),
         ("Lateral Meniscus", "Lateral meniscus tear."),
+        ("Medial OA", "Medial OA is present."),
         ("Medial OA", "Medial osteoarthritis."),
+        ("Lateral OA", "Lateral OA is present."),
         ("Lateral OA", "Lateral osteoarthritis."),
+        ("PF OA", "PF OA is present."),
         ("PF OA", "Patellofemoral osteoarthritis."),
+        ("Effusion", "Effusion is present."),
         ("Effusion", "Joint effusion is present."),
+        ("Effusion", "Knee effusion is present."),
+        ("Effusion", "Suprapatellar effusion is present."),
         ("Synovitis", "Synovitis is present."),
         ("Baker's", "Baker's cyst is present."),
+        ("Baker's", "Baker cyst is present."),
+        ("Contusion", "Contusion is present."),
+        ("Contusion", "Bone contusion is present."),
         ("Contusion", "Osseous contusion is present."),
+        ("Contusion", "Marrow contusion is present."),
+        ("Contusion", "Soft tissue contusion is present."),
         ("Fracture", "Fracture is present."),
     ],
 )
@@ -474,10 +495,16 @@ def test_frozen_contract_recognizes_each_target(target: str, text: str) -> None:
     ("target", "text"),
     [
         ("ACL", "ACL normal."),
+        ("ACL", "ACL no tear."),
+        ("ACL", "ACL is not torn."),
         ("MCL", "The MCL is intact."),
+        ("MCL", "MCL no tear."),
         ("Medial Meniscus", "Medial meniscus normal."),
+        ("Medial Meniscus", "Medial meniscus without tear."),
         ("Lateral Meniscus", "The lateral meniscus is intact."),
-        ("Effusion", "Effusion no intra-articular bodies."),
+        ("Lateral Meniscus", "Lateral meniscus no tear."),
+        ("Effusion", "Effusion is absent."),
+        ("Effusion", "No effusion is present."),
         ("Synovitis", "No synovitis."),
         ("Baker's", "No Baker's cyst."),
         ("Contusion", "No bone contusion."),
@@ -492,17 +519,155 @@ def test_frozen_contract_recognizes_explicit_negative_evidence(
     assert {row.target: row.state for row in extraction.labels}[target] == "negative"
 
 
-def test_frozen_contract_handles_uncertainty_context_and_conflicts() -> None:
+@pytest.mark.parametrize("cue", ["Possible", "Possibly", "May represent"])
+def test_frozen_contract_handles_uncertainty(cue: str) -> None:
+    extraction = extract_report("study-1", f"{cue} ACL tear.", _frozen_contract())
+
+    assert extraction.labels[0].state == "uncertain"
+
+
+@pytest.mark.parametrize(
+    ("target", "text"),
+    [
+        ("ACL", "ACL may be intact."),
+        ("ACL", "Possible ACL is intact."),
+        ("Medial Meniscus", "Medial meniscus possibly normal."),
+    ],
+)
+def test_frozen_contract_uncertainty_overrides_negative_descriptors(
+    target: str, text: str
+) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert {row.target: row.state for row in extraction.labels}[target] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "History of ACL tear.",
+        "Prior ACL tear.",
+        "Previous ACL tear.",
+        "Remote ACL tear.",
+    ],
+)
+def test_frozen_contract_excludes_historical_mentions(text: str) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert extraction.labels[0].state == "unknown"
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "HISTORY",
+        "CLINICAL HISTORY",
+        "INDICATION",
+        "CLINICAL INDICATION",
+        "TECHNIQUE",
+        "COMPARISON",
+        "PRIOR IMAGING",
+        "EXAM TYPE",
+    ],
+)
+def test_frozen_contract_excludes_non_finding_sections(section: str) -> None:
+    extraction = extract_report("study-1", f"{section}: ACL tear.", _frozen_contract())
+
+    assert extraction.labels[0].state == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("target", "text", "expected"),
+    [
+        ("Medial Meniscus", "MEDIAL MENISCUS: tear.", "positive"),
+        ("Medial Meniscus", "MEDIAL MENISCUS:\ntear.", "positive"),
+        ("Lateral Meniscus", "LATERAL MENISCUS: no tear.", "negative"),
+        ("Lateral Meniscus", "LATERAL MENISCUS:\nno tear.", "negative"),
+    ],
+)
+def test_frozen_contract_uses_observed_target_headings(
+    target: str, text: str, expected: str
+) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert {row.target: row.state for row in extraction.labels}[target] == expected
+    assert any(
+        rule_id.endswith(".SECTION.001")
+        for item in extraction.evidence
+        if item.target == target
+        for rule_id in item.rule_ids
+    )
+
+
+def test_frozen_contract_negation_does_not_leak_to_an_unrelated_finding() -> None:
+    without = extract_report(
+        "study-1", "ACL tear without effusion.", _frozen_contract()
+    )
+    not_seen = extract_report(
+        "study-2", "Fracture not seen with effusion present.", _frozen_contract()
+    )
+    no = extract_report(
+        "study-1", "Effusion no intra-articular bodies.", _frozen_contract()
+    )
+
+    assert [without.labels[index].state for index in (0, 7)] == [
+        "positive",
+        "negative",
+    ]
+    assert [not_seen.labels[index].state for index in (11, 7)] == [
+        "negative",
+        "positive",
+    ]
+    assert no.labels[7].state == "positive"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_fracture"),
+    [
+        ("Fracture not seen and effusion present.", "negative"),
+        ("Fracture not seen, effusion present.", "negative"),
+        ("Fracture not seen and effusion seen.", "negative"),
+        ("Fracture not seen and report shows effusion.", "negative"),
+        ("Possible fracture and effusion present.", "uncertain"),
+        ("Possible fracture, effusion present.", "uncertain"),
+        ("Possible fracture, effusion demonstrated.", "uncertain"),
+        ("Possible fracture, report demonstrates effusion.", "uncertain"),
+    ],
+)
+def test_frozen_contract_assertions_stop_at_coordinated_findings(
+    text: str, expected_fracture: str
+) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert extraction.labels[11].state == expected_fracture
+    assert extraction.labels[7].state == "positive"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("No ACL and MCL tear.", "negative"),
+        ("No ACL, MCL tear.", "negative"),
+        ("Possible ACL and MCL tears.", "uncertain"),
+        ("Possible ACL, MCL tears.", "uncertain"),
+    ],
+)
+def test_frozen_contract_assertions_cover_coordinated_findings(
+    text: str, expected: str
+) -> None:
+    extraction = extract_report("study-1", text, _frozen_contract())
+
+    assert [extraction.labels[index].state for index in (0, 1)] == [
+        expected,
+        expected,
+    ]
+
+
+def test_frozen_contract_handles_conflicts() -> None:
     contract = _frozen_contract()
 
-    uncertain = extract_report("study-1", "Possible ACL tear.", contract)
-    history = extract_report("study-2", "HISTORY: ACL tear.", contract)
-    remote = extract_report("study-3", "Remote bone contusion.", contract)
     conflict = extract_report("study-4", "No ACL tear. ACL tear is present.", contract)
 
-    assert uncertain.labels[0].state == "uncertain"
-    assert history.labels[0].state == "unknown"
-    assert remote.labels[10].state == "unknown"
     assert conflict.labels[0].state == "uncertain"
     assert {item.conflict_rule for item in conflict.evidence} == {"ACL.CONFLICT.001"}
 
@@ -536,7 +701,6 @@ def test_private_extraction_artifacts_are_complete_deterministic_and_public_safe
         competition_contract_sha256="e" * 64,
         rule_contract_sha256="f" * 64,
         source_provenance=provenance,
-        runtime_seconds=1.25,
     )
     second = write_extraction_artifacts(
         rows,
@@ -546,7 +710,6 @@ def test_private_extraction_artifacts_are_complete_deterministic_and_public_safe
         competition_contract_sha256="e" * 64,
         rule_contract_sha256="f" * 64,
         source_provenance=provenance,
-        runtime_seconds=1.25,
     )
 
     with first["labels"].open(newline="", encoding="utf-8") as source:

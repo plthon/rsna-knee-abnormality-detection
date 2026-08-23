@@ -102,6 +102,8 @@ class RuleContract:
     section_rules: tuple[SectionRule, ...]
     window_tokens: int
     scope_terminators: tuple[str, ...]
+    coordination_terminators: tuple[str, ...]
+    affirmation_rules: tuple[PatternRule, ...]
     negation_rules: tuple[PatternRule, ...]
     uncertainty_rules: tuple[PatternRule, ...]
     contextual_exclusions: tuple[PatternRule, ...]
@@ -200,6 +202,7 @@ def segment_report(normalized_report: str) -> tuple[ReportSegment, ...]:
     segments: list[ReportSegment] = []
     section = "unsectioned"
     line_start = 0
+    pending_heading_start: int | None = None
     for line in normalized_report.splitlines(keepends=True):
         content = line.removesuffix("\n")
         body = content
@@ -210,23 +213,23 @@ def segment_report(normalized_report: str) -> tuple[ReportSegment, ...]:
                 " ", heading.group("heading")
             ).casefold()
             raw_body = heading.group("body")
-            body = raw_body.strip()
-            body_start = (
-                line_start
-                + heading.start("body")
-                + len(raw_body)
-                - len(raw_body.lstrip())
-            )
+            body = content if raw_body.strip() else ""
+            body_start = line_start
+            pending_heading_start = None if body else line_start
         for match in _SENTENCE.finditer(body):
-            text = match.group().strip()
+            if pending_heading_start is None:
+                raw_text = match.group()
+                raw_start = body_start + match.start()
+            else:
+                raw_start = pending_heading_start
+                raw_text = normalized_report[
+                    pending_heading_start : body_start + match.end()
+                ]
+                pending_heading_start = None
+            text = raw_text.strip()
             if not text:
                 continue
-            start = (
-                body_start
-                + match.start()
-                + len(match.group())
-                - len(match.group().lstrip())
-            )
+            start = raw_start + len(raw_text) - len(raw_text.lstrip())
             segments.append(
                 ReportSegment(
                     section=section,
@@ -271,8 +274,10 @@ def load_rule_contract(
     if window_tokens < 0:
         raise ValueError("Assertion window_tokens must be nonnegative")
     scope_terminators = _text_tuple(assertion, "scope_terminators")
-    for pattern in scope_terminators:
+    coordination_terminators = _text_tuple(assertion, "coordination_terminators")
+    for pattern in (*scope_terminators, *coordination_terminators):
         _compile_pattern(pattern)
+    affirmation_rules = _pattern_rules(assertion.get("affirmation"), "GLOBAL", "POS")
     negation_rules = _pattern_rules(assertion.get("negation"), "GLOBAL", "NEG")
     uncertainty_rules = _pattern_rules(
         assertion.get("uncertainty"), "GLOBAL", "UNCERTAIN"
@@ -289,6 +294,7 @@ def load_rule_contract(
         raise ValueError("Rule target entries differ from target_order")
     all_ids = [rule_id for target in targets for rule_id in _target_rule_ids(target)]
     all_ids.extend(rule.id for rule in section_rules)
+    all_ids.extend(rule.id for rule in affirmation_rules)
     all_ids.extend(rule.id for rule in negation_rules)
     all_ids.extend(rule.id for rule in uncertainty_rules)
     all_ids.extend(rule.id for rule in exclusions)
@@ -303,6 +309,8 @@ def load_rule_contract(
         section_rules=section_rules,
         window_tokens=window_tokens,
         scope_terminators=scope_terminators,
+        coordination_terminators=coordination_terminators,
+        affirmation_rules=affirmation_rules,
         negation_rules=negation_rules,
         uncertainty_rules=uncertainty_rules,
         contextual_exclusions=exclusions,
@@ -569,16 +577,11 @@ def write_extraction_artifacts(
     competition_contract_sha256: str,
     rule_contract_sha256: str,
     source_provenance: Mapping[str, object],
-    runtime_seconds: float | None = None,
 ) -> dict[str, Path]:
     """Write the fixed private extraction artifacts after a repeatability check."""
     started = time.monotonic()
     _validate_sha256("competition_contract_sha256", competition_contract_sha256)
     _validate_sha256("rule_contract_sha256", rule_contract_sha256)
-    if runtime_seconds is not None and (
-        isinstance(runtime_seconds, bool) or runtime_seconds < 0
-    ):
-        raise ValueError("runtime_seconds must be nonnegative")
     source = _validated_source_provenance(source_provenance)
     paths = {
         "labels": output_root / "report-labels-v1.csv",
@@ -698,11 +701,7 @@ def write_extraction_artifacts(
             **private_artifacts,
             paths["summary"].name: _artifact_record(paths["summary"]),
         },
-        "runtime_seconds": (
-            runtime_seconds
-            if runtime_seconds is not None
-            else time.monotonic() - started
-        ),
+        "runtime_seconds": time.monotonic() - started,
         "runtime_policy": {
             "cpu_only": True,
             "internet_enabled": False,
@@ -1055,6 +1054,7 @@ def _validate_corpus_extraction(
         rule_id for target in contract.targets for rule_id in _target_rule_ids(target)
     }
     known_rule_ids.update(rule.id for rule in contract.section_rules)
+    known_rule_ids.update(rule.id for rule in contract.affirmation_rules)
     known_rule_ids.update(rule.id for rule in contract.negation_rules)
     known_rule_ids.update(rule.id for rule in contract.uncertainty_rules)
     known_rule_ids.update(rule.id for rule in contract.contextual_exclusions)
@@ -1132,12 +1132,14 @@ def _evaluate_assertion(
         for rule in (*target.section_context_rules, *contract.section_rules)
         if segment.section in rule.sections
     )
-    if section_matches:
-        assertions = {rule.assertion_type for rule in section_matches}
-        assertion: AssertionType = (
-            next(iter(assertions)) if len(assertions) == 1 else "uncertain"
+    section_rule_ids = tuple(sorted(rule.id for rule in section_matches))
+    decisive_section_matches = tuple(
+        rule for rule in section_matches if rule.assertion_type != "affirmed"
+    )
+    if decisive_section_matches:
+        return _resolve_mention_assertions(
+            [(rule.assertion_type, rule.id) for rule in decisive_section_matches]
         )
-        return assertion, tuple(sorted(rule.id for rule in section_matches))
 
     target_groups: tuple[tuple[AssertionType, tuple[PatternRule, ...]], ...] = (
         ("contextual_exclusion", target.contextual_exclusions),
@@ -1151,10 +1153,28 @@ def _evaluate_assertion(
         mention_end,
         target_groups,
         contract,
+        terminators=(
+            *contract.scope_terminators,
+            *contract.coordination_terminators,
+        ),
     )
-    if target_matches:
-        return _resolve_mention_assertions(target_matches)
-
+    affirmation_matches = _matching_assertions(
+        segment,
+        mention_start,
+        mention_end,
+        (("affirmed", contract.affirmation_rules),),
+        contract,
+        terminators=(
+            *contract.scope_terminators,
+            *contract.coordination_terminators,
+        ),
+    )
+    modifier_terminators = contract.scope_terminators
+    if affirmation_matches:
+        modifier_terminators = (
+            *modifier_terminators,
+            *contract.coordination_terminators,
+        )
     generic_groups: tuple[tuple[AssertionType, tuple[PatternRule, ...]], ...] = (
         ("contextual_exclusion", contract.contextual_exclusions),
         ("negated", contract.negation_rules),
@@ -1166,10 +1186,14 @@ def _evaluate_assertion(
         mention_end,
         generic_groups,
         contract,
+        terminators=modifier_terminators,
     )
+    generic_matches.extend(target_matches)
+    generic_matches.extend(affirmation_matches)
     if generic_matches:
-        return _resolve_mention_assertions(generic_matches)
-    return "affirmed", ()
+        assertion, rule_ids = _resolve_mention_assertions(generic_matches)
+        return assertion, tuple(sorted((*section_rule_ids, *rule_ids)))
+    return "affirmed", section_rule_ids
 
 
 def _matching_assertions(
@@ -1178,6 +1202,8 @@ def _matching_assertions(
     mention_end: int,
     groups: tuple[tuple[AssertionType, tuple[PatternRule, ...]], ...],
     contract: RuleContract,
+    *,
+    terminators: tuple[str, ...],
 ) -> list[tuple[AssertionType, str]]:
     return [
         (assertion, rule.id)
@@ -1189,7 +1215,7 @@ def _matching_assertions(
             mention_start,
             mention_end,
             contract.window_tokens,
-            contract.scope_terminators,
+            terminators,
         )
     ]
 
@@ -1200,8 +1226,10 @@ def _resolve_mention_assertions(
     assertions = {assertion for assertion, _ in matches}
     if "contextual_exclusion" in assertions:
         assertion: AssertionType = "contextual_exclusion"
-    elif len(assertions) > 1:
+    elif "uncertain" in assertions:
         assertion = "uncertain"
+    elif "negated" in assertions:
+        assertion = "negated"
     else:
         assertion = next(iter(assertions))
     return assertion, tuple(sorted(rule_id for _, rule_id in matches))

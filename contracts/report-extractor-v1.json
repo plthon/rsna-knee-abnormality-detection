@@ -48,7 +48,24 @@
     "window_tokens": 5,
     "scope_terminators": [
       "[;]",
-      "\\b(?:but|however|yet)\\b"
+      "\\b(?:but|however|with|yet)\\b"
+    ],
+    "coordination_terminators": [
+      "[,]",
+      "\\band\\b"
+    ],
+    "affirmation": [
+      {
+        "id": "GLOBAL.POS.001",
+        "pattern": "\\b(?:present|seen|shows|demonstrates|demonstrated)\\b",
+        "direction": "bidirectional",
+        "audit_evidence": {
+          "demonstrates_document_frequency": 29,
+          "present_document_frequency": 256,
+          "seen_document_frequency": 234,
+          "shows_document_frequency": 60
+        }
+      }
     ],
     "negation": [
       {
@@ -74,6 +91,17 @@
         "pattern": "\\babsent\\b",
         "direction": "bidirectional",
         "audit_document_frequency": 7
+      },
+      {
+        "id": "GLOBAL.NEG.005",
+        "pattern": "\\b(?:no (?:tear|injury)|without (?:tear|injury)|not (?:torn|disrupted|seen|present|identified|demonstrated|visualized))\\b",
+        "direction": "backward",
+        "window_tokens": 3,
+        "audit_evidence": {
+          "no_document_frequency": 1901,
+          "not_document_frequency": 586,
+          "without_document_frequency": 623
+        }
       }
     ],
     "uncertainty": [
@@ -108,6 +136,18 @@
         "pattern": "\\bremote\\b",
         "direction": "forward",
         "audit_document_frequency": 16
+      },
+      {
+        "id": "GLOBAL.EXCLUDE.003",
+        "pattern": "\\bprior\\b",
+        "direction": "forward",
+        "audit_document_frequency": 344
+      },
+      {
+        "id": "GLOBAL.EXCLUDE.004",
+        "pattern": "\\bprevious\\b",
+        "direction": "forward",
+        "audit_document_frequency": 44
       }
     ]
   },
@@ -245,7 +285,18 @@
         }
       ],
       "contextual_exclusions": [],
-      "section_context_rules": [],
+      "section_context_rules": [
+        {
+          "id": "MEDIAL_MENISCUS.SECTION.001",
+          "sections": [
+            "medial meniscus"
+          ],
+          "assertion_type": "affirmed",
+          "audit_evidence": {
+            "heading_document_frequency": 438
+          }
+        }
+      ],
       "conflict_policy": {
         "id": "MEDIAL_MENISCUS.CONFLICT.001",
         "policy": "unresolved_to_uncertain"
@@ -285,7 +336,18 @@
       ],
       "uncertainty_rules": [],
       "contextual_exclusions": [],
-      "section_context_rules": [],
+      "section_context_rules": [
+        {
+          "id": "LATERAL_MENISCUS.SECTION.001",
+          "sections": [
+            "lateral meniscus"
+          ],
+          "assertion_type": "affirmed",
+          "audit_evidence": {
+            "heading_document_frequency": 439
+          }
+        }
+      ],
       "conflict_policy": {
         "id": "LATERAL_MENISCUS.CONFLICT.001",
         "policy": "unresolved_to_uncertain"
@@ -405,15 +467,6 @@
           "window_tokens": 3,
           "audit_evidence": {
             "effusion_normal_document_frequency": 148
-          }
-        },
-        {
-          "id": "EFFUSION.NEG.002",
-          "pattern": "\\bno\\b",
-          "direction": "backward",
-          "window_tokens": 3,
-          "audit_evidence": {
-            "effusion_no_document_frequency": 403
           }
         }
       ],
