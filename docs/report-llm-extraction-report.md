@@ -67,36 +67,51 @@ model verification, read reports only inside the private Kaggle notebook, and
 selected the frozen 32-report smoke set before failing after 106.4 seconds: its
 rule-label lookup did not search Kaggle's nested kernel-output mount. It failed
 before reading rule labels, constructing the model, running inference, or
-writing artifacts. The corrected bundle reuses the already-tested nested
-kernel-output resolver and is pending renewed GPU-smoke approval.
+writing artifacts. The corrected bundle reused the shared, tested nested
+kernel-output resolver.
 
-The rendered smoke bundle is private, internet-disabled, attaches the frozen
-public model and immutable #20 kernel output, and uses a Tesla T4 with Python
-3.12.13, PyTorch 2.10.0+cu128, Transformers 5.0.0, and CUDA 12.8. Report
-processing requests exactly `StudyInstanceUID` and `Report`; organizer-gold
-values are never parsed. The missingness-only boundary selects 32 non-gold
-smoke reports by the frozen salted SHA-256 order.
+Smoke version 5 completed all 32 deterministic non-gold reports and wrote the
+expected 384 study-target rows. It was private and internet-disabled, verified
+all 12 frozen model files, and used a Tesla T4 with Python 3.12.13, PyTorch
+2.10.0+cu128, Transformers 5.0.0, CUDA 12.8, FP16, and batch size 8. Runtime was
+119.56 seconds, throughput was 0.2676 studies/second, and peak GPU memory was
+7,584,029,696 bytes. Report processing requested exactly `StudyInstanceUID`
+and `Report`; organizer-gold values were never parsed.
+
+Checkpoint/resume was exercised from a 16-study partial checkpoint. The smoke
+recorded one same-contract retry, one explicit parse failure (3.125%), and zero
+input truncations. The private label and study-status artifacts remain on
+Kaggle with SHA-256 values
+`5f6d2aa1ae0ce35834d44e47bc7186967443446261c7259275a4585d50b4a30f` and
+`ac2c478fb52fa02fb8e7a1886c8b4b729f1ba9a2b220c4c7fe81b73e755c33fa`.
 
 Full-run completeness, runtime, throughput, peak memory, checkpoint evidence,
-parse failures, and truncation counts remain pending the approved executions.
+parse failures, and truncation counts remain pending the approved full extraction.
 
 ## LLM label distribution
 
-Pending the approved full extraction over all 4,407 reports. No coverage or
-correctness claim is made before aggregate evidence exists.
+Across the 32-report smoke, the aggregate state counts were 46 positive, 17
+negative, one uncertain, and 320 unknown. Medial, lateral, and patellofemoral OA
+coverage was 15.625%, 6.25%, and 18.75%, respectively. This small execution
+sample validates the pipeline only; no label-distribution or correctness claim
+is made before the full extraction.
 
 ## Rule-vs-LLM comparison
 
-Pending the approved full extraction. The private join will use only
-`StudyInstanceUID + target` against #20's hash-verified private
-`report-labels-v1.csv`; organizer-gold values are excluded. Agreement will be
-reported as comparison evidence, not correctness.
+The private smoke join used only `StudyInstanceUID + target` against #20's
+hash-verified private `report-labels-v1.csv`; organizer-gold values were
+excluded. For the three OA targets, the rules had zero coverage in the smoke
+sample while the LLM had 5 medial, 2 lateral, and 6 patellofemoral decisive
+outputs. MCL had the sample's only two positive-vs-negative direct
+disagreements. These are execution-scale comparison observations, not evidence
+of correctness. Full-corpus comparison remains pending.
 
 The fixed 64-report non-gold stability rerun is also pending. A structured
 output agreement rate below 99% will stop the roadmap as `not-ready`.
 
 ## Readiness decision
 
-`not-ready` — local implementation and contract evidence are complete, but the
-mandatory offline GPU smoke, full extraction, aggregate comparison, and 64-report
-stability evidence have not yet run. No weak label is activated for training.
+`not-ready` — local implementation, contract evidence, and the mandatory offline
+GPU smoke are complete, but the full extraction, full aggregate comparison, and
+64-report stability evidence have not yet run. No weak label is activated for
+training.
