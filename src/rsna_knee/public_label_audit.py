@@ -86,6 +86,23 @@ def resolve_dataset_root(
     return next(iter(matches))
 
 
+def resolve_private_kernel_root(
+    candidates: Sequence[Path],
+    marker: str,
+    *,
+    input_root: Path = Path("/kaggle/input"),
+) -> Path:
+    """Resolve a private kernel output without scanning large public inputs."""
+    ignored = {"competitions", "datasets", "rsna-knee-abnormality-detection"}
+    return resolve_dataset_root(
+        candidates,
+        marker,
+        search_roots=tuple(
+            root for root in input_root.iterdir() if root.name not in ignored
+        ),
+    )
+
+
 def validate_wide_labels(
     rows: Sequence[Mapping[str, object]],
     columns: Sequence[str],

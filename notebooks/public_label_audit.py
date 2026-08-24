@@ -48,22 +48,17 @@ from rsna_knee.public_label_audit import (
     decide_usability,
     public_safe_summary,
     resolve_dataset_root,
+    resolve_private_kernel_root,
     summarize_coverage,
     validate_wide_labels,
 )
 
 started = time.monotonic()
 PUBLIC_DATASET_ROOT = resolve_dataset_root(PUBLIC_DATASET_ROOTS, "report_labels_v2.csv")
-private_search_roots = tuple(
-    root
-    for root in Path("/kaggle/input").iterdir()
-    if root.name not in {"competitions", "datasets", "rsna-knee-abnormality-detection"}
-)
 PRIVATE_REPORT_LABEL_PATH = (
-    resolve_dataset_root(
+    resolve_private_kernel_root(
         PRIVATE_REPORT_LABEL_ROOTS,
         "report-labels-v1.csv",
-        search_roots=private_search_roots,
     )
     / "report-labels-v1.csv"
 )

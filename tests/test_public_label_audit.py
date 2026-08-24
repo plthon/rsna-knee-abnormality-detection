@@ -20,7 +20,7 @@ from rsna_knee.public_label_audit import (
     compare_label_sources,
     decide_usability,
     public_safe_summary,
-    resolve_dataset_root,
+    resolve_private_kernel_root,
     summarize_coverage,
     validate_wide_labels,
 )
@@ -28,16 +28,16 @@ from rsna_knee.public_label_audit import (
 TARGETS = ("ACL", "MCL")
 
 
-def test_dataset_root_falls_back_to_one_attached_marker(tmp_path: Path) -> None:
+def test_private_kernel_root_finds_nested_attachment(tmp_path: Path) -> None:
     mounted = tmp_path / "kernels" / "plthon" / "rsna-knee-report-labels" / "1"
     mounted.mkdir(parents=True)
     (mounted / "report-labels-v1.csv").touch()
 
     assert (
-        resolve_dataset_root(
+        resolve_private_kernel_root(
             (tmp_path / "rsna-knee-report-labels",),
             "report-labels-v1.csv",
-            search_roots=(tmp_path / "kernels",),
+            input_root=tmp_path,
         )
         == mounted
     )

@@ -574,9 +574,8 @@ def test_report_llm_bundle_is_private_offline_gpu_and_frozen(
     assert 'model_asset["mount_paths"]' in source
     assert "/kaggle/input/kernels/plthon/rsna-knee-report-labels" in source
     assert "/kaggle/input/plthon/rsna-knee-report-labels" in source
-    assert "private_search_roots" in source
     assert "resolve_dataset_root" in source
-    assert "search_roots=private_search_roots" in source
+    assert "resolve_private_kernel_root" in source
     assert 'requested_columns=("StudyInstanceUID", "Report")' in source
     assert 'expected_study_count = 32 if STAGE == "smoke" else 4_407' in source
     assert "if len(selected_rows) != expected_study_count:" in source

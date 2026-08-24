@@ -40,7 +40,10 @@ from transformers import (  # type: ignore[import-not-found]
 )
 
 from rsna_knee.competition_contract import load_verified_submission_contract
-from rsna_knee.public_label_audit import resolve_dataset_root
+from rsna_knee.public_label_audit import (
+    resolve_dataset_root,
+    resolve_private_kernel_root,
+)
 from rsna_knee.report_llm import (
     GenerationRequest,
     GenerationResponse,
@@ -120,16 +123,10 @@ if len(selected_rows) != expected_study_count:
         f"{len(selected_rows)} != {expected_study_count}"
     )
 
-private_search_roots = tuple(
-    root
-    for root in Path("/kaggle/input").iterdir()
-    if root.name not in {"competitions", "datasets", "rsna-knee-abnormality-detection"}
-)
 rule_label_path = (
-    resolve_dataset_root(
+    resolve_private_kernel_root(
         RULE_LABEL_ROOTS,
         "report-labels-v1.csv",
-        search_roots=private_search_roots,
     )
     / "report-labels-v1.csv"
 )
