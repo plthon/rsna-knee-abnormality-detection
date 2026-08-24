@@ -64,7 +64,10 @@ llm_contract = load_llm_contract(
     expected_target_order=competition_contract.target_names,
 )
 model_asset = cast(dict[str, object], llm_contract.model_asset_identity)
-model_root = Path(cast(str, model_asset["mount_path"]))
+model_root = resolve_dataset_root(
+    tuple(Path(path) for path in cast(list[str], model_asset["mount_paths"])),
+    "config.json",
+)
 verified_model_files = verify_model_asset(model_root, llm_contract)
 
 expected_runtime = cast(dict[str, object], llm_contract.runtime)

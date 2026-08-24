@@ -935,6 +935,7 @@ def _validate_report_llm_source(source: str) -> None:
         'os.environ["HF_HUB_OFFLINE"] = "1"',
         'os.environ["TRANSFORMERS_OFFLINE"] = "1"',
         "read_non_gold_study_uids",
+        'model_asset["mount_paths"]',
         "resolve_dataset_root",
         "verify_model_asset",
         "local_files_only=True",

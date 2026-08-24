@@ -490,32 +490,31 @@ def test_model_asset_verification_checks_every_frozen_file(tmp_path: Path) -> No
         verify_model_asset(model_root, contract)
 
 
-def test_runtime_model_inventory_excludes_unmounted_source_metadata() -> None:
+def test_model_contract_resolves_structured_mount_and_verifies_full_inventory() -> None:
     raw = json.loads(
         (PROJECT_ROOT / "contracts" / "report-llm-extractor-v1.json").read_text()
     )
 
-    omitted = raw["model_asset_identity"]["mount_omitted_source_files"]
-    assert set(omitted).isdisjoint(raw["model_file_hashes"])
-    assert omitted == {
-        ".gitattributes": {
-            "sha256": (
-                "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
-            ),
-            "size_bytes": 1519,
-        },
-        "LICENSE": {
-            "sha256": (
-                "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
-            ),
-            "size_bytes": 7388,
-        },
-        "README.md": {
-            "sha256": (
-                "2c74693e6ae36ba878124d465195b4dad0f71035b54ece1c9fd1553cc497ef8c"
-            ),
-            "size_bytes": 4930,
-        },
+    asset = raw["model_asset_identity"]
+    assert asset["mount_paths"] == [
+        "/kaggle/input/models/qwen-lm/qwen2.5/transformers/3b-instruct/1",
+        "/kaggle/input/qwen2.5/transformers/3b-instruct/1",
+    ]
+    assert "mount_path" not in asset
+    assert "mount_omitted_source_files" not in asset
+    assert set(raw["model_file_hashes"]) == {
+        ".gitattributes",
+        "LICENSE",
+        "README.md",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
     }
 
 

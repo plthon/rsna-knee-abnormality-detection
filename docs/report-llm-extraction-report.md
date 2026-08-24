@@ -24,14 +24,14 @@ No acquisition job, model download, or private model publication is required.
 The offline notebook verifies every attached model and tokenizer file before
 constructing the model.
 
-Smoke versions 1 and 2 showed that Kaggle's mounted model filesystem omits
-source-repository metadata: first `.gitattributes`, then `LICENSE`. A ranged
-probe of the public model archive verified the pinned sizes and SHA-256 values
-for `.gitattributes`, `LICENSE`, and `README.md` without downloading model
-weights. The contract records these source-only files under
-`mount_omitted_source_files` and excludes them from the runtime-mounted
-inventory. The license identity, text location, and hash remain frozen; all
-inference, tokenizer, and configuration files remain runtime hash-verified.
+Smoke versions 1 through 3 failed sequentially on `.gitattributes`, `LICENSE`,
+and `config.json`, establishing that the legacy model root was absent rather
+than individual files being filtered. The contract now resolves Kaggle's
+structured model root first and retains the legacy root as a compatibility
+fallback. A ranged probe of the public model archive independently verified
+the pinned source metadata without downloading model weights. All 12 attached
+model, tokenizer, configuration, license, and documentation files remain
+runtime hash-verified before model loading.
 
 Prompt version `rsna-knee-12target-fourstate-v1` has SHA-256
 `172f2d83d05f15deb928b879d2401cd5fd76f414431b6e43af9c7c5afd9b2826`.
@@ -60,11 +60,10 @@ prompt tuning, and non-resumable loop with the issue #23 contract.
 
 ## Execution
 
-Smoke versions 1 and 2 failed after 43.9 and 44.3 seconds, respectively, during
-pre-inference asset validation because they required source metadata omitted
-from Kaggle's runtime mount. Both failed before `train.csv` or any report was
-read. A corrected local bundle is pending renewed GPU-smoke approval. The
-rendered smoke bundle is
+Smoke versions 1 through 3 failed after 43.9, 44.3, and 47.2 seconds during
+pre-inference asset validation because they used the absent legacy model root.
+All three failed before `train.csv` or any report was read. A corrected local
+bundle is pending renewed GPU-smoke approval. The rendered smoke bundle is
 private, internet-disabled, attaches the frozen public model and immutable #20
 kernel output, and uses a Tesla T4 with Python 3.12.13, PyTorch 2.10.0+cu128,
 Transformers 5.0.0, and CUDA 12.8. Report processing requests exactly
