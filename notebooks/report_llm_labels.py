@@ -23,6 +23,7 @@ STAGE = "__RSNA_KNEE_REPORT_LLM_STAGE__"
 COMPETITION_ROOT = Path("/kaggle/input/competitions/rsna-knee-abnormality-detection")
 RULE_LABEL_ROOTS = (
     Path("/kaggle/input/kernels/plthon/rsna-knee-report-labels"),
+    Path("/kaggle/input/plthon/rsna-knee-report-labels"),
     Path("/kaggle/input/rsna-knee-report-labels"),
 )
 WORK_ROOT = Path("/kaggle/working")
@@ -119,8 +120,17 @@ if len(selected_rows) != expected_study_count:
         f"{len(selected_rows)} != {expected_study_count}"
     )
 
+private_search_roots = tuple(
+    root
+    for root in Path("/kaggle/input").iterdir()
+    if root.name not in {"competitions", "datasets", "rsna-knee-abnormality-detection"}
+)
 rule_label_path = (
-    resolve_dataset_root(RULE_LABEL_ROOTS, "report-labels-v1.csv")
+    resolve_dataset_root(
+        RULE_LABEL_ROOTS,
+        "report-labels-v1.csv",
+        search_roots=private_search_roots,
+    )
     / "report-labels-v1.csv"
 )
 rule_labels = read_rule_label_csv(

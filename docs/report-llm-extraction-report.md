@@ -62,14 +62,20 @@ prompt tuning, and non-resumable loop with the issue #23 contract.
 
 Smoke versions 1 through 3 failed after 43.9, 44.3, and 47.2 seconds during
 pre-inference asset validation because they used the absent legacy model root.
-All three failed before `train.csv` or any report was read. A corrected local
-bundle is pending renewed GPU-smoke approval. The rendered smoke bundle is
-private, internet-disabled, attaches the frozen public model and immutable #20
-kernel output, and uses a Tesla T4 with Python 3.12.13, PyTorch 2.10.0+cu128,
-Transformers 5.0.0, and CUDA 12.8. Report processing requests exactly
-`StudyInstanceUID` and `Report`; organizer-gold values are never parsed. The
-missingness-only boundary selects 32 non-gold smoke reports by the frozen salted
-SHA-256 order.
+All three failed before `train.csv` or any report was read. Version 4 passed
+model verification, read reports only inside the private Kaggle notebook, and
+selected the frozen 32-report smoke set before failing after 106.4 seconds: its
+rule-label lookup did not search Kaggle's nested kernel-output mount. It failed
+before reading rule labels, constructing the model, running inference, or
+writing artifacts. The corrected bundle reuses the already-tested nested
+kernel-output resolver and is pending renewed GPU-smoke approval.
+
+The rendered smoke bundle is private, internet-disabled, attaches the frozen
+public model and immutable #20 kernel output, and uses a Tesla T4 with Python
+3.12.13, PyTorch 2.10.0+cu128, Transformers 5.0.0, and CUDA 12.8. Report
+processing requests exactly `StudyInstanceUID` and `Report`; organizer-gold
+values are never parsed. The missingness-only boundary selects 32 non-gold
+smoke reports by the frozen salted SHA-256 order.
 
 Full-run completeness, runtime, throughput, peak memory, checkpoint evidence,
 parse failures, and truncation counts remain pending the approved executions.

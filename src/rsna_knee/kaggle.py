@@ -936,6 +936,7 @@ def _validate_report_llm_source(source: str) -> None:
         'os.environ["TRANSFORMERS_OFFLINE"] = "1"',
         "read_non_gold_study_uids",
         'model_asset["mount_paths"]',
+        "private_search_roots",
         "resolve_dataset_root",
         "verify_model_asset",
         "local_files_only=True",
