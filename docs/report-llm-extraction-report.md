@@ -24,12 +24,14 @@ No acquisition job, model download, or private model publication is required.
 The offline notebook verifies every attached model and tokenizer file before
 constructing the model.
 
-Smoke version 1 showed that Kaggle's mounted model filesystem omits the hidden
-repository metadata file `.gitattributes`, even though the model archive lists
-the 1,519-byte file and its SHA-256 matches the pinned upstream revision. The
-contract records that source-only file under `mount_omitted_source_files` and
-excludes it from the runtime-mounted inventory. All inference, tokenizer,
-configuration, license, and visible documentation files remain hash-verified.
+Smoke versions 1 and 2 showed that Kaggle's mounted model filesystem omits
+source-repository metadata: first `.gitattributes`, then `LICENSE`. A ranged
+probe of the public model archive verified the pinned sizes and SHA-256 values
+for `.gitattributes`, `LICENSE`, and `README.md` without downloading model
+weights. The contract records these source-only files under
+`mount_omitted_source_files` and excludes them from the runtime-mounted
+inventory. The license identity, text location, and hash remain frozen; all
+inference, tokenizer, and configuration files remain runtime hash-verified.
 
 Prompt version `rsna-knee-12target-fourstate-v1` has SHA-256
 `172f2d83d05f15deb928b879d2401cd5fd76f414431b6e43af9c7c5afd9b2826`.
@@ -58,10 +60,11 @@ prompt tuning, and non-resumable loop with the issue #23 contract.
 
 ## Execution
 
-Smoke version 1 failed after 43.9 seconds during pre-inference asset validation
-because it required the unmounted `.gitattributes` file. It failed before
-`train.csv` or any report was read. A corrected local bundle is pending renewed
-GPU-smoke approval. The rendered smoke bundle is
+Smoke versions 1 and 2 failed after 43.9 and 44.3 seconds, respectively, during
+pre-inference asset validation because they required source metadata omitted
+from Kaggle's runtime mount. Both failed before `train.csv` or any report was
+read. A corrected local bundle is pending renewed GPU-smoke approval. The
+rendered smoke bundle is
 private, internet-disabled, attaches the frozen public model and immutable #20
 kernel output, and uses a Tesla T4 with Python 3.12.13, PyTorch 2.10.0+cu128,
 Transformers 5.0.0, and CUDA 12.8. Report processing requests exactly

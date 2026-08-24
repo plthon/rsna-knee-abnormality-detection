@@ -490,19 +490,32 @@ def test_model_asset_verification_checks_every_frozen_file(tmp_path: Path) -> No
         verify_model_asset(model_root, contract)
 
 
-def test_runtime_model_inventory_excludes_unmounted_git_metadata() -> None:
+def test_runtime_model_inventory_excludes_unmounted_source_metadata() -> None:
     raw = json.loads(
         (PROJECT_ROOT / "contracts" / "report-llm-extractor-v1.json").read_text()
     )
 
-    assert ".gitattributes" not in raw["model_file_hashes"]
-    assert raw["model_asset_identity"]["mount_omitted_source_files"] == {
+    omitted = raw["model_asset_identity"]["mount_omitted_source_files"]
+    assert set(omitted).isdisjoint(raw["model_file_hashes"])
+    assert omitted == {
         ".gitattributes": {
             "sha256": (
                 "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
             ),
             "size_bytes": 1519,
-        }
+        },
+        "LICENSE": {
+            "sha256": (
+                "ef52482bb785733093dc9a2e8edd8e764c77d12d8e9d8f10a80c9b547d32d0f9"
+            ),
+            "size_bytes": 7388,
+        },
+        "README.md": {
+            "sha256": (
+                "2c74693e6ae36ba878124d465195b4dad0f71035b54ece1c9fd1553cc497ef8c"
+            ),
+            "size_bytes": 4930,
+        },
     }
 
 
