@@ -591,6 +591,72 @@ def build_report_source_comparison_bundle(
     return _record_rendered_notebook_hash(bundle, label="Report source comparison")
 
 
+def build_combined_baseline_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-gold-public-baseline",
+    gpu_approved: bool = False,
+    config_path: Path | None = None,
+) -> KaggleBundle:
+    """Build the private GPU combined gold + public baseline training bundle."""
+    contract_names = (
+        "competition.json",
+        "data-index.json",
+        "resnet18-imagenet1k-v1.json",
+        "public-report-label-dataset-v1.json",
+        "gold-supervision.json",
+    )
+    for name in contract_names:
+        contract_path = project_root / "contracts" / name
+        if not contract_path.is_file():
+            raise FileNotFoundError(f"Combined baseline requires contracts/{name}")
+    source_path = project_root / "notebooks" / "train_combined_baseline.py"
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Missing notebook source: {source_path}")
+
+    cfg_path = config_path or project_root / "configs" / "combined-baseline.toml"
+    if not cfg_path.is_file():
+        raise FileNotFoundError(f"Missing config file: {cfg_path}")
+    config_bytes = cfg_path.read_bytes()
+
+    git_commit, git_dirty = _git_state(project_root)
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="train_combined_baseline.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Gold + Public Baseline",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=(
+                "plthon/torchvision-resnet18-imagenet1k-v1",
+                "pilkwang/rsna-knee-llm-labels",
+                "plthon/rsna-knee-combined-baseline-checkpoint",
+            ),
+            kernel_sources=("plthon/rsna-knee-data-index",),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="combined_baseline",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Combined baseline")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64

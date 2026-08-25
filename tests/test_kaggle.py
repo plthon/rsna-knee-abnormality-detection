@@ -767,3 +767,42 @@ def test_source_comparison_cli_builds_bundle_without_remote_action(
 
     assert result.stdout.strip() == str(output)
     assert (output / "kernel" / "report_source_comparison.ipynb").is_file()
+
+
+def test_combined_baseline_bundle_requires_gpu_approval(tmp_path: Path) -> None:
+    from rsna_knee.kaggle import build_combined_baseline_bundle
+
+    project = Path(__file__).parents[1]
+    output = tmp_path / "combined-bundle"
+
+    with pytest.raises(PermissionError, match="GPU approval"):
+        build_combined_baseline_bundle(
+            project,
+            output,
+            gpu_approved=False,
+        )
+
+
+def test_combined_baseline_bundle_builds_and_verifies_metadata(tmp_path: Path) -> None:
+    from rsna_knee.kaggle import build_combined_baseline_bundle
+
+    project = Path(__file__).parents[1]
+    output = tmp_path / "combined-bundle"
+
+    bundle = build_combined_baseline_bundle(
+        project,
+        output,
+        gpu_approved=True,
+    )
+
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["is_private"] == "true"
+    assert metadata["enable_internet"] == "false"
+    assert metadata["enable_gpu"] == "true"
+    assert metadata["machine_shape"] == "NvidiaTeslaT4"
+    assert metadata["competition_sources"] == ["rsna-knee-abnormality-detection"]
+    assert "pilkwang/rsna-knee-llm-labels" in metadata["dataset_sources"]
+    assert "plthon/torchvision-resnet18-imagenet1k-v1" in metadata["dataset_sources"]
+    assert metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
+    assert (output / "kernel" / "train_combined_baseline.ipynb").is_file()
+    assert (output / "bundle-provenance.json").is_file()

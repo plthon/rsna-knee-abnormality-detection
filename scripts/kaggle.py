@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from rsna_knee.kaggle import (
+    build_combined_baseline_bundle,
     build_public_baseline_bundle,
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
@@ -31,6 +32,7 @@ def main() -> None:
             "report-llm",
             "public-label-audit",
             "report-source-comparison",
+            "combined-baseline",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -41,9 +43,7 @@ def main() -> None:
     build.add_argument(
         "--weight-dataset-id", default="plthon/torchvision-resnet18-imagenet1k-v1"
     )
-    build.add_argument(
-        "--kernel-id", default="plthon/rsna-knee-a-reproducible-mri-baseline"
-    )
+    build.add_argument("--kernel-id", default=None)
     build.add_argument("--approve-gpu", action="store_true")
 
     push = subparsers.add_parser("push", help="push a previously built bundle")
@@ -68,6 +68,7 @@ def main() -> None:
                 "report-llm": f"report-llm-{arguments.stage}",
                 "public-label-audit": "public-label-audit",
                 "report-source-comparison": "report-source-comparison",
+                "combined-baseline": "gold-public-baseline",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -78,7 +79,16 @@ def main() -> None:
                 arguments.output,
                 wheel_dataset_id=arguments.wheel_dataset_id,
                 weight_dataset_id=arguments.weight_dataset_id,
-                kernel_id=arguments.kernel_id,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-a-reproducible-mri-baseline",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "combined-baseline":
+            bundle = build_combined_baseline_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-gold-public-baseline",
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "reports":

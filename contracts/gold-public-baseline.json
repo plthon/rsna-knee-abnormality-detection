@@ -1,0 +1,221 @@
+{
+  "artifact_type": "rsna_knee_gold_public_baseline",
+  "checkpoint": {
+    "max_reload_absolute_diff": 0.0,
+    "path": "checkpoint.pt",
+    "reload_reproducible": true,
+    "reloaded_before_inference": true,
+    "sha256": "1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4",
+    "size_bytes": 134348487
+  },
+  "configuration": {
+    "preprocessing": {
+      "image_size": 224,
+      "lower_percentile": 1.0,
+      "slice_count": 8,
+      "upper_percentile": 99.0
+    },
+    "split": {
+      "split_seed": 20260825,
+      "val_fraction": 0.1
+    },
+    "training": {
+      "architecture": "torchvision.models.resnet18",
+      "batch_size": 16,
+      "epochs": 3,
+      "learning_rate": 0.0001,
+      "mixed_precision": true,
+      "seed": 20260825,
+      "weight_decay": 0.0001,
+      "weight_identity": "ResNet18_Weights.IMAGENET1K_V1"
+    },
+    "validation": {
+      "reload_absolute_tolerance": 1e-05
+    }
+  },
+  "evaluation": {
+    "diagnostic_split": {
+      "split_seed": 20260825,
+      "train_patient_count": 3957,
+      "train_study_count": 3957,
+      "val_fraction": 0.1,
+      "val_patient_count": 450,
+      "val_study_count": 450
+    },
+    "val_accuracy_at_0_5": 0.7720381512297876,
+    "val_mean_bce": 0.5208458571634419,
+    "val_mean_roc_auc": 0.8382768423512036,
+    "val_per_target": {
+      "ACL": {
+        "accuracy_at_0_5": 0.7883211678832117,
+        "binary_cross_entropy": 0.5085666494303467,
+        "known": 411,
+        "negative": 281,
+        "positive": 130,
+        "roc_auc": 0.8276348206953189
+      },
+      "Baker's": {
+        "accuracy_at_0_5": 0.7713178294573644,
+        "binary_cross_entropy": 0.4882435256421572,
+        "known": 258,
+        "negative": 140,
+        "positive": 118,
+        "roc_auc": 0.8376210653753027
+      },
+      "Contusion": {
+        "accuracy_at_0_5": 0.736986301369863,
+        "binary_cross_entropy": 0.5653976586845835,
+        "known": 365,
+        "negative": 229,
+        "positive": 136,
+        "roc_auc": 0.784773953249422
+      },
+      "Effusion": {
+        "accuracy_at_0_5": 0.7701711491442543,
+        "binary_cross_entropy": 0.46245816664017464,
+        "known": 409,
+        "negative": 150,
+        "positive": 259,
+        "roc_auc": 0.857027027027027
+      },
+      "Fracture": {
+        "accuracy_at_0_5": 0.8640776699029126,
+        "binary_cross_entropy": 0.2977953037585795,
+        "known": 206,
+        "negative": 175,
+        "positive": 31,
+        "roc_auc": 0.8890322580645161
+      },
+      "Lateral Meniscus": {
+        "accuracy_at_0_5": 0.7920792079207921,
+        "binary_cross_entropy": 0.5300865656309341,
+        "known": 404,
+        "negative": 299,
+        "positive": 105,
+        "roc_auc": 0.7800445930880714
+      },
+      "Lateral OA": {
+        "accuracy_at_0_5": 0.782608695652174,
+        "binary_cross_entropy": 0.5061143428981523,
+        "known": 299,
+        "negative": 203,
+        "positive": 96,
+        "roc_auc": 0.86873973727422
+      },
+      "MCL": {
+        "accuracy_at_0_5": 0.7935323383084577,
+        "binary_cross_entropy": 0.5143959003944946,
+        "known": 402,
+        "negative": 319,
+        "positive": 83,
+        "roc_auc": 0.7488197303319862
+      },
+      "Medial Meniscus": {
+        "accuracy_at_0_5": 0.647887323943662,
+        "binary_cross_entropy": 0.8730247836701877,
+        "known": 426,
+        "negative": 200,
+        "positive": 226,
+        "roc_auc": 0.8331637168141592
+      },
+      "Medial OA": {
+        "accuracy_at_0_5": 0.7393939393939394,
+        "binary_cross_entropy": 0.587813462589128,
+        "known": 330,
+        "negative": 179,
+        "positive": 151,
+        "roc_auc": 0.899922305671686
+      },
+      "PF OA": {
+        "accuracy_at_0_5": 0.7780821917808219,
+        "binary_cross_entropy": 0.4876692251627404,
+        "known": 365,
+        "negative": 179,
+        "positive": 186,
+        "roc_auc": 0.8630984561782904
+      },
+      "Synovitis": {
+        "accuracy_at_0_5": 0.8,
+        "binary_cross_entropy": 0.42858470145982325,
+        "known": 65,
+        "negative": 20,
+        "positive": 45,
+        "roc_auc": 0.8694444444444445
+      }
+    }
+  },
+  "execution": {
+    "approved_gpu": true,
+    "cuda_readiness": {
+      "approved": true,
+      "cuda_version": "12.8",
+      "device_name": "Tesla T4",
+      "device_total_memory_bytes": 15636037632,
+      "operation": "(torch.ones(1, device='cuda') * 2).item()",
+      "result": 2.0
+    },
+    "epochs_completed": 3,
+    "gpu": "Tesla T4",
+    "mixed_precision": true,
+    "peak_cuda_memory_bytes": 741710848,
+    "total_training_seconds": 13102.42
+  },
+  "privacy": {
+    "competition_data_downloaded": false,
+    "private_artifacts_registered_under_ignored_path": true,
+    "row_level_membership_labels_patient_ids_or_predictions_committed": false
+  },
+  "provenance": {
+    "competition_contract_sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292",
+    "git_commit": "f7423e420bc11e44bf5927e7d03e79d73fdf9b26",
+    "index_manifest_sha256": "85970899c44c1325ab6d1fe8983dc9e472e6a854d8b6bb8fb65506ec91480caa",
+    "initialization_artifact_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec",
+    "kernel_id": "plthon/rsna-knee-gold-public-baseline",
+    "public_dataset_contract_sha256": "3b607558a5bea66d2d10dd3884bd6fa9e2ac81b4617c6ea372d7feb0c00068e9",
+    "public_labels_sha256": "6f704a7bdb2f894cc49445b19ba7c4378c3f548d3449e00361e10044bee40920",
+    "run_id": "combined-baseline-fb9ba800bb8a48fabe6d2409af39b39b"
+  },
+  "runtime": {
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+    "python": "3.12.13",
+    "torch": "2.10.0+cu128",
+    "torchvision": "0.25.0+cu128"
+  },
+  "schema_version": 1,
+  "submission": {
+    "fallback_count": 0,
+    "inference_seconds": 2.989005018000171,
+    "path": "submission.csv",
+    "prediction_count": 3,
+    "sha256": "2d36fcc40f046da23dc7b6f90d0130aad0458f063c65ea4e2686497155bee3e9",
+    "strictly_validated": true
+  },
+  "supervision": {
+    "cohort_digest": "b066a7e6cd7119f4bef330a006a86a0e08e664d7b5347a111ec781e72abe1fdc",
+    "gold_precedence": true,
+    "gold_studies": 58,
+    "non_gold_studies": 4349,
+    "public_mapping": {
+      "NO": 0,
+      "UNK": "masked",
+      "YES": 1
+    },
+    "target_order": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ],
+    "total_studies": 4407
+  }
+}
