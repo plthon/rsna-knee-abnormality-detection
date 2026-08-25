@@ -285,6 +285,23 @@ def test_boundary_triples_land_in_exactly_one_stratum(
     assert sum(counts.values()) == 1
 
 
+def test_count_triple_combinations() -> None:
+    from rsna_knee.report_source_comparison import count_triple_combinations
+
+    triples = (
+        SourceTriple("s1", "ACL", "positive", "positive", "positive"),
+        SourceTriple("s2", "ACL", "positive", "positive", "positive"),
+        SourceTriple("s3", "ACL", "positive", "negative", "negative"),
+        SourceTriple("s4", "ACL", "unknown", "unknown", None),
+    )
+    counts = count_triple_combinations(triples)
+    assert counts == {
+        "positive|negative|negative": 1,
+        "positive|positive|positive": 2,
+        "unknown|unknown|missing": 1,
+    }
+
+
 def test_every_synthetic_triple_partition_is_exact_and_total() -> None:
     states = ("positive", "negative", "uncertain", "unknown")
     triples = tuple(

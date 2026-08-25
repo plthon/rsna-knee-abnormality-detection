@@ -1055,6 +1055,7 @@ def _validate_source_comparison_source(source: str) -> None:
         "read_competition_cohorts",
         "verify_artifact_identity",
         "join_three_sources",
+        "count_triple_combinations",
         "partition_strata",
         "compare_pairwise",
         "compute_deep_dives",

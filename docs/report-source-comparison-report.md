@@ -3,7 +3,7 @@
 ## Status
 
 Complete. Private Kaggle kernel `plthon/rsna-knee-report-source-comparison` ran
-successfully on CPU with internet disabled in 2.35 seconds (19.2s container execution).
+successfully on CPU with internet disabled in 4.96 seconds (37.4s container execution).
 All 52,188 non-gold study-target rows (4,349 studies × 12 targets) achieved 100%
 three-way join completeness against verified inputs.
 
@@ -11,19 +11,19 @@ Only aggregate JSON summaries were retrieved locally:
 
 | Output | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `source-comparison-manifest.json` | 3,348 | `63222ce234ec4be2ebfda9adbb2c27825ef0e6d521ed48b6de46ace150d71ea9` |
-| `source-comparison-summary.json` | 57,852 | (retrieved aggregate summary) |
+| `source-comparison-manifest.json` | 3,547 | `63222ce234ec4be2ebfda9adbb2c27825ef0e6d521ed48b6de46ace150d71ea9` |
+| `source-comparison-summary.json` | 68,743 | (retrieved aggregate summary) |
 
 No row-level validation output, raw report, organizer target value, or study
 identifier was retrieved locally.
 
 ## 1. Frozen input identities
 
-All seven frozen inputs matched their pinned SHA-256 hashes and sizes prior to computation:
+All eight frozen inputs matched their pinned SHA-256 hashes and sizes prior to computation:
 
 | Source | Role | Filename / Path | Size / Rows | SHA-256 |
 | --- | --- | --- | ---: | --- |
-| Competition | `competition_contract` | `contracts/competition.json` | 2,752 bytes | `3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292` |
+| Competition | `competition_contract` | `contracts/competition.json` | 28,526 bytes | `3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292` |
 | #20 Rules | `rule_extractor_contract` | `contracts/report-extractor-v1.json` | 15,896 bytes | `901e8a53173fef0d85e12ed93cbea05dd5b8cfc900ef111e0125cb751634156a` |
 | #20 Rules | `rule_labels` | `report-labels-v1.csv` | 52,884 rows (12,409,688 bytes) | `6651f60b00e5bec292e8c98e7fa83c75e8aa5af5931414a9a68c8ce10a52d527` |
 | #23 LLM | `llm_extractor_contract` | `contracts/report-llm-extractor-v1.json` | 4,364 bytes | `c428d1b44bb6c87f84e7423feeaefa6c635a5ba1cb5dd277468128d7df0bbe51` |
@@ -37,7 +37,7 @@ All seven frozen inputs matched their pinned SHA-256 hashes and sizes prior to c
 ### State normalization
 - All sources are mapped to a four-symbol vocabulary: `positive | negative | uncertain | unknown`.
 - Public `YES/NO/UNK` verdicts map to `positive/negative/unknown`. Continuous scores and confidences are recorded descriptively only and play no role in agreement or strata logic.
-- Qwen LLM parse-failed studies (176 studies in non-gold cohort = 2,112 rows, 4.05%) keep their emitted `unknown` state and are broken out separately.
+- Qwen LLM parse-failed studies (176 studies in non-gold cohort = 2,112 rows, 4.05%) keep their emitted `unknown` state and are asserted to match between row-level labels and study-status tables.
 
 ### Strata taxonomy
 Every study-target triple `(rules, LLM, public)` is classified into exactly one mutually exclusive rollup stratum:
@@ -48,10 +48,11 @@ Every study-target triple `(rules, LLM, public)` is classified into exactly one 
 5. `single-decisive-only`: Exactly one decisive source; others non-decisive.
 6. `zero-decisive`: No source is decisive.
 
-### Cohort firewall
+### Cohort firewall & completeness enforcement
 - All analysis strictly covers the **4,349-study non-gold cohort**.
 - The 58-study organizer-gold cohort is evaluated for membership missingness only; its target values were **never read or parsed**.
 - The 1 competition study absent from the public dataset is a gold-cohort member, giving 100% (4,349/4,349) coverage over non-gold studies.
+- Join completeness is strictly enforced: any drop below 52,188 complete triples fails closed.
 
 ## 3. Triple and rollup results per target
 
@@ -71,6 +72,341 @@ Over the 4,349 non-gold studies (52,188 rows):
 | Medial OA | 0 | 0 | 636 | 45 | 2,608 | 1,060 | 0 |
 | PF OA | 16 | 2 | 486 | 111 | 2,967 | 767 | 0 |
 | Synovitis | 212 | 6 | 209 | 26 | 283 | 3,613 | 4 |
+
+### Observed triple state frequency tables (`rules|llm|public`)
+
+<details><summary><b>ACL (25 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 22 | 0.51% |
+| `negative|negative|positive` | 3 | 0.07% |
+| `negative|positive|negative` | 6 | 0.14% |
+| `negative|unknown|negative` | 669 | 15.38% |
+| `negative|unknown|positive` | 2 | 0.05% |
+| `positive|negative|negative` | 6 | 0.14% |
+| `positive|negative|positive` | 59 | 1.36% |
+| `positive|positive|negative` | 7 | 0.16% |
+| `positive|positive|positive` | 313 | 7.20% |
+| `positive|positive|unknown` | 1 | 0.02% |
+| `positive|unknown|negative` | 176 | 4.05% |
+| `positive|unknown|positive` | 56 | 1.29% |
+| `uncertain|negative|negative` | 3 | 0.07% |
+| `uncertain|negative|positive` | 2 | 0.05% |
+| `uncertain|positive|positive` | 11 | 0.25% |
+| `uncertain|unknown|negative` | 8 | 0.18% |
+| `unknown|negative|negative` | 101 | 2.32% |
+| `unknown|negative|positive` | 206 | 4.74% |
+| `unknown|negative|unknown` | 3 | 0.07% |
+| `unknown|positive|negative` | 41 | 0.94% |
+| `unknown|positive|positive` | 185 | 4.25% |
+| `unknown|positive|unknown` | 1 | 0.02% |
+| `unknown|unknown|negative` | 1,765 | 40.58% |
+| `unknown|unknown|positive` | 357 | 8.21% |
+| `unknown|unknown|unknown` | 346 | 7.96% |
+
+</details>
+
+<details><summary><b>Baker's (21 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 12 | 0.28% |
+| `negative|positive|negative` | 10 | 0.23% |
+| `negative|positive|positive` | 1 | 0.02% |
+| `negative|unknown|negative` | 220 | 5.06% |
+| `positive|negative|positive` | 26 | 0.60% |
+| `positive|positive|positive` | 249 | 5.73% |
+| `positive|unknown|negative` | 3 | 0.07% |
+| `positive|unknown|positive` | 65 | 1.49% |
+| `uncertain|negative|negative` | 1 | 0.02% |
+| `uncertain|positive|positive` | 1 | 0.02% |
+| `uncertain|unknown|positive` | 1 | 0.02% |
+| `unknown|negative|negative` | 78 | 1.79% |
+| `unknown|negative|positive` | 52 | 1.20% |
+| `unknown|negative|unknown` | 60 | 1.38% |
+| `unknown|positive|negative` | 69 | 1.59% |
+| `unknown|positive|positive` | 473 | 10.88% |
+| `unknown|positive|unknown` | 111 | 2.55% |
+| `unknown|uncertain|negative` | 1 | 0.02% |
+| `unknown|unknown|negative` | 863 | 19.84% |
+| `unknown|unknown|positive` | 230 | 5.29% |
+| `unknown|unknown|unknown` | 1,823 | 41.92% |
+
+</details>
+
+<details><summary><b>Contusion (25 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 5 | 0.11% |
+| `negative|positive|positive` | 1 | 0.02% |
+| `negative|unknown|negative` | 145 | 3.33% |
+| `positive|negative|negative` | 1 | 0.02% |
+| `positive|negative|positive` | 7 | 0.16% |
+| `positive|positive|negative` | 2 | 0.05% |
+| `positive|positive|positive` | 87 | 2.00% |
+| `positive|unknown|negative` | 6 | 0.14% |
+| `positive|unknown|positive` | 39 | 0.90% |
+| `positive|unknown|unknown` | 1 | 0.02% |
+| `uncertain|negative|negative` | 1 | 0.02% |
+| `uncertain|negative|positive` | 1 | 0.02% |
+| `uncertain|positive|negative` | 3 | 0.07% |
+| `uncertain|positive|positive` | 6 | 0.14% |
+| `uncertain|unknown|negative` | 5 | 0.11% |
+| `uncertain|unknown|positive` | 2 | 0.05% |
+| `unknown|negative|negative` | 8 | 0.18% |
+| `unknown|negative|positive` | 33 | 0.76% |
+| `unknown|negative|unknown` | 4 | 0.09% |
+| `unknown|positive|negative` | 11 | 0.25% |
+| `unknown|positive|positive` | 124 | 2.85% |
+| `unknown|positive|unknown` | 3 | 0.07% |
+| `unknown|unknown|negative` | 1,995 | 45.87% |
+| `unknown|unknown|positive` | 961 | 22.10% |
+| `unknown|unknown|unknown` | 898 | 20.65% |
+
+</details>
+
+<details><summary><b>Effusion (24 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 84 | 1.93% |
+| `negative|positive|negative` | 13 | 0.30% |
+| `negative|unknown|negative` | 302 | 6.94% |
+| `negative|unknown|positive` | 2 | 0.05% |
+| `positive|negative|negative` | 1 | 0.02% |
+| `positive|negative|positive` | 93 | 2.14% |
+| `positive|positive|negative` | 5 | 0.11% |
+| `positive|positive|positive` | 691 | 15.89% |
+| `positive|unknown|negative` | 5 | 0.11% |
+| `positive|unknown|positive` | 145 | 3.33% |
+| `uncertain|negative|negative` | 1 | 0.02% |
+| `uncertain|positive|negative` | 1 | 0.02% |
+| `uncertain|positive|positive` | 2 | 0.05% |
+| `uncertain|unknown|negative` | 1 | 0.02% |
+| `uncertain|unknown|positive` | 2 | 0.05% |
+| `unknown|negative|negative` | 41 | 0.94% |
+| `unknown|negative|positive` | 119 | 2.74% |
+| `unknown|negative|unknown` | 7 | 0.16% |
+| `unknown|positive|negative` | 55 | 1.26% |
+| `unknown|positive|positive` | 874 | 20.10% |
+| `unknown|positive|unknown` | 39 | 0.90% |
+| `unknown|unknown|negative` | 792 | 18.21% |
+| `unknown|unknown|positive` | 688 | 15.82% |
+| `unknown|unknown|unknown` | 386 | 8.88% |
+
+</details>
+
+<details><summary><b>Fracture (20 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 2 | 0.05% |
+| `negative|unknown|negative` | 488 | 11.22% |
+| `positive|negative|positive` | 3 | 0.07% |
+| `positive|positive|positive` | 44 | 1.01% |
+| `positive|uncertain|positive` | 3 | 0.07% |
+| `positive|unknown|negative` | 6 | 0.14% |
+| `positive|unknown|positive` | 30 | 0.69% |
+| `positive|unknown|unknown` | 1 | 0.02% |
+| `uncertain|positive|positive` | 2 | 0.05% |
+| `uncertain|unknown|negative` | 1 | 0.02% |
+| `uncertain|unknown|positive` | 6 | 0.14% |
+| `unknown|negative|negative` | 6 | 0.14% |
+| `unknown|negative|positive` | 19 | 0.44% |
+| `unknown|negative|unknown` | 12 | 0.28% |
+| `unknown|positive|negative` | 2 | 0.05% |
+| `unknown|positive|positive` | 67 | 1.54% |
+| `unknown|uncertain|positive` | 1 | 0.02% |
+| `unknown|unknown|negative` | 1,089 | 25.04% |
+| `unknown|unknown|positive` | 120 | 2.76% |
+| `unknown|unknown|unknown` | 2,447 | 56.27% |
+
+</details>
+
+<details><summary><b>Lateral Meniscus (28 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 26 | 0.60% |
+| `negative|positive|negative` | 3 | 0.07% |
+| `negative|unknown|negative` | 597 | 13.73% |
+| `negative|unknown|positive` | 4 | 0.09% |
+| `positive|negative|negative` | 15 | 0.34% |
+| `positive|negative|positive` | 40 | 0.92% |
+| `positive|positive|negative` | 3 | 0.07% |
+| `positive|positive|positive` | 188 | 4.32% |
+| `positive|positive|unknown` | 2 | 0.05% |
+| `positive|uncertain|positive` | 6 | 0.14% |
+| `positive|unknown|negative` | 162 | 3.72% |
+| `positive|unknown|positive` | 72 | 1.66% |
+| `positive|unknown|unknown` | 3 | 0.07% |
+| `uncertain|negative|positive` | 2 | 0.05% |
+| `uncertain|positive|negative` | 1 | 0.02% |
+| `uncertain|positive|positive` | 4 | 0.09% |
+| `uncertain|unknown|negative` | 4 | 0.09% |
+| `uncertain|unknown|positive` | 2 | 0.05% |
+| `unknown|negative|negative` | 184 | 4.23% |
+| `unknown|negative|positive` | 84 | 1.93% |
+| `unknown|negative|unknown` | 23 | 0.53% |
+| `unknown|positive|negative` | 116 | 2.67% |
+| `unknown|positive|positive` | 361 | 8.30% |
+| `unknown|positive|unknown` | 22 | 0.51% |
+| `unknown|uncertain|positive` | 6 | 0.14% |
+| `unknown|unknown|negative` | 1,712 | 39.37% |
+| `unknown|unknown|positive` | 322 | 7.40% |
+| `unknown|unknown|unknown` | 385 | 8.85% |
+
+</details>
+
+<details><summary><b>Lateral OA (9 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `unknown|negative|negative` | 6 | 0.14% |
+| `unknown|negative|positive` | 23 | 0.53% |
+| `unknown|negative|unknown` | 12 | 0.28% |
+| `unknown|positive|negative` | 4 | 0.09% |
+| `unknown|positive|positive` | 253 | 5.82% |
+| `unknown|positive|unknown` | 24 | 0.55% |
+| `unknown|unknown|negative` | 1,833 | 42.15% |
+| `unknown|unknown|positive` | 795 | 18.28% |
+| `unknown|unknown|unknown` | 1,399 | 32.17% |
+
+</details>
+
+<details><summary><b>MCL (28 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 13 | 0.30% |
+| `negative|negative|positive` | 1 | 0.02% |
+| `negative|unknown|negative` | 457 | 10.51% |
+| `negative|unknown|positive` | 2 | 0.05% |
+| `positive|negative|negative` | 6 | 0.14% |
+| `positive|negative|positive` | 116 | 2.67% |
+| `positive|positive|negative` | 1 | 0.02% |
+| `positive|positive|positive` | 47 | 1.08% |
+| `positive|uncertain|positive` | 20 | 0.46% |
+| `positive|unknown|negative` | 507 | 11.66% |
+| `positive|unknown|positive` | 142 | 3.27% |
+| `positive|unknown|unknown` | 1 | 0.02% |
+| `uncertain|negative|negative` | 1 | 0.02% |
+| `uncertain|negative|positive` | 2 | 0.05% |
+| `uncertain|uncertain|positive` | 2 | 0.05% |
+| `uncertain|unknown|negative` | 13 | 0.30% |
+| `uncertain|unknown|positive` | 9 | 0.21% |
+| `unknown|negative|negative` | 123 | 2.83% |
+| `unknown|negative|positive` | 116 | 2.67% |
+| `unknown|negative|unknown` | 14 | 0.32% |
+| `unknown|positive|negative` | 3 | 0.07% |
+| `unknown|positive|positive` | 29 | 0.67% |
+| `unknown|uncertain|negative` | 1 | 0.02% |
+| `unknown|uncertain|positive` | 36 | 0.83% |
+| `unknown|uncertain|unknown` | 1 | 0.02% |
+| `unknown|unknown|negative` | 2,051 | 47.16% |
+| `unknown|unknown|positive` | 227 | 5.22% |
+| `unknown|unknown|unknown` | 408 | 9.38% |
+
+</details>
+
+<details><summary><b>Medial Meniscus (29 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 12 | 0.28% |
+| `negative|positive|negative` | 4 | 0.09% |
+| `negative|unknown|negative` | 321 | 7.38% |
+| `negative|unknown|positive` | 6 | 0.14% |
+| `positive|negative|negative` | 6 | 0.14% |
+| `positive|negative|positive` | 27 | 0.62% |
+| `positive|positive|negative` | 3 | 0.07% |
+| `positive|positive|positive` | 462 | 10.62% |
+| `positive|uncertain|positive` | 5 | 0.11% |
+| `positive|unknown|negative` | 65 | 1.49% |
+| `positive|unknown|positive` | 146 | 3.36% |
+| `positive|unknown|unknown` | 1 | 0.02% |
+| `uncertain|negative|negative` | 1 | 0.02% |
+| `uncertain|negative|positive` | 2 | 0.05% |
+| `uncertain|positive|positive` | 4 | 0.09% |
+| `uncertain|uncertain|negative` | 1 | 0.02% |
+| `uncertain|unknown|negative` | 6 | 0.14% |
+| `uncertain|unknown|positive` | 4 | 0.09% |
+| `unknown|negative|negative` | 41 | 0.94% |
+| `unknown|negative|positive` | 104 | 2.39% |
+| `unknown|negative|unknown` | 1 | 0.02% |
+| `unknown|positive|negative` | 13 | 0.30% |
+| `unknown|positive|positive` | 668 | 15.36% |
+| `unknown|positive|unknown` | 17 | 0.39% |
+| `unknown|uncertain|negative` | 1 | 0.02% |
+| `unknown|uncertain|positive` | 36 | 0.83% |
+| `unknown|unknown|negative` | 1,312 | 30.17% |
+| `unknown|unknown|positive` | 851 | 19.57% |
+| `unknown|unknown|unknown` | 229 | 5.27% |
+
+</details>
+
+<details><summary><b>Medial OA (9 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `unknown|negative|negative` | 3 | 0.07% |
+| `unknown|negative|positive` | 32 | 0.74% |
+| `unknown|negative|unknown` | 10 | 0.23% |
+| `unknown|positive|negative` | 13 | 0.30% |
+| `unknown|positive|positive` | 633 | 14.56% |
+| `unknown|positive|unknown` | 41 | 0.94% |
+| `unknown|unknown|negative` | 1,625 | 37.36% |
+| `unknown|unknown|positive` | 932 | 21.43% |
+| `unknown|unknown|unknown` | 1,060 | 24.37% |
+
+</details>
+
+<details><summary><b>PF OA (12 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `positive|negative|positive` | 2 | 0.05% |
+| `positive|positive|positive` | 16 | 0.37% |
+| `positive|unknown|positive` | 3 | 0.07% |
+| `unknown|negative|negative` | 16 | 0.37% |
+| `unknown|negative|positive` | 101 | 2.32% |
+| `unknown|negative|unknown` | 13 | 0.30% |
+| `unknown|positive|negative` | 10 | 0.23% |
+| `unknown|positive|positive` | 467 | 10.74% |
+| `unknown|positive|unknown` | 21 | 0.48% |
+| `unknown|unknown|negative` | 1,555 | 35.76% |
+| `unknown|unknown|positive` | 1,378 | 31.69% |
+| `unknown|unknown|unknown` | 767 | 17.64% |
+
+</details>
+
+<details><summary><b>Synovitis (19 observed combinations)</b></summary>
+
+| Triple State (`rules\|llm\|public`) | Count | Percentage |
+| --- | ---: | ---: |
+| `negative|negative|negative` | 2 | 0.05% |
+| `negative|unknown|negative` | 10 | 0.23% |
+| `positive|negative|positive` | 6 | 0.14% |
+| `positive|positive|positive` | 210 | 4.83% |
+| `positive|unknown|negative` | 1 | 0.02% |
+| `positive|unknown|positive` | 33 | 0.76% |
+| `positive|unknown|unknown` | 2 | 0.05% |
+| `uncertain|positive|positive` | 2 | 0.05% |
+| `uncertain|unknown|positive` | 1 | 0.02% |
+| `unknown|negative|negative` | 4 | 0.09% |
+| `unknown|negative|positive` | 23 | 0.53% |
+| `unknown|negative|unknown` | 44 | 1.01% |
+| `unknown|positive|negative` | 2 | 0.05% |
+| `unknown|positive|positive` | 160 | 3.68% |
+| `unknown|positive|unknown` | 12 | 0.28% |
+| `unknown|uncertain|unknown` | 1 | 0.02% |
+| `unknown|unknown|negative` | 95 | 2.18% |
+| `unknown|unknown|positive` | 129 | 2.97% |
+| `unknown|unknown|unknown` | 3,612 | 83.05% |
+
+</details>
 
 ## 4. Pairwise reconciliation with #23 and #24
 

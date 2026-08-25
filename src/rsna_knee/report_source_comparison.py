@@ -121,17 +121,23 @@ class Cohorts:
         return self.study_count - len(self.non_gold) - len(self.gold)
 
 
+def _load_contract_bytes(path: Path | None, resource_name: str) -> bytes:
+    if path is not None:
+        return path.read_bytes()
+    source_contract = Path(__file__).parents[2] / "contracts" / resource_name
+    if source_contract.is_file():
+        return source_contract.read_bytes()
+    resource = files("rsna_knee").joinpath(resource_name)
+    return resource.read_bytes()
+
+
 def load_comparison_contract(
     path: Path | None,
     *,
     expected_target_order: Sequence[str],
 ) -> dict[str, object]:
     """Load the frozen comparison contract and reject any drift."""
-    raw_bytes = (
-        path.read_bytes()
-        if path is not None
-        else files("rsna_knee").joinpath(CONTRACT_RESOURCE).read_bytes()
-    )
+    raw_bytes = _load_contract_bytes(path, CONTRACT_RESOURCE)
     contract = cast(dict[str, object], json.loads(raw_bytes))
     if not isinstance(contract, dict):
         raise TypeError("Comparison contract must be a JSON object")
@@ -185,6 +191,7 @@ def load_comparison_contract(
         ):
             raise TypeError(f"Input {role} pins a malformed row count")
     expected_roles = {
+        "competition_contract",
         "rule_extractor_contract",
         "rule_labels",
         "llm_extractor_contract",
@@ -427,6 +434,21 @@ def _single_triple_stratum(triple: SourceTriple) -> tuple[str, str | None]:
             f"decisive-source={source};polarity={votes[0]}",
         )
     return ("zero-decisive", None)
+
+
+def count_triple_combinations(
+    triples: Sequence[SourceTriple],
+) -> dict[str, int]:
+    """Count observed (rules, LLM, public) triple combinations."""
+    counts: Counter[str] = Counter()
+    for triple in triples:
+        key = (
+            f"{triple.rules or 'missing'}|"
+            f"{triple.llm or 'missing'}|"
+            f"{triple.public or 'missing'}"
+        )
+        counts[key] += 1
+    return dict(sorted(counts.items()))
 
 
 def partition_strata(triples: Sequence[SourceTriple]) -> dict[str, int]:

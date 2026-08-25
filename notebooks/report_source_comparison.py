@@ -64,6 +64,7 @@ from rsna_knee.report_source_comparison import (
     compare_pairwise,
     compute_deep_dives,
     count_any_uncertain,
+    count_triple_combinations,
     ingest_public_labels,
     ingest_report_labels,
     join_three_sources,
@@ -85,6 +86,12 @@ contract = load_comparison_contract(
     None,
     expected_target_order=target_order,
 )
+comp_pinned = pinned_input(contract, role="competition_contract")
+if competition_contract.sha256 != str(comp_pinned["sha256"]):
+    raise RuntimeError(
+        f"Competition contract SHA mismatch against pinned comparison contract: "
+        f"{competition_contract.sha256} != {comp_pinned['sha256']}"
+    )
 
 # %%
 # Verify every frozen input identity before any computation. Any mismatch
@@ -137,7 +144,7 @@ raw_contract_inputs = contract.get("inputs")
 assert isinstance(raw_contract_inputs, list)
 for record in raw_contract_inputs:
     assert isinstance(record, dict)
-    if record.get("kind") != "contract" or record.get("role") == "competition_contract":
+    if record.get("kind") != "contract":
         continue
     name = str(record["path"]).split("/")[-1]
     contract_file = files("rsna_knee").joinpath(name)
@@ -203,6 +210,18 @@ parse_failed_studies = frozenset(
     for row in cast(list[dict[str, object]], status_frame.to_dict(orient="records"))
     if str(row["parse_failed"]).strip().lower() == "true"
 )
+for (study_uid, target), failed in llm_parse_failed.items():
+    expected_failed = study_uid in parse_failed_studies
+    if failed != expected_failed:
+        raise RuntimeError(
+            f"Parse-failure flag mismatch for study {study_uid}, target {target}: "
+            f"row-level={failed}, study-status={expected_failed}"
+        )
+    if failed and llm_states[(study_uid, target)] != "unknown":
+        raise RuntimeError(
+            f"Parse-failed study {study_uid}, target {target} must emit unknown state, "
+            f"got {llm_states[(study_uid, target)]!r}"
+        )
 public_frame = pd.read_csv(
     PUBLIC_LABEL_PATH,
     dtype={"StudyInstanceUID": str},
@@ -232,6 +251,15 @@ if len(joined.triples) != expected_rows:
     raise RuntimeError(
         f"Cohort join produced {len(joined.triples)} rows, expected {expected_rows}"
     )
+if joined.complete_triple_count != expected_rows:
+    raise RuntimeError(
+        f"Cohort join completeness violated: {joined.complete_triple_count} "
+        f"complete triples != expected {expected_rows}"
+    )
+if joined.public_missing_count != 0:
+    raise RuntimeError(
+        f"Unexpected missing public non-gold studies: {joined.public_missing_count}"
+    )
 complete_rate = joined.complete_triple_count / expected_rows
 
 # %%
@@ -241,6 +269,7 @@ for target in target_order:
     target_triples = joined.for_target(target)
     per_target_strata[target] = {
         "row_count": len(target_triples),
+        "full_triple_table": count_triple_combinations(target_triples),
         "rollup_strata": partition_strata(target_triples),
         "stratum_details": partition_strata_by_detail(target_triples),
         "any_uncertain_count": count_any_uncertain(target_triples),

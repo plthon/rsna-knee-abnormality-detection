@@ -687,6 +687,7 @@ def test_source_comparison_bundle_is_private_offline_cpu_and_frozen(
         "read_competition_cohorts",
         "verify_artifact_identity",
         "join_three_sources",
+        "count_triple_combinations",
         "partition_strata",
         "compare_pairwise",
         "compute_deep_dives",
