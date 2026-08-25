@@ -292,6 +292,7 @@ def pull_kaggle_output(
         "report-llm-checkpoint.json",
         "report-llm-stability-first.json",
         "report-llm-stability-second.json",
+        "source-comparison-tables.json",
     }
     if private_row_outputs & set(filenames):
         raise PermissionError(
@@ -541,6 +542,55 @@ def build_report_llm_bundle(
     return _record_rendered_notebook_hash(bundle, label="Report LLM")
 
 
+def build_report_source_comparison_bundle(
+    project_root: Path, output_root: Path, *, stage: str
+) -> KaggleBundle:
+    """Build the private CPU three-way report-source comparison notebook."""
+    if stage != "compare":
+        raise ValueError("Report source comparison stage must be compare")
+    contract_names = (
+        "report-extractor-v1.json",
+        "report-llm-extractor-v1.json",
+        "public-report-label-dataset-v1.json",
+        "report-source-comparison-v1.json",
+    )
+    for name in (*contract_names,):
+        contract_path = project_root / "contracts" / name
+        if not contract_path.is_file():
+            raise FileNotFoundError(f"Source comparison requires contracts/{name}")
+    source_path = project_root / "notebooks" / "report_source_comparison.py"
+    git_commit, git_dirty = _git_state(project_root)
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="report_source_comparison.ipynb",
+            kernel_id="plthon/rsna-knee-report-source-comparison",
+            title="RSNA Knee Report Source Comparison",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=("pilkwang/rsna-knee-llm-labels",),
+            kernel_sources=(
+                "plthon/rsna-knee-report-labels",
+                "plthon/rsna-knee-report-llm-labels",
+            ),
+            replacements={
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_REPORT_SOURCE_STAGE__": stage,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="source_comparison",
+        ),
+    )
+    return _record_rendered_notebook_hash(bundle, label="Report source comparison")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -748,6 +798,8 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         _validate_report_llm_source(_notebook_source(source))
     elif validator == "public_labels":
         _validate_public_label_source(_notebook_source(source))
+    elif validator == "source_comparison":
+        _validate_source_comparison_source(_notebook_source(source))
     if bundle.dataset is not None:
         if provenance.get("config_sha256") != _sha256(bundle.dataset.config_path):
             raise ValueError("Configuration digest does not match the rendered bundle")
@@ -989,6 +1041,49 @@ def _validate_public_label_source(source: str) -> None:
     folded = source.casefold()
     if any(value in folded for value in ("pydicom", ".dcm", "train_series.csv")):
         raise ValueError("Public label audit must not read DICOM or series metadata")
+
+
+def _validate_source_comparison_source(source: str) -> None:
+    required = (
+        "/kaggle/input/competitions/rsna-knee-abnormality-detection",
+        "/kaggle/input/datasets/pilkwang/rsna-knee-llm-labels",
+        "/kaggle/input/kernels/plthon/rsna-knee-report-labels",
+        "/kaggle/input/kernels/plthon/rsna-knee-report-llm-labels",
+        "/kaggle/input/plthon/rsna-knee-report-llm-labels",
+        "resolve_private_kernel_root",
+        "resolve_dataset_root",
+        "read_competition_cohorts",
+        "verify_artifact_identity",
+        "join_three_sources",
+        "partition_strata",
+        "compare_pairwise",
+        "compute_deep_dives",
+        "build_quota_feasibility",
+        "build_public_safe_summary",
+        "source-comparison-manifest.json",
+        "source-comparison-tables.json",
+        "source-comparison-summary.json",
+        'os.environ["CUDA_VISIBLE_DEVICES"] = ""',
+    )
+    if any(value not in source for value in required):
+        raise ValueError(
+            "Source comparison notebook omits a privacy or runtime safeguard"
+        )
+    folded = source.casefold()
+    if any(
+        value in folded
+        for value in (
+            "pydicom",
+            ".dcm",
+            "train_series.csv",
+            "torch.cuda",
+            "openai",
+            "anthropic",
+        )
+    ):
+        raise ValueError(
+            "Source comparison must stay CPU-only and offline without external APIs"
+        )
 
 
 def _notebook_source(rendered: str) -> str:

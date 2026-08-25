@@ -7,6 +7,7 @@ from rsna_knee.kaggle import (
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
     build_report_llm_bundle,
+    build_report_source_comparison_bundle,
     build_reports_bundle,
     load_kaggle_bundle,
     pull_kaggle_output,
@@ -29,10 +30,11 @@ def main() -> None:
             "reports",
             "report-llm",
             "public-label-audit",
+            "report-source-comparison",
         ),
     )
     build.add_argument("--output", type=Path)
-    build.add_argument("--stage", choices=("audit", "smoke", "extract"))
+    build.add_argument("--stage", choices=("audit", "smoke", "extract", "compare"))
     build.add_argument(
         "--wheel-dataset-id", default="plthon/rsna-knee-gold-baseline-package"
     )
@@ -65,6 +67,7 @@ def main() -> None:
                 "reports": f"reports-{arguments.stage}",
                 "report-llm": f"report-llm-{arguments.stage}",
                 "public-label-audit": "public-label-audit",
+                "report-source-comparison": "report-source-comparison",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -90,6 +93,12 @@ def main() -> None:
             if arguments.stage not in {"smoke", "extract"}:
                 parser.error("report-llm build requires --stage smoke|extract")
             bundle = build_report_llm_bundle(
+                project_root, arguments.output, stage=arguments.stage
+            )
+        elif arguments.target == "report-source-comparison":
+            if arguments.stage != "compare":
+                parser.error("report-source-comparison build requires --stage compare")
+            bundle = build_report_source_comparison_bundle(
                 project_root, arguments.output, stage=arguments.stage
             )
         else:

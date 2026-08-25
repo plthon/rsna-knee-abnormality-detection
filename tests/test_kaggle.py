@@ -18,6 +18,7 @@ from rsna_knee.kaggle import (
     build_kaggle_bundle,
     build_public_baseline_bundle,
     build_report_llm_bundle,
+    build_report_source_comparison_bundle,
     build_reports_bundle,
     build_wheel_dataset,
     pull_kaggle_output,
@@ -650,3 +651,118 @@ def test_report_llm_builder_rejects_invalid_stage_before_writing(
         build_report_llm_bundle(project, tmp_path / "report-llm", stage="acquire")
 
     assert not (tmp_path / "report-llm").exists()
+
+
+def test_source_comparison_bundle_is_private_offline_cpu_and_frozen(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+
+    bundle = build_report_source_comparison_bundle(
+        project, tmp_path / "report-source-comparison", stage="compare"
+    )
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join(
+        "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    )
+
+    assert metadata["competition_sources"] == ["rsna-knee-abnormality-detection"]
+    assert metadata["dataset_sources"] == ["pilkwang/rsna-knee-llm-labels"]
+    assert metadata["kernel_sources"] == [
+        "plthon/rsna-knee-report-labels",
+        "plthon/rsna-knee-report-llm-labels",
+    ]
+    assert metadata["enable_gpu"] == "false"
+    assert metadata["enable_internet"] == "false"
+    assert metadata["is_private"] == "true"
+    assert metadata["id"] == "plthon/rsna-knee-report-source-comparison"
+    assert 'STAGE = "compare"' in source
+    assert "__RSNA_KNEE_" not in source
+    for required in (
+        "resolve_dataset_root",
+        "resolve_private_kernel_root",
+        "read_competition_cohorts",
+        "verify_artifact_identity",
+        "join_three_sources",
+        "partition_strata",
+        "compare_pairwise",
+        "compute_deep_dives",
+        "build_quota_feasibility",
+        "build_public_safe_summary",
+        "/kaggle/input/kernels/plthon/rsna-knee-report-labels",
+        "/kaggle/input/kernels/plthon/rsna-knee-report-llm-labels",
+        "/kaggle/input/datasets/pilkwang/rsna-knee-llm-labels",
+    ):
+        assert required in source
+    assert "__RSNA_KNEE_" not in source
+
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0)
+
+    with pytest.raises(PermissionError, match="explicit remote approval"):
+        push_kaggle_bundle(bundle, runner=runner)
+    assert calls == []
+
+
+def test_source_comparison_boundary_rejects_wrong_stage_and_private_pull(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+    with pytest.raises(ValueError, match="stage must be compare"):
+        build_report_source_comparison_bundle(
+            project, tmp_path / "wrong-stage", stage="extract"
+        )
+    assert not (tmp_path / "wrong-stage").exists()
+
+    bundle = build_report_source_comparison_bundle(
+        project, tmp_path / "report-source-comparison", stage="compare"
+    )
+    with pytest.raises(PermissionError, match="row-level"):
+        pull_kaggle_output(
+            bundle,
+            tmp_path / ".artifacts" / "comparison",
+            artifact_root=tmp_path / ".artifacts",
+            filenames=("source-comparison-tables.json",),
+            runner=lambda command: CompletedProcess(command, 0),
+        )
+    results = pull_kaggle_output(
+        bundle,
+        tmp_path / ".artifacts" / "comparison",
+        artifact_root=tmp_path / ".artifacts",
+        filenames=("source-comparison-summary.json",),
+        runner=lambda command: CompletedProcess(command, 0),
+    )
+    assert len(results) == 1
+
+
+def test_source_comparison_cli_builds_bundle_without_remote_action(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "report-source-comparison"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/kaggle.py",
+            "build",
+            "report-source-comparison",
+            "--stage",
+            "compare",
+            "--output",
+            str(output),
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == str(output)
+    assert (output / "kernel" / "report_source_comparison.ipynb").is_file()

@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "comparison_version": "report-source-comparison-v1",
+  "issue": 25,
+  "purpose": "Three-way aggregate comparison of the frozen #20 rule extractor, #23 local-LLM extractor, and #24-audited public label dataset over the non-gold cohort. Evidence only: no correctness claim, no source selection, no activation decision, no training artifact.",
+  "policy": {
+    "gpu": false,
+    "tpu": false,
+    "internet_enabled": false,
+    "hosted_api_allowed": false,
+    "organizer_gold_values_read": false,
+    "gold_cohort_use": "membership_only",
+    "analysis_cohort": "non_gold",
+    "merges_sources_into_training_labels": false,
+    "modifies_any_extractor": false,
+    "claims_correctness": false
+  },
+  "target_order_source": {
+    "path": "contracts/competition.json",
+    "sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292"
+  },
+  "inputs": [
+    {
+      "role": "competition_contract",
+      "kind": "contract",
+      "path": "contracts/competition.json",
+      "sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292"
+    },
+    {
+      "role": "rule_extractor_contract",
+      "kind": "contract",
+      "path": "contracts/report-extractor-v1.json",
+      "sha256": "901e8a53173fef0d85e12ed93cbea05dd5b8cfc900ef111e0125cb751634156a"
+    },
+    {
+      "role": "rule_labels",
+      "kind": "private_kernel_output",
+      "kernel": "plthon/rsna-knee-report-labels",
+      "filename": "report-labels-v1.csv",
+      "row_count": 52884,
+      "size_bytes": 12409688,
+      "sha256": "6651f60b00e5bec292e8c98e7fa83c75e8aa5af5931414a9a68c8ce10a52d527"
+    },
+    {
+      "role": "llm_extractor_contract",
+      "kind": "contract",
+      "path": "contracts/report-llm-extractor-v1.json",
+      "sha256": "c428d1b44bb6c87f84e7423feeaefa6c635a5ba1cb5dd277468128d7df0bbe51"
+    },
+    {
+      "role": "llm_labels",
+      "kind": "private_kernel_output",
+      "kernel": "plthon/rsna-knee-report-llm-labels",
+      "filename": "report-llm-labels-v1.csv",
+      "row_count": 52884,
+      "size_bytes": 17063200,
+      "sha256": "d78c7f1d27437f6d2870e48fbd730a57c60d34380720cd4e0e07811a699db52a"
+    },
+    {
+      "role": "llm_study_status",
+      "kind": "private_kernel_output",
+      "kernel": "plthon/rsna-knee-report-llm-labels",
+      "filename": "report-llm-study-status-v1.csv",
+      "row_count": 4407,
+      "size_bytes": 1079236,
+      "sha256": "151d0554cbd7622028df1bd58a4e2c37d18796c5860502cf3eb0917ec6baf923"
+    },
+    {
+      "role": "public_dataset_contract",
+      "kind": "contract",
+      "path": "contracts/public-report-label-dataset-v1.json",
+      "sha256": "3b607558a5bea66d2d10dd3884bd6fa9e2ac81b4617c6ea372d7feb0c00068e9"
+    },
+    {
+      "role": "public_labels",
+      "kind": "public_dataset_file",
+      "dataset": "pilkwang/rsna-knee-llm-labels",
+      "version": 1,
+      "filename": "report_labels_v2.csv",
+      "row_count": 4406,
+      "size_bytes": 1004839,
+      "sha256": "6f704a7bdb2f894cc49445b19ba7c4378c3f548d3449e00361e10044bee40920"
+    }
+  ],
+  "state_vocabulary": {
+    "states": ["positive", "negative", "uncertain", "unknown"],
+    "decisive_states": ["positive", "negative"],
+    "non_decisive_states": ["uncertain", "unknown"],
+    "report_source_domains": {
+      "rules": ["positive", "negative", "uncertain", "unknown"],
+      "llm": ["positive", "negative", "uncertain", "unknown"],
+      "public": ["positive", "negative", "unknown"]
+    },
+    "public_verdict_mapping": {
+      "YES": "positive",
+      "NO": "negative",
+      "UNK": "unknown"
+    },
+    "out_of_domain_policy": "reject",
+    "public_descriptive_columns": {
+      "{target}": "score domain frequencies recorded descriptively only",
+      "{target}__conf": "confidence domain frequencies recorded descriptively only",
+      "role_in_agreement_logic": "none"
+    }
+  },
+  "cohorts": {
+    "identifier_column": "StudyInstanceUID",
+    "definition": "gold iff all twelve organizer target columns are present; non_gold iff all twelve are absent; any other pattern is rejected",
+    "values_are_never_read": true,
+    "total_studies": 4407,
+    "gold_studies": 58,
+    "non_gold_studies": 4349,
+    "partially_labeled_studies": 0
+  },
+  "join": {
+    "key": ["StudyInstanceUID", "target"],
+    "duplicate_policy": "reject",
+    "missing_public_study_policy": "coverage fact, never imputed",
+    "expected_complete_triples_per_cohort_row": "one triple per non-gold study-target with all three sources present"
+  },
+  "strata": {
+    "partition": "every complete triple lands in exactly one stratum",
+    "order": [
+      "triple-decisive-agree",
+      "pairwise-agree-third-opposes",
+      "pairwise-agree-third-abstains",
+      "two-decisive-opposed",
+      "single-decisive-only",
+      "zero-decisive"
+    ],
+    "definitions": {
+      "triple-decisive-agree": "all three sources decisive with identical polarity",
+      "pairwise-agree-third-opposes": "all three decisive; two share one polarity and the remaining source holds the opposite polarity",
+      "pairwise-agree-third-abstains": "exactly two decisive sources sharing one polarity; the third source is non-decisive",
+      "two-decisive-opposed": "exactly two decisive sources with opposite polarities; the third is non-decisive",
+      "single-decisive-only": "exactly one decisive source; split by source and polarity",
+      "zero-decisive": "no decisive source"
+    },
+    "standoff_note": "with only two polarities across three binary votes a three-way polarity standoff is impossible; an all-decisive triple is either unanimous or a 2-versus-1 split",
+    "crosscut": {
+      "any-uncertain": "triples containing at least one rules-or-LLM uncertain state; counted in addition to the partition"
+    },
+    "contested_definition": "for quota-feasibility description only: a candidate sits in pairwise-agree-third-opposes or two-decisive-opposed, i.e. another source casts an opposing decisive vote"
+  },
+  "pairs": [
+    ["rules", "llm"],
+    ["rules", "public"],
+    ["llm", "public"]
+  ],
+  "pairwise_method": {
+    "joint_decisive_comparison": "compared rows require both members decisive; identical to #24's compared-decisive methodology",
+    "exact_state_agreement": "four-state equality over every overlapping row; identical to #23's exact-agreement methodology",
+    "reconciliation_scope": "rates and counts are computed on the 4,349-study non-gold cohort; #23 published over 4,407 rows and #24 over the 4,406-row public overlap, so published numbers reconcile by methodology and differ only by cohort"
+  },
+  "deep_dives": {
+    "mcl_conflict_disposition": {
+      "target": "MCL",
+      "directions": [
+        "public-negative/rule-positive with the LLM vote distribution",
+        "public-positive/rule-negative with the LLM vote distribution"
+      ]
+    },
+    "oa_coverage_expansion": {
+      "targets": ["Medial OA", "Lateral OA", "PF OA"],
+      "contents": "decisive counts by source, LLM-positive/public-positive overlap, and the LLM-only and public-only decisive pools"
+    },
+    "under_calling_profile": {
+      "flag_threshold": "flag a target when LLM decisive positives fall below 25% of another source's decisive positives"
+    },
+    "parse_loss": {
+      "scope": "non-gold rows of parse-failed LLM studies",
+      "counterfactual": "decisive counts the rules and public sources supply on rows where the LLM emitted parse-failure unknown"
+    }
+  },
+  "quota_feasibility": {
+    "purpose": "informative evidence for the #21 rewrite only; selects no design, threshold, or priority",
+    "table_grain": ["target", "source", "decisive state"],
+    "columns": [
+      "candidate_count",
+      "stratum_counts (full six-stratum decomposition)",
+      "triple_decisive_agree_count",
+      "contested_count"
+    ]
+  },
+  "outputs": {
+    "kernel_id": "plthon/rsna-knee-report-source-comparison",
+    "kernel_title": "RSNA Knee Report Source Comparison",
+    "stage": "compare",
+    "private": [
+      "source-comparison-manifest.json",
+      "source-comparison-tables.json"
+    ],
+    "public_safe": ["source-comparison-summary.json"],
+    "privacy_rule": "no study identifier, patient identifier, report text, report hash, or row-level label may appear in any retrieved artifact"
+  }
+}
