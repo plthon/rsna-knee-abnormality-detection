@@ -11,8 +11,8 @@ Only aggregate JSON summaries were retrieved locally:
 
 | Output | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `source-comparison-manifest.json` | 3,547 | `63222ce234ec4be2ebfda9adbb2c27825ef0e6d521ed48b6de46ace150d71ea9` |
-| `source-comparison-summary.json` | 68,743 | (retrieved aggregate summary) |
+| `source-comparison-manifest.json` | 3,547 | `15fb328d5f3c1e69c7fde0433cf5a83fc7ede93a9aa44bd881ef5d030966c45e` |
+| `source-comparison-summary.json` | 68,743 | `a969dca02b9c75bebce70bfc330e058113c296b591563b0ffe998e921de013d8` |
 
 No row-level validation output, raw report, organizer target value, or study
 identifier was retrieved locally.
