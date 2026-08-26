@@ -24,14 +24,16 @@ import torch
 from .competition_contract import (
     VerifiedGoldContract,
     load_verified_gold_contract,
+    load_verified_submission_contract,
 )
 from .config import PreprocessingConfig
-from .indexing import verify_index_artifact
+from .indexing import build_competition_index, verify_index_artifact
 from .provenance import create_run_id, write_run_manifest
 from .public_label_audit import resolve_dataset_root
 from .submission import (
     SubmissionInputs,
     discover_submission_inputs,
+    validate_submission,
     write_submission,
 )
 from .training import (
@@ -59,6 +61,10 @@ _COMBINED_COHORT_RULE_VERSION = "gold-plus-public-verdicts-v1"
 _COMBINED_COHORT_DIGEST_VERSION = "combined-gold-public-cohort-jsonl-v1"
 _COMBINED_SPLIT_RULE_VERSION = "patient-hash-disjoint-v1"
 _ARTIFACT_DIRECTORY = "rsna-knee-combined-baseline-v1"
+_SCORING_ARTIFACT_DIRECTORY = "rsna-knee-scoring-v1"
+COMBINED_BASELINE_CHECKPOINT_SHA256 = (
+    "1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4"
+)
 
 _STUDY_COLUMNS = (
     "study_index",
@@ -171,6 +177,17 @@ class CombinedBaselineOutcome:
     report_path: Path
     submission_path: Path
     validation_report_path: Path
+    manifest_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CombinedScoringOutcome:
+    artifact_dir: Path
+    index_artifact_dir: Path
+    submission_path: Path
+    fallbacks_path: Path
+    validation_report_path: Path
+    scoring_report_path: Path
     manifest_path: Path
 
 
@@ -542,6 +559,288 @@ def derive_patient_split(
         val_fraction=val_fraction,
         split_rule_version=_COMBINED_SPLIT_RULE_VERSION,
         summary=summary,
+    )
+
+
+def discover_combined_checkpoint(input_root: Path) -> Path:
+    """Find exactly one attached copy of the frozen competition checkpoint."""
+    candidates = sorted(
+        path for path in input_root.rglob("checkpoint.pt") if path.is_file()
+    )
+    matching = [
+        path
+        for path in candidates
+        if _sha256(path) == COMBINED_BASELINE_CHECKPOINT_SHA256
+    ]
+    if len(matching) == 1 and len(candidates) == 1:
+        return matching[0]
+    if not candidates:
+        raise FileNotFoundError(
+            "Missing attached checkpoint.pt for combined baseline scoring"
+        )
+    if not matching:
+        raise ValueError(
+            "Attached checkpoint SHA-256 mismatch; expected "
+            f"{COMBINED_BASELINE_CHECKPOINT_SHA256}"
+        )
+    raise ValueError("Expected exactly one attached checkpoint.pt")
+
+
+def load_verified_combined_checkpoint(
+    path: Path,
+    *,
+    device: torch.device,
+    contract_path: Path | None = None,
+    expected_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
+) -> tuple[GoldResNet18, dict[str, Any]]:
+    """Verify the frozen checkpoint before deserializing it for scoring."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing checkpoint: {path}")
+    actual_sha256 = _sha256(path)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            "Checkpoint SHA-256 mismatch; expected "
+            f"{expected_sha256}, got {actual_sha256}"
+        )
+
+    model, checkpoint = load_combined_checkpoint(path, device=device)
+    target_names = load_verified_submission_contract(contract_path).target_names
+    if checkpoint.get("targets") != list(target_names):
+        raise ValueError("Checkpoint target order differs from competition contract")
+
+    expected_preprocessing = {
+        "slice_count": 8,
+        "lower_percentile": 1.0,
+        "upper_percentile": 99.0,
+        "image_size": 224,
+        "shared_contract": "preprocess_series_result",
+        "channel_adapter": "grayscale_repeat_to_rgb",
+        "imagenet_mean": [0.485, 0.456, 0.406],
+        "imagenet_std": [0.229, 0.224, 0.225],
+    }
+    if checkpoint.get("preprocessing") != expected_preprocessing:
+        raise ValueError("Checkpoint preprocessing metadata is incompatible")
+    if checkpoint.get("completed_epochs") != 3:
+        raise ValueError("Checkpoint does not contain the completed 3-epoch run")
+    if checkpoint.get("cohort") != {
+        "selection_rule_version": _COMBINED_COHORT_RULE_VERSION,
+        "digest": "b066a7e6cd7119f4bef330a006a86a0e08e664d7b5347a111ec781e72abe1fdc",
+        "gold_study_count": 58,
+        "non_gold_study_count": 4349,
+        "total_study_count": 4407,
+    }:
+        raise ValueError("Checkpoint supervision metadata is incompatible")
+    if checkpoint.get("partition") != {
+        "split_rule_version": _COMBINED_SPLIT_RULE_VERSION,
+        "split_seed": 20260825,
+        "val_fraction": 0.1,
+        "train_study_count": 3957,
+        "val_study_count": 450,
+    }:
+        raise ValueError("Checkpoint partition metadata is incompatible")
+    if checkpoint.get("configuration") != {
+        "preprocessing": {
+            "slice_count": 8,
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "image_size": 224,
+        },
+        "training": {
+            "epochs": 3,
+            "batch_size": 16,
+            "learning_rate": 0.0001,
+            "weight_decay": 0.0001,
+            "seed": 20260825,
+            "mixed_precision": True,
+            "architecture": "torchvision.models.resnet18",
+            "weight_identity": "ResNet18_Weights.IMAGENET1K_V1",
+        },
+        "split": {"val_fraction": 0.1, "split_seed": 20260825},
+        "validation": {"reload_absolute_tolerance": 1e-5},
+    }:
+        raise ValueError("Checkpoint configuration metadata is incompatible")
+    priors = checkpoint.get("priors")
+    if (
+        not isinstance(priors, list)
+        or len(priors) != len(target_names)
+        or any(not _is_probability(value) for value in priors)
+    ):
+        raise ValueError("Checkpoint fallback priors are incompatible")
+    initialization = checkpoint.get("initialization")
+    if (
+        not isinstance(initialization, dict)
+        or initialization.get("artifact_sha256")
+        != "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec"
+        or initialization.get("artifact_size_bytes") != 46830571
+        or initialization.get("contract_sha256")
+        != "cbd3639197247bf8b4bd83f11047f5cac5bf8b13ba92e881c423f7c61fabc4ca"
+    ):
+        raise ValueError("Checkpoint initialization metadata is incompatible")
+    return model, checkpoint
+
+
+def run_combined_scoring(
+    *,
+    input_root: Path,
+    work_root: Path,
+    approved_gpu: bool = False,
+    checkpoint_path: Path | None = None,
+    run_id: str | None = None,
+    source_provenance: Mapping[str, object] | None = None,
+    notebook: Mapping[str, object] | None = None,
+    competition_contract_path: Path | None = None,
+) -> CombinedScoringOutcome:
+    """Run inference-only scoring against the live competition test mount."""
+    checkpoint = checkpoint_path or discover_combined_checkpoint(input_root)
+    model, checkpoint_payload = load_verified_combined_checkpoint(
+        checkpoint,
+        device=torch.device("cpu"),
+        contract_path=competition_contract_path,
+    )
+    cuda_evidence = require_approved_cuda(approved=approved_gpu)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    submission_inputs = discover_submission_inputs(
+        input_root, contract_path=competition_contract_path
+    )
+    if checkpoint_payload["targets"] != list(submission_inputs.contract.target_names):
+        raise ValueError("Checkpoint target order differs from submission contract")
+    preprocessing_raw = cast(dict[str, Any], checkpoint_payload["preprocessing"])
+    preprocessing = PreprocessingConfig(
+        slice_count=int(preprocessing_raw["slice_count"]),
+        lower_percentile=float(preprocessing_raw["lower_percentile"]),
+        upper_percentile=float(preprocessing_raw["upper_percentile"]),
+        image_size=int(preprocessing_raw["image_size"]),
+    )
+
+    index_outcome = build_competition_index(
+        input_root,
+        work_root,
+        preprocessing,
+        splits=("test",),
+        representative_series_per_split=4,
+        contract_path=competition_contract_path,
+    )
+    verify_index_artifact(
+        index_outcome.artifact_dir, contract_path=competition_contract_path
+    )
+    live_index = load_indexed_studies(
+        submission_inputs.competition_root,
+        index_outcome.artifact_dir,
+        submission_inputs.entity_ids,
+        split="test",
+    )
+    missing = [
+        study_uid
+        for study_uid in submission_inputs.entity_ids
+        if not live_index[study_uid].series
+    ]
+    if missing:
+        raise RuntimeError(
+            "Live test index has no usable selected series for: " + ", ".join(missing)
+        )
+
+    artifact_dir = work_root / _SCORING_ARTIFACT_DIRECTORY
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    priors = cast(Sequence[float], checkpoint_payload["priors"])
+    prediction = _predict_combined_submission(
+        model=model,
+        submission_inputs=submission_inputs,
+        indexed=live_index,
+        work_root=artifact_dir,
+        preprocessing=preprocessing,
+        priors=priors,
+        mixed_precision=bool(
+            cast(dict[str, Any], checkpoint_payload["configuration"])["training"][
+                "mixed_precision"
+            ]
+        ),
+        device=device,
+        max_fallback_fraction=0.5,
+    )
+    validation = validate_submission(
+        prediction.artifacts.submission_path, inputs=submission_inputs
+    )
+    if validation.get("valid") is not True:
+        raise RuntimeError("Strict submission validation did not pass")
+
+    scoring_report_path = artifact_dir / "scoring-report.json"
+    scoring_report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "inference_only",
+                "cuda_readiness": cuda_evidence,
+                "checkpoint": {
+                    "path": checkpoint.name,
+                    "sha256": _sha256(checkpoint),
+                    "targets": list(submission_inputs.contract.target_names),
+                },
+                "live_test": {
+                    "study_count": len(submission_inputs.entity_ids),
+                    "indexed_study_count": len(live_index),
+                    "index_manifest_sha256": _sha256(
+                        index_outcome.artifact_dir / "index-manifest.json"
+                    ),
+                    "test_csv_sha256": _sha256(
+                        submission_inputs.competition_root / "test.csv"
+                    ),
+                    "test_series_csv_sha256": _sha256(
+                        submission_inputs.competition_root / "test_series.csv"
+                    ),
+                },
+                "inference": {
+                    "prediction_count": prediction.prediction_count,
+                    "fallback_count": prediction.fallback_count,
+                    "decode_errors": prediction.decode_errors,
+                    "inference_seconds": prediction.inference_seconds,
+                },
+                "submission": {
+                    "path": prediction.artifacts.submission_path.name,
+                    "sha256": _sha256(prediction.artifacts.submission_path),
+                    "strictly_validated": True,
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = artifact_dir / "run-manifest.json"
+    write_run_manifest(
+        manifest_path,
+        run_id=run_id or create_run_id("combined-scoring"),
+        source={
+            **dict(source_provenance or {}),
+            "checkpoint_sha256": _sha256(checkpoint),
+            "live_test_index_manifest_sha256": _sha256(
+                index_outcome.artifact_dir / "index-manifest.json"
+            ),
+        },
+        configuration={
+            "mode": "inference_only",
+            "target_order": list(submission_inputs.contract.target_names),
+            "preprocessing": asdict(preprocessing),
+        },
+        notebook=notebook or {"kind": "combined_inference_only_scoring"},
+        artifacts=[
+            prediction.artifacts.submission_path,
+            prediction.artifacts.fallbacks_path,
+            prediction.artifacts.validation_report_path,
+            scoring_report_path,
+        ],
+        artifact_root=artifact_dir,
+    )
+    return CombinedScoringOutcome(
+        artifact_dir=artifact_dir,
+        index_artifact_dir=index_outcome.artifact_dir,
+        submission_path=prediction.artifacts.submission_path,
+        fallbacks_path=prediction.artifacts.fallbacks_path,
+        validation_report_path=prediction.artifacts.validation_report_path,
+        scoring_report_path=scoring_report_path,
+        manifest_path=manifest_path,
     )
 
 
@@ -1145,6 +1444,7 @@ def _predict_combined_submission(
     priors: Sequence[float],
     mixed_precision: bool,
     device: torch.device,
+    max_fallback_fraction: float | None = None,
 ) -> Any:
     predictions: dict[str, tuple[float, ...]] = {}
     failures: dict[str, str] = {}
@@ -1155,8 +1455,9 @@ def _predict_combined_submission(
         for study_uid in submission_inputs.entity_ids:
             indexed_study = indexed.get(study_uid)
             if indexed_study is None or not indexed_study.series:
-                failures[study_uid] = "no_selected_index_series"
-                continue
+                raise RuntimeError(
+                    "A missing selected index series cannot be used as a scoring fallback"
+                )
             decoded = decode_study(indexed_study, preprocessing, labels=None)
             decode_errors.update(decoded.decode_error_counts)
             if decoded.valid_slice_count == 0:
@@ -1176,6 +1477,17 @@ def _predict_combined_submission(
             )
     if device.type == "cuda":
         torch.cuda.synchronize()
+    if (
+        max_fallback_fraction is not None
+        and failures
+        and len(failures) / len(submission_inputs.entity_ids) >= max_fallback_fraction
+    ):
+        # ponytail: fixed 50% catastrophic-fallback guard; add a data-quality
+        # baseline if fallback rates become an expected production condition.
+        raise RuntimeError(
+            "Refusing submission because too many test studies require fallback "
+            f"({len(failures)}/{len(submission_inputs.entity_ids)})"
+        )
     inference_seconds = time.perf_counter() - inference_start
     artifacts = write_submission(
         inputs=submission_inputs,
@@ -1423,3 +1735,12 @@ def _boolean(parent: Mapping[str, Any], key: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"Field {key} must be boolean")
     return value
+
+
+def _is_probability(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and 0.0 <= float(value) <= 1.0
+    )

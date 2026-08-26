@@ -564,6 +564,25 @@ def _combined_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
         ("StudyInstanceUID", *TARGETS),
         [sample_sub_row],
     )
+    _write_csv(
+        competition_root / "test_series.csv",
+        (
+            "StudyInstanceUID",
+            "SeriesInstanceUID",
+            "Fluid_Sensitive",
+            "Fat_Suppression",
+            "Anatomical_Plane",
+        ),
+        [
+            {
+                "StudyInstanceUID": "test-study-1",
+                "SeriesInstanceUID": "series-test1",
+                "Fluid_Sensitive": "Yes",
+                "Fat_Suppression": "No",
+                "Anatomical_Plane": "Sagittal",
+            }
+        ],
+    )
 
     public_root = root / "public_dataset"
     public_root.mkdir()

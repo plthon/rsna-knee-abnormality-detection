@@ -8,8 +8,10 @@ ignored local `.artifacts/` directory and private Kaggle outputs; none are commi
 
 ## Result and summary
 
-A full 3-epoch ResNet-18 baseline training run was executed on Kaggle GPU across
-all 4,407 competition studies using unified supervision:
+A full 3-epoch ResNet-18 baseline training run was executed on Kaggle GPU from
+a 4,407-study unified supervision cohort. The optimizer saw 3,957 studies in
+the deterministic training partition; 450 studies were held out for diagnostic
+validation:
 - **58 organizer-gold studies** supervised directly by competition ground truth (`train.csv`).
 - **4,349 non-gold studies** supervised by frozen issue #24 public report-derived labels (`report_labels_v2.csv`).
 - **Verdict mapping**: `YES -> 1`, `NO -> 0`, `UNK -> masked in loss`.
@@ -21,7 +23,7 @@ the trained model achieved:
 - **Mean Binary Cross-Entropy**: **0.5208**
 - **Mean Accuracy @ 0.5**: **0.7720**
 
-Checkpoint reload reproducibility verified exact numerical consistency (**max diff: 0.0**, tolerance `1e-5`). Test inference completed with 0 fallbacks and produced a strictly validated competition `submission.csv`.
+Checkpoint reload reproducibility verified exact numerical consistency (**max diff: 0.0**, tolerance `1e-5`). The local run inferred the three mounted example-test studies with 0 fallbacks and produced a strictly validated `submission.csv`; this is not evidence that hidden competition scoring works.
 
 ## Supervision cohort inventory
 
@@ -69,7 +71,7 @@ Evaluated on the 10% validation partition (450 studies):
 - **Environment**: Kaggle GPU kernel `plthon/rsna-knee-gold-public-baseline` on Tesla T4.
 - **Model Architecture**: ResNet-18 backbone initialized from offline `ResNet18_Weights.IMAGENET1K_V1` with linear 12-target multi-label classification head.
 - **Preprocessing**: 8 sampled slices per series, 224×224 resolution, provisional percentile normalization.
-- **Training Duration**: 13,102.42 seconds (~3.64 hours) for 3 full epochs across 3,957 training studies.
+- **Training Duration**: 13,102.42 seconds (~3.64 hours) for 3 full epochs across 3,957 training-partition studies; 450 studies were diagnostic validation only.
 - **Peak CUDA Memory**: 741,710,848 bytes (~741.7 MB, well within 15.6 GB T4 limit).
 - **DICOM / Decode Failures**: 0 failures across all studies.
 
@@ -84,7 +86,18 @@ Evaluated on the 10% validation partition (450 studies):
 
 - **Inference Time**: 2.99 seconds on Tesla T4.
 - **Prediction Count**: 3 competition test studies, 12 targets each.
-- **Probability Range**: `[0.01374, 0.96729]` (finite, calibrated probabilities).
+- **Output Range**: `[0.01374, 0.96729]` (finite sigmoid outputs; not calibrated probabilities).
 - **Fallback Count**: 0 studies required fallback priors.
 - **Submission SHA-256**: `2d36fcc40f046da23dc7b6f90d0130aad0458f063c65ea4e2686497155bee3e9`
 - **Submission Schema**: Verified against competition contract.
+
+## Competition scoring boundary
+
+The three-study result above is only a local/example execution. The final
+scoring bundle is inference-only: it verifies checkpoint
+`1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4`, reads the
+live scoring-time `test.csv` and `test_series.csv`, builds a test-only index
+with the shared geometry ordering, uniform slice selection, and preprocessing
+path, then runs inference and strict submission validation. It does not use the
+frozen example-test index, construct the training cohort, split data, train
+epochs, or run validation inference.

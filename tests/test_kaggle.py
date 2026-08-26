@@ -801,8 +801,9 @@ def test_combined_baseline_bundle_builds_and_verifies_metadata(tmp_path: Path) -
     assert metadata["enable_gpu"] == "true"
     assert metadata["machine_shape"] == "NvidiaTeslaT4"
     assert metadata["competition_sources"] == ["rsna-knee-abnormality-detection"]
-    assert "pilkwang/rsna-knee-llm-labels" in metadata["dataset_sources"]
-    assert "plthon/torchvision-resnet18-imagenet1k-v1" in metadata["dataset_sources"]
-    assert metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
-    assert (output / "kernel" / "train_combined_baseline.ipynb").is_file()
+    assert metadata["dataset_sources"] == [
+        "plthon/rsna-knee-combined-baseline-checkpoint"
+    ]
+    assert metadata["kernel_sources"] == []
+    assert (output / "kernel" / "score_combined_baseline.ipynb").is_file()
     assert (output / "bundle-provenance.json").is_file()

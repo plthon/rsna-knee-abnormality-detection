@@ -55,11 +55,13 @@ def discover_submission_inputs(
     )
     if set(test_ids) != set(sample_ids):
         raise ValueError("Test and sample submission identifiers do not match")
-    return SubmissionInputs(
+    inputs = SubmissionInputs(
         competition_root=competition_root,
         entity_ids=test_ids,
         contract=contract,
     )
+    _read_test_series(inputs)
+    return inputs
 
 
 def run_constant_baseline(
@@ -394,6 +396,8 @@ def _read_test_series(inputs: SubmissionInputs) -> dict[str, tuple[str, ...]]:
             raise ValueError("Test series contains duplicate study-series identifiers")
         seen.add(key)
         series_by_study.setdefault(study_id, []).append(series_id)
+    if set(series_by_study) != expected_ids:
+        raise ValueError("Test series identifiers do not match test.csv")
     return {
         study_id: tuple(series_ids) for study_id, series_ids in series_by_study.items()
     }

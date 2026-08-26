@@ -37,10 +37,26 @@ def test_gold_public_baseline_contract_records_verified_real_data_evidence() -> 
     assert checkpoint["max_reload_absolute_diff"] == 0.0
     assert checkpoint["size_bytes"] > 100_000_000
 
+    assert contract["execution"]["optimizer_train_study_count"] == 3957
+    assert contract["execution"]["supervision_cohort_study_count"] == 4407
+
+    scoring = contract["scoring"]
+    assert scoring == {
+        "checkpoint_sha256": checkpoint["sha256"],
+        "evidence_scope": "final inference bundle contract; not verified by the mounted three-study example",
+        "frozen_test_index_used": False,
+        "live_test_index": True,
+        "mode": "inference_only",
+        "retrain": False,
+        "strict_submission_validation": True,
+    }
+
     submission = contract["submission"]
     assert submission["strictly_validated"] is True
     assert submission["fallback_count"] == 0
     assert submission["prediction_count"] == 3
+    assert submission["hidden_scoring_verified"] is False
+    assert submission["sigmoid_outputs_calibrated"] is False
 
     assert contract["privacy"] == {
         "competition_data_downloaded": False,

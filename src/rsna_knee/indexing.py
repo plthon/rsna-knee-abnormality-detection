@@ -35,6 +35,7 @@ _HEADER_TAGS = (
 
 type _OrderingMethod = Literal["none", "geometry", "instance_number", "filename"]
 type _MetadataAttributeStatus = Literal["present", "missing", "invalid"]
+type IndexSplit = Literal["train", "test"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +119,9 @@ class _ErrorRecord:
     detail: str = ""
 
 
-def verify_index_artifact(artifact_dir: Path) -> dict[str, Any]:
+def verify_index_artifact(
+    artifact_dir: Path, *, contract_path: Path | None = None
+) -> dict[str, Any]:
     """Verify a completed local or Kaggle index without reading private pixels."""
     manifest_path = artifact_dir / "index-manifest.json"
     if not manifest_path.is_file():
@@ -126,7 +129,7 @@ def verify_index_artifact(artifact_dir: Path) -> dict[str, Any]:
     manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != _SCHEMA_VERSION:
         raise ValueError("Unsupported index schema version")
-    contract = load_verified_index_contract()
+    contract = load_verified_index_contract(contract_path)
     if manifest.get("competition_contract") != {
         "schema_version": contract.schema_version,
         "verified_at": contract.verified_at,
@@ -225,6 +228,7 @@ def build_competition_index(
     work_root: Path,
     config: PreprocessingConfig,
     *,
+    splits: Sequence[IndexSplit] = ("train", "test"),
     representative_series_per_split: int = 4,
     contract_path: Path | None = None,
 ) -> IndexOutcome:
@@ -235,10 +239,17 @@ def build_competition_index(
     """
     if representative_series_per_split < 0:
         raise ValueError("representative_series_per_split must be non-negative")
+    requested_splits = tuple(dict.fromkeys(splits))
+    if not requested_splits or any(
+        split not in {"train", "test"} for split in requested_splits
+    ):
+        raise ValueError("splits must contain train and/or test")
     contract = load_verified_index_contract(contract_path)
     competition_root = _discover_competition_root(input_root)
     errors: list[_ErrorRecord] = []
-    sources = _load_series_sources(competition_root, contract.series_tables, errors)
+    sources = _load_series_sources(
+        competition_root, contract.series_tables, errors, splits=requested_splits
+    )
     artifact_dir = work_root / _ARTIFACT_DIRECTORY
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
@@ -479,6 +490,7 @@ def build_competition_index(
         representative_series_per_split,
         study_lookup,
         errors,
+        splits=requested_splits,
     )
     _write_errors(errors_path, errors)
 
@@ -558,6 +570,7 @@ def build_competition_index(
             "normalization_status": "provisional",
             "resize": "bilinear_aspect_preserving_center_pad",
         },
+        "indexed_splits": list(requested_splits),
         "decoder_dependencies": ["pydicom"],
         "decoded_images_persisted": False,
         "files": artifact_files,
@@ -590,11 +603,15 @@ def _load_series_sources(
     root: Path,
     table_contracts: tuple[SeriesTableContract, ...],
     errors: list[_ErrorRecord],
+    *,
+    splits: Sequence[IndexSplit] = ("train", "test"),
 ) -> list[_SeriesSource]:
     sources: list[_SeriesSource] = []
     seen: set[tuple[str, str, str]] = set()
     for table_contract in table_contracts:
         split = table_contract.split
+        if split not in splits:
+            continue
         image_root = table_contract.image_root
         filename = table_contract.filename
         path = root / filename
@@ -846,9 +863,11 @@ def _run_representative_checks(
     per_split_limit: int,
     study_lookup: dict[tuple[str, str], int],
     errors: list[_ErrorRecord],
+    *,
+    splits: Sequence[IndexSplit] = ("train", "test"),
 ) -> dict[str, Any]:
     selected_candidates: list[_RepresentativeCandidate] = []
-    for split in ("train", "test"):
+    for split in splits:
         split_candidates = [item for item in candidates if item.source.split == split]
         selected_candidates.extend(
             _diverse_representatives(split_candidates, per_split_limit)

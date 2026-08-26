@@ -157,13 +157,24 @@
     "epochs_completed": 3,
     "gpu": "Tesla T4",
     "mixed_precision": true,
+    "optimizer_train_study_count": 3957,
     "peak_cuda_memory_bytes": 741710848,
+    "supervision_cohort_study_count": 4407,
     "total_training_seconds": 13102.42
   },
   "privacy": {
     "competition_data_downloaded": false,
     "private_artifacts_registered_under_ignored_path": true,
     "row_level_membership_labels_patient_ids_or_predictions_committed": false
+  },
+  "scoring": {
+    "checkpoint_sha256": "1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4",
+    "evidence_scope": "final inference bundle contract; not verified by the mounted three-study example",
+    "frozen_test_index_used": false,
+    "live_test_index": true,
+    "mode": "inference_only",
+    "retrain": false,
+    "strict_submission_validation": true
   },
   "provenance": {
     "competition_contract_sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292",
@@ -185,11 +196,14 @@
   },
   "schema_version": 1,
   "submission": {
+    "evidence_scope": "mounted three-study example test only; not hidden scoring evidence",
     "fallback_count": 0,
+    "hidden_scoring_verified": false,
     "inference_seconds": 2.989005018000171,
     "path": "submission.csv",
     "prediction_count": 3,
     "sha256": "2d36fcc40f046da23dc7b6f90d0130aad0458f063c65ea4e2686497155bee3e9",
+    "sigmoid_outputs_calibrated": false,
     "strictly_validated": true
   },
   "supervision": {

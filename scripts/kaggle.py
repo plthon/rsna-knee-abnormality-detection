@@ -4,6 +4,7 @@ from pathlib import Path
 
 from rsna_knee.kaggle import (
     build_combined_baseline_bundle,
+    build_combined_scoring_bundle,
     build_public_baseline_bundle,
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
@@ -33,6 +34,7 @@ def main() -> None:
             "public-label-audit",
             "report-source-comparison",
             "combined-baseline",
+            "combined-scoring",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -68,7 +70,8 @@ def main() -> None:
                 "report-llm": f"report-llm-{arguments.stage}",
                 "public-label-audit": "public-label-audit",
                 "report-source-comparison": "report-source-comparison",
-                "combined-baseline": "gold-public-baseline",
+                "combined-baseline": "gold-public-scoring",
+                "combined-scoring": "gold-public-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -83,12 +86,16 @@ def main() -> None:
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
                 gpu_approved=arguments.approve_gpu,
             )
-        elif arguments.target == "combined-baseline":
-            bundle = build_combined_baseline_bundle(
+        elif arguments.target in {"combined-baseline", "combined-scoring"}:
+            builder = (
+                build_combined_baseline_bundle
+                if arguments.target == "combined-baseline"
+                else build_combined_scoring_bundle
+            )
+            bundle = builder(
                 project_root,
                 arguments.output,
-                kernel_id=arguments.kernel_id
-                or "plthon/rsna-knee-gold-public-baseline",
+                kernel_id=arguments.kernel_id or "plthon/rsna-knee-gold-public-scoring",
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "reports":

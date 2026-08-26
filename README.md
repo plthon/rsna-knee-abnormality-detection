@@ -37,7 +37,7 @@ benchmark.
 ```text
 contracts/                 verified schemas and committed evidence
 docs/                      immutable inspection and experiment reports
-notebooks/                 two current public notebook sources
+notebooks/                 public, training-only, and scoring notebook sources
 src/rsna_knee/             DICOM, indexing, preprocessing, training, evaluation,
                            submission, provenance, and Kaggle boundaries
 scripts/kaggle.py          one guarded public-notebook build/push command
@@ -80,13 +80,15 @@ through the explicit approval gates in the consolidated command:
 ```bash
 uv run python scripts/kaggle.py build ordering
 uv run --extra training python scripts/kaggle.py build baseline --approve-gpu
+uv run --extra training python scripts/kaggle.py build combined-scoring --approve-gpu
 uv run python scripts/kaggle.py push build/kaggle/public-dicom-ordering \
   --approve-remote
 ```
 
-The baseline push additionally requires `--approve-gpu`. Builds are local and
-private by default; the command never changes visibility or publishes a public
-resource.
+The GPU bundle builds additionally require `--approve-gpu`. The combined
+scoring bundle is inference-only and requires the attached frozen checkpoint;
+its live test index is rebuilt at scoring time. Builds are local and private by
+default; the command never changes visibility or publishes a public resource.
 
 ## Project status
 

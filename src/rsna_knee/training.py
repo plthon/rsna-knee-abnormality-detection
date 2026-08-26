@@ -1146,10 +1146,11 @@ def _predict_submission_with_model(
     inference_start = time.perf_counter()
     with torch.no_grad():
         for study_uid in submission_inputs.entity_ids:
-            indexed_study = indexed[study_uid]
-            if not indexed_study.series:
-                failures[study_uid] = "no_selected_index_series"
-                continue
+            indexed_study = indexed.get(study_uid)
+            if indexed_study is None or not indexed_study.series:
+                raise RuntimeError(
+                    "A missing selected index series cannot be used as a scoring fallback"
+                )
             decoded = decode_study(indexed_study, preprocessing, labels=None)
             decode_errors.update(decoded.decode_error_counts)
             if decoded.valid_slice_count == 0:

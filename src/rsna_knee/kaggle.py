@@ -79,6 +79,7 @@ _KERNEL_SLUG_MAX_LENGTH = 50
 _GPU_MACHINE_SHAPE = "NvidiaTeslaT4"
 _PUBLIC_BASELINE_KERNEL = "rsna-knee-a-reproducible-mri-baseline"
 _PUBLIC_BASELINE_TITLE = "RSNA Knee: A Reproducible MRI Baseline"
+_COMBINED_CHECKPOINT_DATASET_ID = "plthon/rsna-knee-combined-baseline-checkpoint"
 _PUBLIC_BASELINE_CONTRACTS = (
     "data-index.json",
     "gold-baseline.json",
@@ -161,6 +162,8 @@ def build_kaggle_bundle(
         raise ValueError("Notebook contains an unresolved Kaggle placeholder")
     if spec.validator == "baseline":
         _validate_public_baseline_source(source)
+    elif spec.validator == "combined_baseline":
+        _validate_combined_baseline_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -591,34 +594,22 @@ def build_report_source_comparison_bundle(
     return _record_rendered_notebook_hash(bundle, label="Report source comparison")
 
 
-def build_combined_baseline_bundle(
+def build_combined_scoring_bundle(
     project_root: Path,
     output_root: Path,
     *,
-    kernel_id: str = "plthon/rsna-knee-gold-public-baseline",
+    kernel_id: str = "plthon/rsna-knee-gold-public-scoring",
     gpu_approved: bool = False,
-    config_path: Path | None = None,
 ) -> KaggleBundle:
-    """Build the private GPU combined gold + public baseline training bundle."""
-    contract_names = (
-        "competition.json",
-        "data-index.json",
-        "resnet18-imagenet1k-v1.json",
-        "public-report-label-dataset-v1.json",
-        "gold-supervision.json",
-    )
+    """Build the private GPU inference-only combined baseline scoring bundle."""
+    contract_names = ("competition.json", "gold-public-baseline.json")
     for name in contract_names:
         contract_path = project_root / "contracts" / name
         if not contract_path.is_file():
-            raise FileNotFoundError(f"Combined baseline requires contracts/{name}")
-    source_path = project_root / "notebooks" / "train_combined_baseline.py"
+            raise FileNotFoundError(f"Combined scoring requires contracts/{name}")
+    source_path = project_root / "notebooks" / "score_combined_baseline.py"
     if not source_path.is_file():
         raise FileNotFoundError(f"Missing notebook source: {source_path}")
-
-    cfg_path = config_path or project_root / "configs" / "combined-baseline.toml"
-    if not cfg_path.is_file():
-        raise FileNotFoundError(f"Missing config file: {cfg_path}")
-    config_bytes = cfg_path.read_bytes()
 
     git_commit, git_dirty = _git_state(project_root)
     bundle = build_kaggle_bundle(
@@ -626,21 +617,15 @@ def build_combined_baseline_bundle(
         output_root,
         KaggleSpec(
             source_name=source_path.name,
-            notebook_name="train_combined_baseline.ipynb",
+            notebook_name="score_combined_baseline.ipynb",
             kernel_id=kernel_id,
-            title="RSNA Knee Gold + Public Baseline",
+            title="RSNA Knee Gold + Public Scoring",
             competition_sources=("rsna-knee-abnormality-detection",),
-            dataset_sources=(
-                "plthon/torchvision-resnet18-imagenet1k-v1",
-                "pilkwang/rsna-knee-llm-labels",
-                "plthon/rsna-knee-combined-baseline-checkpoint",
-            ),
-            kernel_sources=("plthon/rsna-knee-data-index",),
+            dataset_sources=(_COMBINED_CHECKPOINT_DATASET_ID,),
             gpu=True,
             machine_shape=_GPU_MACHINE_SHAPE,
             replacements={
                 "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
-                "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
                 "__RSNA_KNEE_GIT_COMMIT__": git_commit,
                 "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
                 "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
@@ -654,7 +639,23 @@ def build_combined_baseline_bundle(
         ),
         gpu_approved=gpu_approved,
     )
-    return _record_rendered_notebook_hash(bundle, label="Combined baseline")
+    return _record_rendered_notebook_hash(bundle, label="Combined scoring")
+
+
+def build_combined_baseline_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-gold-public-scoring",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Backward-compatible name for the inference-only combined bundle."""
+    return build_combined_scoring_bundle(
+        project_root,
+        output_root,
+        kernel_id=kernel_id,
+        gpu_approved=gpu_approved,
+    )
 
 
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
@@ -858,6 +859,14 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         _validate_public_ordering_source(_notebook_source(source))
     elif validator == "baseline":
         _validate_public_baseline_source(_notebook_source(source))
+    elif validator == "combined_baseline":
+        _validate_combined_baseline_source(_notebook_source(source))
+        if metadata.get("dataset_sources") != [_COMBINED_CHECKPOINT_DATASET_ID]:
+            raise ValueError(
+                "Combined scoring must attach the frozen checkpoint Dataset"
+            )
+        if metadata.get("kernel_sources") != []:
+            raise ValueError("Combined scoring must not attach the frozen test index")
     elif validator == "reports":
         _validate_reports_source(_notebook_source(source))
     elif validator == "report_llm":
@@ -1023,6 +1032,40 @@ def _validate_public_baseline_source(source: str) -> None:
         raise ValueError("Public baseline notebook omits a reproducibility safeguard")
     if any(value in source.casefold() for value in _PUBLIC_BASELINE_FORBIDDEN):
         raise ValueError("Public baseline notebook contains a prohibited claim")
+
+
+def _validate_combined_baseline_source(source: str) -> None:
+    required = (
+        "COMBINED_BASELINE_CHECKPOINT_SHA256",
+        "discover_combined_checkpoint",
+        "load_verified_combined_checkpoint",
+        "run_combined_scoring",
+        "discover_submission_inputs",
+        "build_competition_index",
+        'splits=("test",)',
+        "verify_index_artifact",
+        "load_indexed_studies",
+        "write_submission",
+        "validate_submission",
+        "inference_only",
+        "submission.csv",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Combined scoring notebook omits an inference safeguard")
+    forbidden = (
+        "run_combined_baseline",
+        "derive_combined_cohort",
+        "derive_patient_split",
+        "train_epoch",
+        "predict_partition",
+        "rsna-knee-data-index",
+        "kernel_sources",
+    )
+    folded = source.casefold()
+    if any(value.casefold() in folded for value in forbidden):
+        raise ValueError(
+            "Combined scoring notebook contains training or frozen-index work"
+        )
 
 
 def _validate_reports_source(source: str) -> None:

@@ -1,13 +1,17 @@
 # %% [markdown]
 # # RSNA Knee Combined Gold and Public Label Baseline
 #
+# Training-only reproducibility notebook. Competition scoring uses the separate
+# inference-only `score_combined_baseline.py` notebook.
+#
 # Trains a ResNet-18 baseline on magnetic resonance imaging (MRI) studies
 # using combined organizer-gold supervision for the 58 gold studies and #24
 # frozen public report-derived labels (YES -> 1, NO -> 0, UNK -> masked) for
 # the 4,349 non-gold studies.
 #
 # Validates checkpoint reload reproducibility on validation partition before
-# test inference. Produces and strictly validates submission.csv.
+# test inference. Its three-study test result is only a mounted example check,
+# not hidden-scoring evidence. Produces and strictly validates submission.csv.
 
 # %%
 import base64
