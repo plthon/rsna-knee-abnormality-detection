@@ -51,9 +51,19 @@ from .training import (
     seed_everything,
     train_epoch,
 )
+from .weak_supervision import (
+    PUBLIC_VERDICT_TO_LABEL as _PUBLIC_VERDICT_TO_LABEL,
+)
+from .weak_supervision import (
+    classify_gold_membership,
+    public_label_columns,
+    verify_source_identity,
+)
 
 type SupervisionSource = Literal["gold", "public"]
 type Partition = Literal["train", "val"]
+
+PUBLIC_VERDICT_TO_LABEL: Mapping[str, Label] = _PUBLIC_VERDICT_TO_LABEL
 
 _COMBINED_CHECKPOINT_SCHEMA_VERSION = 1
 _COMBINED_REPORT_SCHEMA_VERSION = 1
@@ -76,12 +86,6 @@ _STUDY_COLUMNS = (
     "slice_count",
     "usable_slice_count",
 )
-
-PUBLIC_VERDICT_TO_LABEL: Mapping[str, Label] = {
-    "YES": 1,
-    "NO": 0,
-    "UNK": None,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,15 +352,17 @@ def derive_combined_cohort(
     public_labels_path = public_dataset_root / "report_labels_v2.csv"
     if not public_labels_path.is_file():
         raise FileNotFoundError(f"Missing public label file: {public_labels_path}")
-    public_labels_sha256 = _sha256(public_labels_path)
     expected_public_sha256 = _mapping(public_contract, "file_hashes").get(
         "report_labels_v2.csv"
     )
-    if (
-        expected_public_sha256 is not None
-        and public_labels_sha256 != expected_public_sha256
-    ):
-        raise ValueError("Public label file SHA-256 mismatch")
+    if expected_public_sha256 is not None:
+        public_labels_sha256 = verify_source_identity(
+            public_labels_path,
+            expected_public_sha256,
+            description="Public label file",
+        )
+    else:
+        public_labels_sha256 = _sha256(public_labels_path)
 
     index_rows = _read_csv(index_artifact_dir / "studies.csv", _STUDY_COLUMNS)
     index_by_uid: dict[str, dict[str, str]] = {}
@@ -379,7 +385,7 @@ def derive_combined_cohort(
             raise ValueError(f"Duplicate study in competition train.csv: {uid}")
 
     public_rows = _read_csv(
-        public_labels_path, _public_expected_columns(gold_contract.target_names)
+        public_labels_path, public_label_columns(gold_contract.target_names)
     )
     public_labels_by_uid: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
     seen_public_uids: set[str] = set()
@@ -413,7 +419,7 @@ def derive_combined_cohort(
             raise ValueError(f"Missing PatientID for study: {study_uid}")
 
         raw_gold_values = [row[target].strip() for target in gold_contract.target_names]
-        is_gold_study = all(len(val) > 0 for val in raw_gold_values)
+        is_gold_study = classify_gold_membership(raw_gold_values) == "gold"
 
         if is_gold_study:
             gold_labels = tuple(_parse_label(val) for val in raw_gold_values)
@@ -1505,13 +1511,6 @@ def _predict_combined_submission(
         fallback_count=len(failures),
         decode_errors=dict(sorted(decode_errors.items())),
     )
-
-
-def _public_expected_columns(targets: Sequence[str]) -> list[str]:
-    cols = ["StudyInstanceUID"]
-    for t in targets:
-        cols.extend([t, f"{t}__conf", f"{t}__verdict"])
-    return cols
 
 
 def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]:

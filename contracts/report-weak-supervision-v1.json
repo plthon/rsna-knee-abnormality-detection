@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "policy_version": "report-weak-supervision-v1",
+  "issue": 26,
+  "purpose": "Precommitted direct weak-supervision candidates for organizer-gold OOF image-model comparison; this policy selects no winner.",
+  "target_order": [
+    "ACL",
+    "MCL",
+    "Medial Meniscus",
+    "Lateral Meniscus",
+    "Medial OA",
+    "Lateral OA",
+    "PF OA",
+    "Effusion",
+    "Synovitis",
+    "Baker's",
+    "Contusion",
+    "Fracture"
+  ],
+  "target_order_source": {
+    "path": "contracts/competition.json",
+    "sha256": "3c6d42d4a4883a9626294c79af02f2ff687ba9413da8f316db9b877ebb1e2292"
+  },
+  "gold_firewall": {
+    "identifier_column": "StudyInstanceUID",
+    "membership_rule": "gold iff all twelve organizer target columns are present; non_gold iff all twelve are absent",
+    "partial_label_policy": "reject",
+    "gold_study_count": 58,
+    "non_gold_study_count": 4349,
+    "total_study_count": 4407,
+    "weak_source_study_count": 4349,
+    "gold_values_authoritative": true,
+    "gold_source_policy": "Organizer-gold labels are never replaced by report-derived labels"
+  },
+  "sources": {
+    "rules": {
+      "source_name": "report-extractor-v1",
+      "version": "report-extractor-v1",
+      "provenance_status": "diagnostic_reference",
+      "role_in_v1": "diagnostic_reference",
+      "training_activation": false,
+      "raw_state_domain": ["positive", "negative", "uncertain", "unknown"],
+      "training_mapping": {
+        "positive": 1,
+        "negative": 0,
+        "uncertain": null,
+        "unknown": null
+      },
+      "masked_states": ["uncertain", "unknown"],
+      "parse_failure_policy": "not_applicable",
+      "artifact_identities": {
+        "contracts/report-extractor-v1.json": {
+          "sha256": "901e8a53173fef0d85e12ed93cbea05dd5b8cfc900ef111e0125cb751634156a",
+          "size_bytes": 15896
+        },
+        "report-labels-v1.csv": {
+          "sha256": "6651f60b00e5bec292e8c98e7fa83c75e8aa5af5931414a9a68c8ce10a52d527",
+          "size_bytes": 12409688
+        }
+      }
+    },
+    "qwen": {
+      "source_name": "report-llm-qwen2.5-3b-v1",
+      "version": "report-llm-qwen2.5-3b-v1",
+      "provenance_status": "gold_independent_reproducible_candidate",
+      "role_in_v1": "weak_supervision_candidate",
+      "raw_state_domain": ["positive", "negative", "uncertain", "unknown"],
+      "training_mapping": {
+        "positive": 1,
+        "negative": 0,
+        "uncertain": null,
+        "unknown": null
+      },
+      "masked_states": ["uncertain", "unknown"],
+      "parse_failure_policy": "parse_failed_true_always_masked",
+      "artifact_identities": {
+        "contracts/report-llm-extractor-v1.json": {
+          "sha256": "c428d1b44bb6c87f84e7423feeaefa6c635a5ba1cb5dd277468128d7df0bbe51",
+          "size_bytes": 4364
+        },
+        "report-llm-labels-v1.csv": {
+          "sha256": "d78c7f1d27437f6d2870e48fbd730a57c60d34380720cd4e0e07811a699db52a",
+          "size_bytes": 17063200
+        },
+        "report-llm-study-status-v1.csv": {
+          "sha256": "151d0554cbd7622028df1bd58a4e2c37d18796c5860502cf3eb0917ec6baf923",
+          "size_bytes": 1079236
+        }
+      }
+    },
+    "public": {
+      "source_name": "pilkwang/rsna-knee-llm-labels",
+      "version": 1,
+      "provenance_status": "external_benchmark_with_possible_gold_influence",
+      "role_in_v1": "weak_supervision_candidate",
+      "training_columns": "verdict columns only",
+      "score_columns_training_effect": false,
+      "confidence_columns_training_effect": false,
+      "raw_state_domain": ["YES", "NO", "UNK"],
+      "training_mapping": {
+        "YES": 1,
+        "NO": 0,
+        "UNK": null
+      },
+      "masked_states": ["UNK"],
+      "parse_failure_policy": "not_applicable",
+      "artifact_identities": {
+        "contracts/public-report-label-dataset-v1.json": {
+          "sha256": "3b607558a5bea66d2d10dd3884bd6fa9e2ac81b4617c6ea372d7feb0c00068e9",
+          "size_bytes": 5901
+        },
+        "report_labels_v2.csv": {
+          "sha256": "6f704a7bdb2f894cc49445b19ba7c4378c3f548d3449e00361e10044bee40920",
+          "size_bytes": 1004839
+        }
+      }
+    }
+  },
+  "candidates": {
+    "gold_only": {
+      "candidate_id": "gold_only",
+      "source": null,
+      "target_order": [
+        "ACL",
+        "MCL",
+        "Medial Meniscus",
+        "Lateral Meniscus",
+        "Medial OA",
+        "Lateral OA",
+        "PF OA",
+        "Effusion",
+        "Synovitis",
+        "Baker's",
+        "Contusion",
+        "Fracture"
+      ],
+      "positive_mapping": 1,
+      "negative_mapping": 0,
+      "masked_mapping": null,
+      "gold_study_policy": "Use organizer-gold labels only; no report-derived source contributes to loss",
+      "provenance_classification": "gold_control"
+    },
+    "public_direct_v1": {
+      "candidate_id": "public_direct_v1",
+      "source": "public",
+      "target_order": [
+        "ACL",
+        "MCL",
+        "Medial Meniscus",
+        "Lateral Meniscus",
+        "Medial OA",
+        "Lateral OA",
+        "PF OA",
+        "Effusion",
+        "Synovitis",
+        "Baker's",
+        "Contusion",
+        "Fracture"
+      ],
+      "positive_mapping": 1,
+      "negative_mapping": 0,
+      "masked_mapping": null,
+      "gold_study_policy": "Use authoritative organizer-gold labels for gold studies; exclude gold studies from public supervision",
+      "provenance_classification": "external_benchmark_with_possible_gold_influence"
+    },
+    "qwen_direct_v1": {
+      "candidate_id": "qwen_direct_v1",
+      "source": "qwen",
+      "target_order": [
+        "ACL",
+        "MCL",
+        "Medial Meniscus",
+        "Lateral Meniscus",
+        "Medial OA",
+        "Lateral OA",
+        "PF OA",
+        "Effusion",
+        "Synovitis",
+        "Baker's",
+        "Contusion",
+        "Fracture"
+      ],
+      "positive_mapping": 1,
+      "negative_mapping": 0,
+      "masked_mapping": null,
+      "gold_study_policy": "Use authoritative organizer-gold labels for gold studies; exclude gold studies from Qwen supervision",
+      "provenance_classification": "gold_independent_reproducible_candidate"
+    }
+  },
+  "comparison_evidence": {
+    "contract": {
+      "path": "contracts/report-source-comparison-v1.json",
+      "sha256": "63222ce234ec4be2ebfda9adbb2c27825ef0e6d521ed48b6de46ace150d71ea9"
+    },
+    "report": "docs/report-source-comparison-report.md",
+    "analysis_cohort": "4349 non-gold studies",
+    "organizer_gold_values_read": false,
+    "source_agreement_is_correctness_evidence": false
+  },
+  "operational_reference": {
+    "issue": 27,
+    "implementation_commit": "e69f79af9c3de06e17a77e43bb41cb971879aed0",
+    "implementation": "src/rsna_knee/combined_supervision.py",
+    "report": "docs/gold-public-baseline-report.md",
+    "contract": {
+      "path": "contracts/gold-public-baseline.json",
+      "sha256": "c38ebfb66cb8e26436b6abdcb45d4d7d5284a9b90af2d7e7effdf16c2c444727"
+    },
+    "leaderboard_score": 0.819,
+    "role_in_this_policy": "operational_reference_only",
+    "candidate_selection_evidence": false
+  },
+  "forbidden_v1": [
+    "majority voting",
+    "public + Qwen consensus labels",
+    "public + rules consensus labels",
+    "Qwen-confirmed public labels",
+    "triple-agreement-only labels",
+    "target-specific source selection",
+    "special-case removal of MCL or Contusion",
+    "source-specific confidence thresholds",
+    "public numeric-score thresholds",
+    "per-target weak-label loss weights selected from #25",
+    "filtering based on #25 disagreement strata",
+    "post-hoc source/rule selection under the same candidate name",
+    "selecting public_direct_v1 because #27 scored 0.819"
+  ],
+  "selection_owner": "issue-10",
+  "inventory": {
+    "scope": "Full 4,407-study candidate representation; public and Qwen counts are derived from the completed #25 non-gold aggregate evidence, while gold counts are from the verified 58-study organizer-gold inventory.",
+    "qwen_parse_failure_exclusions": {
+      "study_count": 176,
+      "row_count_per_target": 2112,
+      "source": "docs/report-source-comparison-report.md"
+    },
+    "by_target": {
+      "ACL": {
+        "gold_only": {"available_positive": 24, "available_negative": 34, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1218, "available_negative": 2838, "masked": 351, "usable_weak_label_count": 3998, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 589, "available_negative": 439, "masked": 3379, "usable_weak_label_count": 970, "parse_failed_excluded": 2112}
+      },
+      "MCL": {
+        "gold_only": {"available_positive": 9, "available_negative": 49, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 758, "available_negative": 3225, "masked": 424, "usable_weak_label_count": 3925, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 89, "available_negative": 441, "masked": 3877, "usable_weak_label_count": 472, "parse_failed_excluded": 2112}
+      },
+      "Medial Meniscus": {
+        "gold_only": {"available_positive": 26, "available_negative": 32, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 2341, "available_negative": 1818, "masked": 248, "usable_weak_label_count": 4101, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 1197, "available_negative": 226, "masked": 2984, "usable_weak_label_count": 1365, "parse_failed_excluded": 2112}
+      },
+      "Lateral Meniscus": {
+        "gold_only": {"available_positive": 23, "available_negative": 35, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1114, "available_negative": 2858, "masked": 435, "usable_weak_label_count": 3914, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 723, "available_negative": 409, "masked": 3275, "usable_weak_label_count": 1074, "parse_failed_excluded": 2112}
+      },
+      "Medial OA": {
+        "gold_only": {"available_positive": 15, "available_negative": 43, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1612, "available_negative": 1684, "masked": 1111, "usable_weak_label_count": 3238, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 702, "available_negative": 88, "masked": 3617, "usable_weak_label_count": 732, "parse_failed_excluded": 2112}
+      },
+      "Lateral OA": {
+        "gold_only": {"available_positive": 11, "available_negative": 47, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1082, "available_negative": 1890, "masked": 1435, "usable_weak_label_count": 2914, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 292, "available_negative": 88, "masked": 4027, "usable_weak_label_count": 322, "parse_failed_excluded": 2112}
+      },
+      "PF OA": {
+        "gold_only": {"available_positive": 21, "available_negative": 37, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1988, "available_negative": 1618, "masked": 801, "usable_weak_label_count": 3548, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 535, "available_negative": 169, "masked": 3703, "usable_weak_label_count": 646, "parse_failed_excluded": 2112}
+      },
+      "Effusion": {
+        "gold_only": {"available_positive": 35, "available_negative": 23, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 2651, "available_negative": 1324, "masked": 432, "usable_weak_label_count": 3917, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 1715, "available_negative": 369, "masked": 2323, "usable_weak_label_count": 2026, "parse_failed_excluded": 2112}
+      },
+      "Synovitis": {
+        "gold_only": {"available_positive": 27, "available_negative": 31, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 591, "available_negative": 145, "masked": 3671, "usable_weak_label_count": 678, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 413, "available_negative": 110, "masked": 3884, "usable_weak_label_count": 465, "parse_failed_excluded": 2112}
+      },
+      "Baker's": {
+        "gold_only": {"available_positive": 12, "available_negative": 46, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1110, "available_negative": 1303, "masked": 1994, "usable_weak_label_count": 2355, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 926, "available_negative": 275, "masked": 3206, "usable_weak_label_count": 1143, "parse_failed_excluded": 2112}
+      },
+      "Contusion": {
+        "gold_only": {"available_positive": 19, "available_negative": 39, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 1280, "available_negative": 2221, "masked": 906, "usable_weak_label_count": 3443, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 256, "available_negative": 99, "masked": 4052, "usable_weak_label_count": 297, "parse_failed_excluded": 2112}
+      },
+      "Fracture": {
+        "gold_only": {"available_positive": 18, "available_negative": 40, "masked": 4349, "usable_weak_label_count": 0, "parse_failed_excluded": 0},
+        "public_direct_v1": {"available_positive": 313, "available_negative": 1634, "masked": 2460, "usable_weak_label_count": 1889, "parse_failed_excluded": 0},
+        "qwen_direct_v1": {"available_positive": 133, "available_negative": 82, "masked": 4192, "usable_weak_label_count": 157, "parse_failed_excluded": 2112}
+      }
+    }
+  }
+}
