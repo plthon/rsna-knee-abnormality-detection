@@ -17,6 +17,7 @@ type Label = Literal[0, 1] | None
 type Partition = Literal["train", "holdout"]
 
 BOOTSTRAP_METHOD_VERSION = "patient-id-nonparametric-bootstrap-v1"
+PAIRED_BOOTSTRAP_METHOD_VERSION = "paired-patient-id-nonparametric-bootstrap-v1"
 ALLOCATION_RULE_VERSION = "patient-disjoint-exact-backtracking-v1"
 ASSIGNMENT_DIGEST_VERSION = "patient-study-partition-jsonl-v1"
 
@@ -320,6 +321,121 @@ def evaluate_point_predictions(
     return _metric_record(label_values, prediction_values, target_names)
 
 
+def evaluate_paired_auc_delta(
+    *,
+    patient_ids: Sequence[str],
+    labels: Sequence[Sequence[Label]],
+    baseline_predictions: Sequence[Sequence[float]],
+    candidate_predictions: Sequence[Sequence[float]],
+    target_names: Sequence[str],
+    bootstrap: PatientBootstrapConfig,
+) -> dict[str, Any]:
+    """Compare paired predictions with one PatientID-level bootstrap."""
+    if bootstrap.method_version != PAIRED_BOOTSTRAP_METHOD_VERSION:
+        raise ValueError("Unsupported paired PatientID bootstrap method version")
+    if bootstrap.seed < 0 or bootstrap.replicate_count <= 0:
+        raise ValueError("Paired bootstrap seed/count are invalid")
+    if not 0 < bootstrap.confidence_level < 1:
+        raise ValueError(
+            "Paired bootstrap confidence level must be between zero and one"
+        )
+    if not patient_ids or any(not patient_id for patient_id in patient_ids):
+        raise ValueError("Paired bootstrap requires nonempty PatientIDs")
+
+    label_values = np.asarray(
+        [[np.nan if value is None else value for value in row] for row in labels],
+        dtype=np.float64,
+    )
+    baseline = np.asarray(baseline_predictions, dtype=np.float64)
+    candidate = np.asarray(candidate_predictions, dtype=np.float64)
+    expected_shape = (len(patient_ids), len(target_names))
+    if any(
+        values.shape != expected_shape for values in (label_values, baseline, candidate)
+    ):
+        raise ValueError("Paired labels and predictions do not match target shape")
+    if any(
+        not np.isfinite(values).all() or bool(((values < 0) | (values > 1)).any())
+        for values in (baseline, candidate)
+    ):
+        raise ValueError("Paired predictions must be finite probabilities")
+    known_labels = label_values[~np.isnan(label_values)]
+    if bool(((known_labels != 0) & (known_labels != 1)).any()):
+        raise ValueError("Paired labels must be binary or missing")
+
+    baseline_point = _metric_record(label_values, baseline, target_names)
+    candidate_point = _metric_record(label_values, candidate, target_names)
+    point_delta = _paired_delta_record(baseline_point, candidate_point, target_names)
+    unique_patients = sorted(set(patient_ids), key=lambda value: value.encode("utf-8"))
+    row_indices = {
+        patient: np.asarray(
+            [index for index, value in enumerate(patient_ids) if value == patient],
+            dtype=np.int64,
+        )
+        for patient in unique_patients
+    }
+    per_target_replicates: list[list[float]] = [[] for _ in target_names]
+    per_target_undefined = [0 for _ in target_names]
+    macro_replicates: list[float] = []
+    macro_undefined = 0
+    rng = np.random.default_rng(bootstrap.seed)
+    for _ in range(bootstrap.replicate_count):
+        sampled = rng.integers(0, len(unique_patients), size=len(unique_patients))
+        indices = np.concatenate(
+            [row_indices[unique_patients[int(index)]] for index in sampled]
+        )
+        deltas: list[float] = []
+        macro_defined = True
+        for target_index in range(len(target_names)):
+            baseline_auc = _roc_auc(
+                label_values[indices, target_index], baseline[indices, target_index]
+            )
+            candidate_auc = _roc_auc(
+                label_values[indices, target_index], candidate[indices, target_index]
+            )
+            if baseline_auc is None or candidate_auc is None:
+                per_target_undefined[target_index] += 1
+                macro_defined = False
+            else:
+                delta = candidate_auc - baseline_auc
+                per_target_replicates[target_index].append(delta)
+                deltas.append(delta)
+        if macro_defined:
+            macro_replicates.append(float(np.mean(deltas)))
+        else:
+            macro_undefined += 1
+
+    uncertainty = {
+        "official_macro_auc_delta": _delta_interval_record(
+            macro_replicates,
+            undefined_count=macro_undefined,
+            bootstrap=bootstrap,
+        ),
+        "per_target_delta": {
+            target: _delta_interval_record(
+                per_target_replicates[index],
+                undefined_count=per_target_undefined[index],
+                bootstrap=bootstrap,
+            )
+            for index, target in enumerate(target_names)
+        },
+    }
+    return {
+        "baseline": baseline_point,
+        "candidate": candidate_point,
+        "delta": point_delta,
+        "bootstrap": {
+            "method_version": bootstrap.method_version,
+            "sampling_unit": "PatientID",
+            "paired": True,
+            "seed": bootstrap.seed,
+            "replicate_count": bootstrap.replicate_count,
+            "confidence_level": bootstrap.confidence_level,
+            "interval": "two-sided percentile interval over defined paired deltas",
+            "uncertainty": uncertainty,
+        },
+    }
+
+
 def counts_with_prevalence(
     counts: Mapping[str, Mapping[str, int]], target_names: Sequence[str]
 ) -> dict[str, dict[str, int | float | None]]:
@@ -376,13 +492,19 @@ def _roc_auc(labels: np.ndarray, predictions: np.ndarray) -> float | None:
     known = ~np.isnan(labels)
     target_labels = labels[known]
     target_predictions = predictions[known]
-    positive = target_predictions[target_labels == 1]
-    negative = target_predictions[target_labels == 0]
-    if not len(positive) or not len(negative):
+    positive_count = int((target_labels == 1).sum())
+    negative_count = int((target_labels == 0).sum())
+    if not positive_count or not negative_count:
         return None
-    comparisons = (positive[:, None] > negative[None, :]).astype(np.float64)
-    comparisons += 0.5 * (positive[:, None] == negative[None, :])
-    return float(comparisons.mean())
+    _, inverse, counts = np.unique(
+        target_predictions, return_inverse=True, return_counts=True
+    )
+    starts = np.cumsum(counts) - counts
+    average_ranks = starts + (counts + 1) / 2
+    positive_rank_sum = float(average_ranks[inverse][target_labels == 1].sum())
+    return (positive_rank_sum - positive_count * (positive_count + 1) / 2) / (
+        positive_count * negative_count
+    )
 
 
 def _interval_record(
@@ -406,6 +528,66 @@ def _interval_record(
         "valid_replicate_rate": valid_count / bootstrap.replicate_count,
         "undefined_replicate_rate": undefined_count / bootstrap.replicate_count,
     }
+
+
+def _paired_delta_record(
+    baseline: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    targets: Sequence[str],
+) -> dict[str, Any]:
+    baseline_macro = baseline["official_macro_auc"]
+    candidate_macro = candidate["official_macro_auc"]
+    per_target: dict[str, Any] = {}
+    for target in targets:
+        baseline_record = baseline["per_target"][target]
+        candidate_record = candidate["per_target"][target]
+        baseline_auc = baseline_record["roc_auc"]
+        candidate_auc = candidate_record["roc_auc"]
+        per_target[target] = {
+            **{
+                key: baseline_record[key]
+                for key in ("known", "missing", "positive", "negative")
+            },
+            "baseline_roc_auc": baseline_auc,
+            "candidate_roc_auc": candidate_auc,
+            "delta_roc_auc": (
+                candidate_auc - baseline_auc
+                if baseline_auc is not None and candidate_auc is not None
+                else None
+            ),
+        }
+    return {
+        "official_macro_auc": (
+            candidate_macro - baseline_macro
+            if baseline_macro is not None and candidate_macro is not None
+            else None
+        ),
+        "per_target": per_target,
+    }
+
+
+def _delta_interval_record(
+    values: Sequence[float],
+    *,
+    undefined_count: int,
+    bootstrap: PatientBootstrapConfig,
+) -> dict[str, Any]:
+    record = _interval_record(
+        values, undefined_count=undefined_count, bootstrap=bootstrap
+    )
+    record.update(
+        {
+            "mean": float(np.mean(values)) if values else None,
+            "median": float(np.median(values)) if values else None,
+            "fraction_positive": (
+                sum(value > 0 for value in values) / len(values) if values else None
+            ),
+            "fraction_nonnegative": (
+                sum(value >= 0 for value in values) / len(values) if values else None
+            ),
+        }
+    )
+    return record
 
 
 def _patient_ids(path: Path) -> dict[str, str]:

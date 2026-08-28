@@ -11,10 +11,12 @@ from rsna_knee.holdout import (
     ALLOCATION_RULE_VERSION,
     ASSIGNMENT_DIGEST_VERSION,
     BOOTSTRAP_METHOD_VERSION,
+    PAIRED_BOOTSTRAP_METHOD_VERSION,
     Label,
     PatientBootstrapConfig,
     derive_frozen_evaluation_partition,
     evaluate_holdout_predictions,
+    evaluate_paired_auc_delta,
 )
 
 TARGETS = ("target-a", "target-b")
@@ -181,6 +183,29 @@ def test_patient_bootstrap_resamples_patient_groups_not_individual_studies() -> 
     record = result["bootstrap"]["uncertainty"]["per_target"]["target"]
     assert record["undefined_replicate_count"] > 0
     assert result["bootstrap"]["sampling_unit"] == "PatientID"
+
+
+def test_paired_bootstrap_reports_candidate_minus_baseline_delta() -> None:
+    result = evaluate_paired_auc_delta(
+        patient_ids=["p0", "p1", "p2", "p3"],
+        labels=[(0,), (0,), (1,), (1,)],
+        baseline_predictions=[(0.4,), (0.6,), (0.5,), (0.7,)],
+        candidate_predictions=[(0.1,), (0.2,), (0.8,), (0.9,)],
+        target_names=("target",),
+        bootstrap=PatientBootstrapConfig(
+            method_version=PAIRED_BOOTSTRAP_METHOD_VERSION,
+            seed=7,
+            replicate_count=200,
+            confidence_level=0.95,
+        ),
+    )
+
+    assert result["baseline"]["official_macro_auc"] == 0.75
+    assert result["candidate"]["official_macro_auc"] == 1.0
+    assert result["delta"]["official_macro_auc"] == 0.25
+    uncertainty = result["bootstrap"]["uncertainty"]["official_macro_auc_delta"]
+    assert uncertainty["valid_replicate_count"] > 0
+    assert uncertainty["fraction_nonnegative"] == 1.0
 
 
 def _expected_assignments(seed: int) -> dict[str, str]:

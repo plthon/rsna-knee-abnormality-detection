@@ -17,13 +17,16 @@ from torchvision.models import (  # type: ignore[import-untyped]
 )
 
 from rsna_knee.training import (
+    ANATOMICAL_PLANES,
     GoldResNet18,
+    TargetSpecificPlaneGate,
     derive_gold_training_cohort,
     load_indexed_studies,
     load_smoke_training_config,
     masked_binary_cross_entropy,
     predict_submission_from_checkpoint,
     require_approved_cuda,
+    resolve_anatomical_plane,
     run_local_cpu_check,
     verify_initialization_artifact,
 )
@@ -115,6 +118,89 @@ def test_masked_pooling_excludes_slice_and_series_padding() -> None:
     assert first.item() == pytest.approx(10.5)
 
 
+def test_zero_plane_gate_is_equal_mean_with_exactly_36_parameters() -> None:
+    gate = TargetSpecificPlaneGate(target_count=12)
+    logits = torch.arange(48, dtype=torch.float32).view(1, 4, 12)
+    mask = torch.tensor([[True, True, True, True]])
+    planes = torch.tensor([[0, 0, 2, -1]])
+
+    output = gate(logits, mask, planes)
+
+    assert sum(parameter.numel() for parameter in gate.parameters()) == 36
+    assert torch.allclose(output, logits.mean(dim=1))
+
+
+def test_plane_gate_uses_actual_series_and_neutral_unknown_weight() -> None:
+    gate = TargetSpecificPlaneGate(target_count=2)
+    with torch.no_grad():
+        gate.log_weights.copy_(
+            torch.log(torch.tensor([[2.0, 99.0, 4.0], [1.0, 99.0, 3.0]]))
+        )
+    logits = torch.tensor([[[1.0, 10.0], [3.0, 20.0], [5.0, 40.0], [999.0, 999.0]]])
+    mask = torch.tensor([[True, True, True, False]])
+    planes = torch.tensor([[0, 0, -1, 1]])
+
+    output = gate(logits, mask, planes)
+
+    assert output[0, 0].item() == pytest.approx((2 * 1 + 2 * 3 + 1 * 5) / 5)
+    assert output[0, 1].item() == pytest.approx((1 * 10 + 1 * 20 + 1 * 40) / 3)
+
+
+def test_plane_gate_is_target_specific_and_receives_gradients() -> None:
+    gate = TargetSpecificPlaneGate(target_count=2)
+    with torch.no_grad():
+        gate.log_weights[0, 0] = torch.log(torch.tensor(4.0))
+        gate.log_weights[1, 2] = torch.log(torch.tensor(4.0))
+    logits = torch.tensor([[[1.0, 1.0], [3.0, 3.0]]], requires_grad=True)
+    output = gate(
+        logits,
+        torch.tensor([[True, True]]),
+        torch.tensor([[0, 2]]),
+    )
+
+    output.sum().backward()
+
+    assert output[0, 0] < output[0, 1]
+    assert gate.log_weights.grad is not None
+    assert bool((gate.log_weights.grad != 0).any())
+
+
+def test_plane_resolution_is_typed_and_deterministic() -> None:
+    assert ANATOMICAL_PLANES == ("sagittal", "coronal", "axial")
+    assert resolve_anatomical_plane(" Sagittal ") == "sagittal"
+    assert resolve_anatomical_plane("CORONAL") == "coronal"
+    assert resolve_anatomical_plane("axial") == "axial"
+    assert resolve_anatomical_plane("") is None
+    assert resolve_anatomical_plane("oblique") is None
+
+
+def test_zero_initialized_gated_model_matches_baseline_model() -> None:
+    baseline = GoldResNet18(_MeanBackbone(), feature_count=2, target_count=2)
+    gated = GoldResNet18(
+        _MeanBackbone(),
+        feature_count=2,
+        target_count=2,
+        aggregation="target_plane_gate",
+    )
+    gated.head.load_state_dict(baseline.head.state_dict())
+    for model in (baseline, gated):
+        model.imagenet_mean.zero_()
+        model.imagenet_std.fill_(1)
+    pixels = torch.tensor([[[[[1.0]], [[3.0]]], [[[5.0]], [[7.0]]]]])
+    slice_mask = torch.ones(1, 2, 2, dtype=torch.bool)
+    series_mask = torch.ones(1, 2, dtype=torch.bool)
+
+    baseline_output = baseline(pixels, slice_mask, series_mask)
+    gated_output = gated(
+        pixels,
+        slice_mask,
+        series_mask,
+        torch.tensor([[0, 2]]),
+    )
+
+    assert torch.allclose(gated_output, baseline_output, atol=1e-6)
+
+
 def test_masked_bce_ignores_unknown_targets() -> None:
     logits = torch.tensor([[0.0, 100.0]], requires_grad=True)
     labels = torch.tensor([[1.0, 0.0]])
@@ -199,6 +285,7 @@ def test_cohort_is_rederived_from_authoritative_rows_and_digest_checked(
         split="train",
     )
     assert resolved["study-a"].series[0].paths[0].name == "slice-a.dcm"
+    assert resolved["study-a"].series[0].plane == "sagittal"
 
     contract = json.loads(supervision_contract.read_text())
     contract["canonical_cohort"]["digest"]["value"] = "0" * 64

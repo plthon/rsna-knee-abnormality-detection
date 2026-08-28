@@ -27,6 +27,11 @@ offline `IMAGENET1K_V1` artifact. It repeats grayscale slices to RGB, averages
 valid slice features within each series, then averages valid series features
 within each study. Unknown organizer labels are masked from BCE loss.
 
+Issue #28 tested an opt-in `target_plane_gate` aggregation mode with exactly 36
+initialized-neutral target-by-plane scalars. The paired macro-AUC delta was only
+`+0.00107`, so the precommitted rule rejected it and the default remains `mean`.
+See the [plane-gating experiment report](docs/plane-gating-report.md).
+
 The recorded gold-only run reports macro AUC 0.6111 on a frozen holdout of four
 patients. Its PatientID bootstrap has 9,065 undefined macro-AUC replicates out
 of 10,000, so this is pipeline evidence, not a reliable model-comparison
@@ -81,6 +86,7 @@ through the explicit approval gates in the consolidated command:
 uv run python scripts/kaggle.py build ordering
 uv run --extra training python scripts/kaggle.py build baseline --approve-gpu
 uv run --extra training python scripts/kaggle.py build combined-scoring --approve-gpu
+uv run --extra training python scripts/kaggle.py build plane-gating --approve-gpu
 uv run python scripts/kaggle.py push build/kaggle/public-dicom-ordering \
   --approve-remote
 ```
@@ -89,6 +95,9 @@ The GPU bundle builds additionally require `--approve-gpu`. The combined
 scoring bundle is inference-only and requires the attached frozen checkpoint;
 its live test index is rebuilt at scoring time. Builds are local and private by
 default; the command never changes visibility or publishes a public resource.
+The plane-gating bundle stops after paired validation. Its separate scoring
+bundle additionally requires a recorded keep decision, exact checkpoint hash,
+and checkpoint Dataset ID.
 
 ## Project status
 

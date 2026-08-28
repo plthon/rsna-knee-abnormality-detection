@@ -226,6 +226,66 @@ def test_scoring_refuses_catastrophic_fallback_fraction(
     assert not (tmp_path / "output" / "submission.csv").exists()
 
 
+def test_plane_gated_hidden_inference_uses_decoded_plane_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ScalarBackbone(nn.Module):
+        def forward(self, values: Tensor) -> Tensor:
+            return values.mean(dim=(1, 2, 3)).unsqueeze(1)
+
+    model = GoldResNet18(
+        ScalarBackbone(),
+        feature_count=1,
+        target_count=len(TARGETS),
+        aggregation="target_plane_gate",
+    )
+    model.imagenet_mean.zero_()
+    model.imagenet_std.fill_(1)
+    assert model.plane_gate is not None
+    with torch.no_grad():
+        model.head.weight.fill_(1)
+        model.head.bias.zero_()
+        model.plane_gate.log_weights[0, 0] = torch.log(torch.tensor(4.0))
+        model.plane_gate.log_weights[1, 2] = torch.log(torch.tensor(4.0))
+    decoded = DecodedStudy(
+        pixels=torch.tensor([[[[1.0]]], [[[3.0]]]]),
+        slice_mask=torch.ones(2, 1, dtype=torch.bool),
+        series_mask=torch.ones(2, dtype=torch.bool),
+        labels=None,
+        label_mask=None,
+        valid_slice_count=2,
+        decode_error_counts={},
+        plane_indices=torch.tensor([0, 2]),
+    )
+    monkeypatch.setattr(
+        "rsna_knee.combined_supervision.decode_study", lambda *args, **kwargs: decoded
+    )
+    contract = load_verified_submission_contract(
+        PROJECT_ROOT / "contracts/competition.json"
+    )
+    inputs = SubmissionInputs(tmp_path, ("hidden-X",), contract)
+    indexed = {
+        "hidden-X": IndexedStudy(
+            "hidden-X", (IndexedSeries(0, (tmp_path / "slice.dcm",), "sagittal"),)
+        )
+    }
+
+    outcome = _predict_combined_submission(
+        model=model,
+        submission_inputs=inputs,
+        indexed=indexed,
+        work_root=tmp_path / "output",
+        preprocessing=PreprocessingConfig(1, 1, 99, 1),
+        priors=(0.5,) * len(TARGETS),
+        mixed_precision=False,
+        device=torch.device("cpu"),
+    )
+
+    with outcome.artifacts.submission_path.open(newline="") as file:
+        row = list(csv.reader(file))[1]
+    assert float(row[1]) < float(row[2])
+
+
 def _write_csv(
     path: Path, columns: Sequence[str], rows: Sequence[Sequence[object]]
 ) -> None:

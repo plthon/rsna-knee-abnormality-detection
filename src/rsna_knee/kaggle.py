@@ -80,6 +80,12 @@ _GPU_MACHINE_SHAPE = "NvidiaTeslaT4"
 _PUBLIC_BASELINE_KERNEL = "rsna-knee-a-reproducible-mri-baseline"
 _PUBLIC_BASELINE_TITLE = "RSNA Knee: A Reproducible MRI Baseline"
 _COMBINED_CHECKPOINT_DATASET_ID = "plthon/rsna-knee-combined-baseline-checkpoint"
+_PLANE_GATING_DATASET_SOURCES = (
+    "pilkwang/rsna-knee-llm-labels",
+    "plthon/torchvision-resnet18-imagenet1k-v1",
+    _COMBINED_CHECKPOINT_DATASET_ID,
+)
+_PLANE_GATING_KERNEL_SOURCES = ("plthon/rsna-knee-data-index",)
 _PUBLIC_BASELINE_CONTRACTS = (
     "data-index.json",
     "gold-baseline.json",
@@ -164,6 +170,10 @@ def build_kaggle_bundle(
         _validate_public_baseline_source(source)
     elif spec.validator == "combined_baseline":
         _validate_combined_baseline_source(source)
+    elif spec.validator == "plane_gating":
+        _validate_plane_gating_source(source)
+    elif spec.validator == "plane_gated_scoring":
+        _validate_plane_gated_scoring_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -296,6 +306,7 @@ def pull_kaggle_output(
         "report-llm-stability-first.json",
         "report-llm-stability-second.json",
         "source-comparison-tables.json",
+        "validation-predictions.csv",
     }
     if private_row_outputs & set(filenames):
         raise PermissionError(
@@ -658,6 +669,106 @@ def build_combined_baseline_bundle(
     )
 
 
+def build_plane_gating_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-plane-gating",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build the private #28 training and paired-validation bundle."""
+    config_path = project_root / "configs" / "plane-gating.toml"
+    source_path = project_root / "notebooks" / "train_plane_gating.py"
+    contract_names = (
+        "competition.json",
+        "data-index.json",
+        "public-report-label-dataset-v1.json",
+        "resnet18-imagenet1k-v1.json",
+    )
+    config_bytes = config_path.read_bytes()
+    git_commit, git_dirty = _git_state(project_root)
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="train_plane_gating.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Plane Gating",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=_PLANE_GATING_DATASET_SOURCES,
+            kernel_sources=_PLANE_GATING_KERNEL_SOURCES,
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="plane_gating",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Plane gating")
+
+
+def build_plane_gated_scoring_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    checkpoint_dataset_id: str,
+    checkpoint_sha256: str,
+    validation_kept: bool = False,
+    kernel_id: str = "plthon/rsna-knee-plane-gated-scoring",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build hidden inference only for a validation-retained #28 checkpoint."""
+    if not validation_kept:
+        raise PermissionError("Plane-gated scoring requires a recorded keep decision")
+    _require_resolved_kaggle_id(checkpoint_dataset_id)
+    if re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256) is None:
+        raise ValueError("Plane-gated checkpoint SHA-256 is malformed")
+    source_path = project_root / "notebooks" / "score_plane_gating.py"
+    git_commit, git_dirty = _git_state(project_root)
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="score_plane_gating.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Plane-Gated Scoring",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=(checkpoint_dataset_id,),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_CHECKPOINT_SHA256__": checkpoint_sha256,
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=("competition.json",),
+            validator="plane_gated_scoring",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Plane-gated scoring")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -867,6 +978,19 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             )
         if metadata.get("kernel_sources") != []:
             raise ValueError("Combined scoring must not attach the frozen test index")
+    elif validator == "plane_gating":
+        _validate_plane_gating_source(_notebook_source(source))
+        if tuple(metadata.get("dataset_sources", ())) != _PLANE_GATING_DATASET_SOURCES:
+            raise ValueError("Plane gating attached unexpected Dataset inputs")
+        if tuple(metadata.get("kernel_sources", ())) != _PLANE_GATING_KERNEL_SOURCES:
+            raise ValueError("Plane gating must attach the frozen index kernel output")
+    elif validator == "plane_gated_scoring":
+        _validate_plane_gated_scoring_source(_notebook_source(source))
+        dataset_sources = metadata.get("dataset_sources")
+        if not isinstance(dataset_sources, list) or len(dataset_sources) != 1:
+            raise ValueError(
+                "Plane-gated scoring requires one retained checkpoint input"
+            )
     elif validator == "reports":
         _validate_reports_source(_notebook_source(source))
     elif validator == "report_llm":
@@ -1066,6 +1190,55 @@ def _validate_combined_baseline_source(source: str) -> None:
         raise ValueError(
             "Combined scoring notebook contains training or frozen-index work"
         )
+
+
+def _validate_plane_gating_source(source: str) -> None:
+    required = (
+        "discover_combined_checkpoint",
+        "load_combined_baseline_config",
+        "run_combined_baseline",
+        "verify_plane_gating_artifact",
+        'config.aggregation != "target_plane_gate"',
+        "control_checkpoint_path=control_checkpoint",
+        "run_test_inference=False",
+        '"competition_submission": False',
+        "Paired macro AUC delta",
+        "Hidden-test inference: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError(
+            "Plane-gating notebook omits a controlled-experiment safeguard"
+        )
+    forbidden = (
+        "run_combined_scoring",
+        "write_submission",
+        "validate_submission",
+        "kaggle competitions submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Plane-gating training notebook contains hidden scoring work")
+
+
+def _validate_plane_gated_scoring_source(source: str) -> None:
+    required = (
+        "EXPECTED_CHECKPOINT_SHA256",
+        "load_verified_plane_gated_checkpoint",
+        "run_combined_scoring",
+        'aggregation="target_plane_gate"',
+        "expected_checkpoint_sha256=EXPECTED_CHECKPOINT_SHA256",
+        "build_competition_index",
+        "verify_index_artifact",
+        "load_indexed_studies",
+        "write_submission",
+        "validate_submission",
+        '"competition_submission": False',
+        "Competition submission: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Plane-gated scoring notebook omits an inference safeguard")
+    forbidden = ("run_combined_baseline", "train_epoch", "derive_combined_cohort")
+    if any(value in source for value in forbidden):
+        raise ValueError("Plane-gated scoring notebook contains training work")
 
 
 def _validate_reports_source(source: str) -> None:

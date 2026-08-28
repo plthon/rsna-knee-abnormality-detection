@@ -16,6 +16,8 @@ from rsna_knee.kaggle import (
     KaggleSpec,
     WheelDataset,
     build_kaggle_bundle,
+    build_plane_gated_scoring_bundle,
+    build_plane_gating_bundle,
     build_public_baseline_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
@@ -807,3 +809,57 @@ def test_combined_baseline_bundle_builds_and_verifies_metadata(tmp_path: Path) -
     assert metadata["kernel_sources"] == []
     assert (output / "kernel" / "score_combined_baseline.ipynb").is_file()
     assert (output / "bundle-provenance.json").is_file()
+
+
+def test_plane_gating_bundle_is_training_only_and_requires_gpu_approval(
+    tmp_path: Path,
+) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "plane-gating"
+
+    with pytest.raises(PermissionError, match="GPU approval"):
+        build_plane_gating_bundle(project, output)
+
+    bundle = build_plane_gating_bundle(project, output, gpu_approved=True)
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["enable_gpu"] == "true"
+    assert metadata["dataset_sources"] == [
+        "pilkwang/rsna-knee-llm-labels",
+        "plthon/torchvision-resnet18-imagenet1k-v1",
+        "plthon/rsna-knee-combined-baseline-checkpoint",
+    ]
+    assert metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join(
+        cell["source"] if isinstance(cell["source"], str) else "".join(cell["source"])
+        for cell in notebook["cells"]
+    )
+    assert "run_test_inference=False" in source
+    assert "run_combined_scoring" not in source
+
+
+def test_plane_gated_scoring_bundle_requires_keep_decision(tmp_path: Path) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "plane-scoring"
+    with pytest.raises(PermissionError, match="recorded keep decision"):
+        build_plane_gated_scoring_bundle(
+            project,
+            output,
+            checkpoint_dataset_id="plthon/rsna-knee-plane-gating-checkpoint",
+            checkpoint_sha256="a" * 64,
+            gpu_approved=True,
+        )
+
+    bundle = build_plane_gated_scoring_bundle(
+        project,
+        output,
+        checkpoint_dataset_id="plthon/rsna-knee-plane-gating-checkpoint",
+        checkpoint_sha256="a" * 64,
+        validation_kept=True,
+        gpu_approved=True,
+    )
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["dataset_sources"] == ["plthon/rsna-knee-plane-gating-checkpoint"]
+    source = json.dumps(json.loads(bundle.notebook_path.read_text()))
+    assert "target_plane_gate" in source
+    assert "Competition submission: not run" in source

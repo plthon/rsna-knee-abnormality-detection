@@ -5,6 +5,8 @@ from pathlib import Path
 from rsna_knee.kaggle import (
     build_combined_baseline_bundle,
     build_combined_scoring_bundle,
+    build_plane_gated_scoring_bundle,
+    build_plane_gating_bundle,
     build_public_baseline_bundle,
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
@@ -35,6 +37,8 @@ def main() -> None:
             "report-source-comparison",
             "combined-baseline",
             "combined-scoring",
+            "plane-gating",
+            "plane-gating-scoring",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -47,6 +51,9 @@ def main() -> None:
     )
     build.add_argument("--kernel-id", default=None)
     build.add_argument("--approve-gpu", action="store_true")
+    build.add_argument("--checkpoint-dataset-id")
+    build.add_argument("--checkpoint-sha256")
+    build.add_argument("--approve-retained-gate", action="store_true")
 
     push = subparsers.add_parser("push", help="push a previously built bundle")
     push.add_argument("bundle", type=Path)
@@ -72,6 +79,8 @@ def main() -> None:
                 "report-source-comparison": "report-source-comparison",
                 "combined-baseline": "gold-public-scoring",
                 "combined-scoring": "gold-public-scoring",
+                "plane-gating": "plane-gating",
+                "plane-gating-scoring": "plane-gated-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -86,16 +95,44 @@ def main() -> None:
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
                 gpu_approved=arguments.approve_gpu,
             )
-        elif arguments.target in {"combined-baseline", "combined-scoring"}:
+        elif arguments.target == "plane-gating-scoring":
+            if not arguments.checkpoint_dataset_id or not arguments.checkpoint_sha256:
+                parser.error(
+                    "plane-gating-scoring requires --checkpoint-dataset-id and "
+                    "--checkpoint-sha256"
+                )
+            bundle = build_plane_gated_scoring_bundle(
+                project_root,
+                arguments.output,
+                checkpoint_dataset_id=arguments.checkpoint_dataset_id,
+                checkpoint_sha256=arguments.checkpoint_sha256,
+                validation_kept=arguments.approve_retained_gate,
+                kernel_id=arguments.kernel_id or "plthon/rsna-knee-plane-gated-scoring",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target in {
+            "combined-baseline",
+            "combined-scoring",
+            "plane-gating",
+        }:
             builder = (
-                build_combined_baseline_bundle
-                if arguments.target == "combined-baseline"
-                else build_combined_scoring_bundle
+                build_plane_gating_bundle
+                if arguments.target == "plane-gating"
+                else (
+                    build_combined_baseline_bundle
+                    if arguments.target == "combined-baseline"
+                    else build_combined_scoring_bundle
+                )
             )
             bundle = builder(
                 project_root,
                 arguments.output,
-                kernel_id=arguments.kernel_id or "plthon/rsna-knee-gold-public-scoring",
+                kernel_id=arguments.kernel_id
+                or (
+                    "plthon/rsna-knee-plane-gating"
+                    if arguments.target == "plane-gating"
+                    else "plthon/rsna-knee-gold-public-scoring"
+                ),
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "reports":

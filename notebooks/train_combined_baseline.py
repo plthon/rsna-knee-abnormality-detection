@@ -77,6 +77,10 @@ outcome = run_combined_baseline(
 )
 
 print(f"Outcome completed in {outcome.artifact_dir}")
+if outcome.submission_path is None or outcome.validation_report_path is None:
+    raise RuntimeError(
+        "Baseline training must produce example-test inference artifacts"
+    )
 
 # %% [markdown]
 # ## 3. Copy Key Artifacts to Working Root for Kaggle Capture

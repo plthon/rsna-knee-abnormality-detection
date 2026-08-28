@@ -46,6 +46,11 @@ from .submission import (
 )
 
 type Label = Literal[0, 1] | None
+type AnatomicalPlane = Literal["sagittal", "coronal", "axial"]
+type StudyAggregation = Literal["mean", "target_plane_gate"]
+
+ANATOMICAL_PLANES: tuple[AnatomicalPlane, ...] = ("sagittal", "coronal", "axial")
+UNKNOWN_PLANE_INDEX = -1
 
 _CHECKPOINT_SCHEMA_VERSION = 1
 _REPORT_SCHEMA_VERSION = 1
@@ -135,6 +140,7 @@ class GoldTrainingCohort:
 class IndexedSeries:
     series_index: int
     paths: tuple[Path, ...]
+    plane: AnatomicalPlane | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +210,7 @@ class DecodedStudy:
     label_mask: Tensor | None
     valid_slice_count: int
     decode_error_counts: dict[str, int]
+    plane_indices: Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,15 +223,71 @@ class PartitionPrediction:
     decode_errors: dict[str, int]
 
 
+class TargetSpecificPlaneGate(nn.Module):
+    """Positive target-by-plane weights with a fixed neutral unknown weight."""
+
+    def __init__(self, target_count: int):
+        super().__init__()
+        self.log_weights = nn.Parameter(
+            torch.zeros(target_count, len(ANATOMICAL_PLANES))
+        )
+
+    def forward(
+        self,
+        series_logits: Tensor,
+        series_mask: Tensor,
+        plane_indices: Tensor,
+    ) -> Tensor:
+        if series_logits.ndim != 3:
+            raise ValueError("series logits must have shape [study, series, target]")
+        if series_mask.shape != series_logits.shape[:2]:
+            raise ValueError("series mask does not match study/series axes")
+        if plane_indices.shape != series_logits.shape[:2]:
+            raise ValueError("plane indices do not match study/series axes")
+        if bool(
+            (
+                (plane_indices < UNKNOWN_PLANE_INDEX)
+                | (plane_indices >= len(ANATOMICAL_PLANES))
+            ).any()
+        ):
+            raise ValueError("plane indices must be -1 or a known plane index")
+
+        safe_indices = plane_indices.clamp_min(0)
+        learned = self.log_weights.exp()[:, safe_indices].permute(1, 2, 0)
+        weights = torch.where(
+            (plane_indices >= 0).unsqueeze(-1), learned, torch.ones_like(learned)
+        )
+        weights = weights * series_mask.to(dtype=series_logits.dtype).unsqueeze(-1)
+        denominator = weights.sum(dim=1).clamp_min(1)
+        return (series_logits * weights).sum(dim=1) / denominator
+
+    def effective_weights(self) -> Tensor:
+        return self.log_weights.detach().exp()
+
+
 class GoldResNet18(nn.Module):
     """One shared slice encoder with masked slice and series mean pooling."""
 
-    def __init__(self, backbone: nn.Module, feature_count: int, target_count: int):
+    def __init__(
+        self,
+        backbone: nn.Module,
+        feature_count: int,
+        target_count: int,
+        *,
+        aggregation: StudyAggregation = "mean",
+    ):
         super().__init__()
+        if aggregation not in {"mean", "target_plane_gate"}:
+            raise ValueError(f"Unsupported study aggregation: {aggregation}")
         self.imagenet_mean: Tensor
         self.imagenet_std: Tensor
         self.backbone = backbone
         self.head = nn.Linear(feature_count, target_count)
+        self.plane_gate = (
+            TargetSpecificPlaneGate(target_count)
+            if aggregation == "target_plane_gate"
+            else None
+        )
         self.register_buffer(
             "imagenet_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
         )
@@ -232,12 +295,14 @@ class GoldResNet18(nn.Module):
             "imagenet_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
         )
         self.feature_count = feature_count
+        self.aggregation = aggregation
 
     def forward(
         self,
         pixels: Tensor,
         slice_mask: Tensor,
         series_mask: Tensor,
+        plane_indices: Tensor | None = None,
     ) -> Tensor:
         if pixels.ndim != 5:
             raise ValueError("pixels must have shape [study, series, slice, H, W]")
@@ -268,6 +333,15 @@ class GoldResNet18(nn.Module):
         series_features = (features * slice_weights).sum(dim=2) / slice_counts
 
         effective_series = valid.any(dim=2) & series_mask.to(dtype=torch.bool)
+        if self.plane_gate is not None:
+            if plane_indices is None:
+                raise ValueError("plane-gated aggregation requires plane indices")
+            return cast(
+                Tensor,
+                self.plane_gate(
+                    self.head(series_features), effective_series, plane_indices
+                ),
+            )
         series_weights = effective_series.unsqueeze(-1).to(dtype=features.dtype)
         series_counts = series_weights.sum(dim=1).clamp_min(1)
         study_features = (series_features * series_weights).sum(dim=1) / series_counts
@@ -427,6 +501,7 @@ def build_initialized_model(
     target_names: Sequence[str],
     *,
     contract_path: Path | None = None,
+    aggregation: StudyAggregation = "mean",
 ) -> tuple[GoldResNet18, InitializationArtifact]:
     """Build only after exact offline bytes pass the frozen initialization contract."""
     initialization = verify_initialization_artifact(
@@ -439,7 +514,15 @@ def build_initialized_model(
     backbone.load_state_dict(state_dict, strict=True)
     feature_count = backbone.fc.in_features
     backbone.fc = nn.Identity()
-    return GoldResNet18(backbone, feature_count, len(target_names)), initialization
+    return (
+        GoldResNet18(
+            backbone,
+            feature_count,
+            len(target_names),
+            aggregation=aggregation,
+        ),
+        initialization,
+    )
 
 
 def derive_gold_training_cohort(
@@ -549,7 +632,7 @@ def load_indexed_studies(
             study_indices[int(row["study_index"])] = uid
 
     series_rows = _read_csv(index_artifact_dir / "series.csv", _SERIES_COLUMNS)
-    series_metadata: dict[int, tuple[str, Path, int]] = {}
+    series_metadata: dict[int, tuple[str, Path, int, AnatomicalPlane | None]] = {}
     for row in series_rows:
         study_index = int(row["study_index"])
         if study_index not in study_indices or int(row["usable_slice_count"]) <= 0:
@@ -561,6 +644,7 @@ def load_indexed_studies(
             study_indices[study_index],
             relative_path,
             expected_selected,
+            resolve_anatomical_plane(row["Anatomical_Plane"]),
         )
 
     selected_by_slice: dict[int, tuple[int, int]] = {}
@@ -596,7 +680,12 @@ def load_indexed_studies(
             paths_by_series[series_index][slot] = path
 
     series_by_study: dict[str, list[IndexedSeries]] = defaultdict(list)
-    for series_index, (study_uid, _, expected_selected) in series_metadata.items():
+    for series_index, (
+        study_uid,
+        _,
+        expected_selected,
+        plane,
+    ) in series_metadata.items():
         slots = paths_by_series.get(series_index, {})
         if len(slots) != expected_selected or not slots:
             raise ValueError(
@@ -609,6 +698,7 @@ def load_indexed_studies(
             IndexedSeries(
                 series_index=series_index,
                 paths=tuple(slots[slot] for slot in ordered_slots),
+                plane=plane,
             )
         )
     return {
@@ -620,6 +710,12 @@ def load_indexed_studies(
         )
         for uid in study_uids
     }
+
+
+def resolve_anatomical_plane(value: str | None) -> AnatomicalPlane | None:
+    """Resolve the competition's three anatomical-plane values."""
+    normalized = (value or "").strip().casefold()
+    return normalized if normalized in ANATOMICAL_PLANES else None
 
 
 def masked_binary_cross_entropy(
@@ -684,10 +780,13 @@ def train_epoch(
         decode_seconds += time.perf_counter() - decode_start
         if not decoded:
             continue
-        pixels, slice_mask, series_mask, labels, known = collate_studies(decoded)
+        pixels, slice_mask, series_mask, plane_indices, labels, known = collate_studies(
+            decoded
+        )
         pixels = pixels.to(device)
         slice_mask = slice_mask.to(device)
         series_mask = series_mask.to(device)
+        plane_indices = plane_indices.to(device)
         labels = labels.to(device)
         known = known.to(device)
         compute_start = time.perf_counter()
@@ -697,7 +796,7 @@ def train_epoch(
             dtype=torch.float16,
             enabled=mixed_precision and device.type == "cuda",
         ):
-            logits = model(pixels, slice_mask, series_mask)
+            logits = model(pixels, slice_mask, series_mask, plane_indices)
             loss = masked_binary_cross_entropy(logits, labels, known)
         scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
         scaler.step(optimizer)
@@ -769,13 +868,23 @@ def predict_partition(
             pixels = decoded.pixels.unsqueeze(0).to(device)
             slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
             series_mask = decoded.series_mask.unsqueeze(0).to(device)
+            plane_indices = (
+                decoded.plane_indices
+                if decoded.plane_indices is not None
+                else torch.full_like(
+                    decoded.series_mask, UNKNOWN_PLANE_INDEX, dtype=torch.long
+                )
+            )
+            plane_indices = plane_indices.unsqueeze(0).to(device)
             forward_start = time.perf_counter()
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.float16,
                 enabled=mixed_precision and device.type == "cuda",
             ):
-                output = torch.sigmoid(model(pixels, slice_mask, series_mask))[0]
+                output = torch.sigmoid(
+                    model(pixels, slice_mask, series_mask, plane_indices)
+                )[0]
             if device.type == "cuda":
                 torch.cuda.synchronize()
             forward_seconds += time.perf_counter() - forward_start
@@ -1159,12 +1268,22 @@ def _predict_submission_with_model(
             pixels = decoded.pixels.unsqueeze(0).to(device)
             slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
             series_mask = decoded.series_mask.unsqueeze(0).to(device)
+            plane_indices = (
+                decoded.plane_indices
+                if decoded.plane_indices is not None
+                else torch.full_like(
+                    decoded.series_mask, UNKNOWN_PLANE_INDEX, dtype=torch.long
+                )
+            )
+            plane_indices = plane_indices.unsqueeze(0).to(device)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.float16,
                 enabled=mixed_precision and device.type == "cuda",
             ):
-                probabilities = torch.sigmoid(model(pixels, slice_mask, series_mask))[0]
+                probabilities = torch.sigmoid(
+                    model(pixels, slice_mask, series_mask, plane_indices)
+                )[0]
             predictions[study_uid] = tuple(
                 float(value) for value in probabilities.float().cpu()
             )
@@ -1759,11 +1878,13 @@ def _is_probability(value: object) -> bool:
     return _is_nonnegative_number(value) and cast(float, value) <= 1
 
 
-def _new_uninitialized_model(target_count: int) -> GoldResNet18:
+def _new_uninitialized_model(
+    target_count: int, *, aggregation: StudyAggregation = "mean"
+) -> GoldResNet18:
     backbone = resnet18(weights=None)
     feature_count = backbone.fc.in_features
     backbone.fc = nn.Identity()
-    return GoldResNet18(backbone, feature_count, target_count)
+    return GoldResNet18(backbone, feature_count, target_count, aggregation=aggregation)
 
 
 def decode_study(
@@ -1781,6 +1902,7 @@ def decode_study(
             label_mask=None,
             valid_slice_count=0,
             decode_error_counts={},
+            plane_indices=torch.empty(0, dtype=torch.long),
         )
     pixels: list[Tensor] = []
     masks: list[Tensor] = []
@@ -1807,12 +1929,21 @@ def decode_study(
         label_mask=label_mask,
         valid_slice_count=int(mask_tensor.sum()),
         decode_error_counts=dict(errors),
+        plane_indices=torch.tensor(
+            [
+                UNKNOWN_PLANE_INDEX
+                if series.plane is None
+                else ANATOMICAL_PLANES.index(series.plane)
+                for series in indexed.series
+            ],
+            dtype=torch.long,
+        ),
     )
 
 
 def collate_studies(
     studies: Sequence[DecodedStudy],
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     if not studies or any(item.labels is None for item in studies):
         raise ValueError("Training collation requires labeled studies")
     maximum_series = max(item.pixels.shape[0] for item in studies)
@@ -1823,14 +1954,19 @@ def collate_studies(
         len(studies), maximum_series, slice_count, dtype=torch.bool
     )
     series_mask = torch.zeros(len(studies), maximum_series, dtype=torch.bool)
+    plane_indices = torch.full(
+        (len(studies), maximum_series), UNKNOWN_PLANE_INDEX, dtype=torch.long
+    )
     for index, item in enumerate(studies):
         series_count = item.pixels.shape[0]
         pixels[index, :series_count] = item.pixels
         slice_mask[index, :series_count] = item.slice_mask
         series_mask[index, :series_count] = item.series_mask
+        if item.plane_indices is not None:
+            plane_indices[index, :series_count] = item.plane_indices
     labels = torch.stack([cast(Tensor, item.labels) for item in studies])
     known = torch.stack([cast(Tensor, item.label_mask) for item in studies])
-    return pixels, slice_mask, series_mask, labels, known
+    return pixels, slice_mask, series_mask, plane_indices, labels, known
 
 
 def build_checkpoint_payload(

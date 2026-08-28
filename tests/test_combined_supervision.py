@@ -3,6 +3,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -322,6 +323,12 @@ def test_load_combined_baseline_config() -> None:
     assert config.val_fraction == 0.10
     assert config.split_seed == 20260825
     assert config.reload_absolute_tolerance == 0.00001
+    assert config.aggregation == "mean"
+
+    gated = load_combined_baseline_config(PROJECT_ROOT / "configs/plane-gating.toml")
+    assert gated.aggregation == "target_plane_gate"
+    assert gated.paired_bootstrap_replicates == 10_000
+    assert gated.minimum_macro_auc_delta == 0.005
 
 
 def test_verify_combined_baseline_artifact(tmp_path: Path) -> None:
@@ -356,6 +363,83 @@ def test_verify_combined_baseline_artifact(tmp_path: Path) -> None:
     assert verified["cohort_digest"] == "test-digest"
     assert verified["total_studies"] == 100
     assert verified["completed_epochs"] == 3
+
+
+def test_plane_gating_artifact_verifier_rejects_manifest_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from rsna_knee.combined_supervision import (
+        _plane_gate_metadata,
+        verify_plane_gating_artifact,
+    )
+
+    artifact = tmp_path / "plane-gating"
+    artifact.mkdir()
+    checkpoint = artifact / "checkpoint.pt"
+    predictions = artifact / "validation-predictions.csv"
+    report_path = artifact / "training-report.json"
+    checkpoint.write_bytes(b"checkpoint")
+    predictions.write_text("StudyInstanceUID\nsynthetic\n")
+    configuration = {"model": {"aggregation": "target_plane_gate"}}
+    report = {
+        "status": "complete",
+        "implementation": {"git_commit": "test-commit"},
+        "configuration": configuration,
+        "model": {
+            "aggregation": "target_plane_gate",
+            "learned_aggregation_scalars": 36,
+            "zero_initialized_equivalence": {"passed": True},
+        },
+        "controlled_comparison": {
+            "paired_validation_membership": True,
+            "validation_predictions_sha256": _sha256(predictions),
+            "metrics": {},
+            "decision": {"result": "reject"},
+        },
+        "submission": {
+            "status": "not_run",
+            "reason": "separate hidden-test inference approval required",
+        },
+    }
+    report_path.write_text(json.dumps(report))
+    records = [
+        {
+            "path": path.name,
+            "sha256": _sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in (checkpoint, report_path, predictions)
+    ]
+    (artifact / "run-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifacts": records,
+                "configuration": configuration,
+                "source": {"git_commit": "test-commit", "extra": True},
+            }
+        )
+    )
+    payload = {
+        "targets": list(TARGETS),
+        "aggregation": _plane_gate_metadata(TARGETS),
+        "configuration": configuration,
+    }
+    monkeypatch.setattr(
+        "rsna_knee.combined_supervision.load_verified_plane_gated_checkpoint",
+        lambda *args, **kwargs: (
+            SimpleNamespace(aggregation="target_plane_gate"),
+            payload,
+        ),
+    )
+
+    assert verify_plane_gating_artifact(artifact)["valid"] is True
+
+    predictions.write_text("tampered")
+    with pytest.raises(ValueError, match="does not match manifest"):
+        verify_plane_gating_artifact(artifact)
 
 
 def test_load_combined_checkpoint_validates_structure(tmp_path: Path) -> None:
@@ -397,6 +481,115 @@ def test_load_combined_checkpoint_validates_structure(tmp_path: Path) -> None:
     torch.save(bad_payload, ckpt_path)
     with pytest.raises(ValueError, match="Combined checkpoint fields are incomplete"):
         load_combined_checkpoint(ckpt_path, device=torch.device("cpu"))
+
+
+def test_plane_gated_checkpoint_reload_preserves_predictions_and_target_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from torch import Tensor, nn
+
+    from rsna_knee.combined_supervision import load_combined_checkpoint
+    from rsna_knee.training import GoldResNet18
+
+    class MeanBackbone(nn.Module):
+        def forward(self, values: Tensor) -> Tensor:
+            means = values.mean(dim=(2, 3))
+            return means[:, :2]
+
+    def model() -> GoldResNet18:
+        return GoldResNet18(
+            MeanBackbone(),
+            feature_count=2,
+            target_count=len(TARGETS),
+            aggregation="target_plane_gate",
+        )
+
+    original = model()
+    assert original.plane_gate is not None
+    with torch.no_grad():
+        original.plane_gate.log_weights[0, 0] = 1.25
+    pixels = torch.rand(1, 2, 1, 2, 2)
+    slice_mask = torch.ones(1, 2, 1, dtype=torch.bool)
+    series_mask = torch.ones(1, 2, dtype=torch.bool)
+    plane_indices = torch.tensor([[0, 2]])
+    original.eval()
+    with torch.no_grad():
+        expected = original(pixels, slice_mask, series_mask, plane_indices)
+
+    metadata = {
+        "kind": "target_plane_gate",
+        "target_order": list(TARGETS),
+        "plane_order": ["sagittal", "coronal", "axial"],
+        "parameterization": "exp(log_weight)",
+        "initial_log_weight": 0.0,
+        "unresolved_plane_weight": 1.0,
+        "learned_scalar_count": 36,
+    }
+    payload = {
+        "checkpoint_schema_version": 2,
+        "model_state_dict": original.state_dict(),
+        "optimizer_state_dict": {},
+        "scaler_state_dict": {},
+        "completed_epochs": 3,
+        "targets": list(TARGETS),
+        "priors": [0.5] * len(TARGETS),
+        "preprocessing": {},
+        "cohort": {},
+        "partition": {},
+        "initialization": {},
+        "configuration": {},
+        "code": {},
+        "runtime": {},
+        "artifact_hashes": {},
+        "rng_state": {},
+        "aggregation": metadata,
+    }
+    checkpoint = tmp_path / "plane-gated.pt"
+    torch.save(payload, checkpoint)
+    monkeypatch.setattr(
+        "rsna_knee.combined_supervision._new_uninitialized_model",
+        lambda target_count, *, aggregation: model(),
+    )
+
+    reloaded, _ = load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
+    reloaded.eval()
+    with torch.no_grad():
+        actual = reloaded(pixels, slice_mask, series_mask, plane_indices)
+
+    assert torch.equal(actual, expected)
+    assert reloaded.plane_gate is not None
+    assert reloaded.plane_gate.log_weights[0, 0].item() == pytest.approx(1.25)
+
+    payload["aggregation"] = {**metadata, "target_order": list(reversed(TARGETS))}
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="metadata is incompatible"):
+        load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
+
+
+def test_plane_gate_decision_applies_precommitted_macro_and_bootstrap_rules() -> None:
+    from rsna_knee.combined_supervision import _plane_gate_decision
+
+    config = load_combined_baseline_config(PROJECT_ROOT / "configs/plane-gating.toml")
+    comparison: dict[str, Any] = {
+        "delta": {
+            "official_macro_auc": 0.006,
+            "per_target": {target: {"delta_roc_auc": 0.001} for target in TARGETS},
+        },
+        "bootstrap": {
+            "uncertainty": {"official_macro_auc_delta": {"fraction_positive": 0.96}}
+        },
+    }
+
+    kept = _plane_gate_decision(comparison, config)
+    assert kept["result"] == "keep"
+    assert kept["open_sequence_aware_issue_29"] is True
+
+    comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
+        "fraction_positive"
+    ] = 0.94
+    rejected = _plane_gate_decision(comparison, config)
+    assert rejected["result"] == "reject"
+    assert rejected["open_sequence_aware_issue_29"] is False
 
 
 def test_run_combined_baseline_with_pretrained_checkpoint(
@@ -500,6 +693,7 @@ def test_run_combined_baseline_with_pretrained_checkpoint(
         data_index_contract_path=idx_contract,
     )
     assert outcome.checkpoint_path.is_file()
+    assert outcome.submission_path is not None
     assert outcome.submission_path.is_file()
     assert outcome.report_path.is_file()
 

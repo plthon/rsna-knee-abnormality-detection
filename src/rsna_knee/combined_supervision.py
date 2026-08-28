@@ -27,6 +27,11 @@ from .competition_contract import (
     load_verified_submission_contract,
 )
 from .config import PreprocessingConfig
+from .holdout import (
+    PAIRED_BOOTSTRAP_METHOD_VERSION,
+    PatientBootstrapConfig,
+    evaluate_paired_auc_delta,
+)
 from .indexing import build_competition_index, verify_index_artifact
 from .provenance import create_run_id, write_run_manifest
 from .public_label_audit import resolve_dataset_root
@@ -37,9 +42,13 @@ from .submission import (
     write_submission,
 )
 from .training import (
+    ANATOMICAL_PLANES,
     GoldResNet18,
     IndexedStudy,
     Label,
+    PartitionPrediction,
+    PartitionStudy,
+    StudyAggregation,
     _new_uninitialized_model,
     build_initialized_model,
     decode_study,
@@ -66,15 +75,20 @@ type Partition = Literal["train", "val"]
 PUBLIC_VERDICT_TO_LABEL: Mapping[str, Label] = _PUBLIC_VERDICT_TO_LABEL
 
 _COMBINED_CHECKPOINT_SCHEMA_VERSION = 1
+_PLANE_GATED_CHECKPOINT_SCHEMA_VERSION = 2
 _COMBINED_REPORT_SCHEMA_VERSION = 1
 _COMBINED_COHORT_RULE_VERSION = "gold-plus-public-verdicts-v1"
 _COMBINED_COHORT_DIGEST_VERSION = "combined-gold-public-cohort-jsonl-v1"
 _COMBINED_SPLIT_RULE_VERSION = "patient-hash-disjoint-v1"
 _ARTIFACT_DIRECTORY = "rsna-knee-combined-baseline-v1"
+_PLANE_GATED_ARTIFACT_DIRECTORY = "rsna-knee-plane-gating-v1"
 _SCORING_ARTIFACT_DIRECTORY = "rsna-knee-scoring-v1"
 COMBINED_BASELINE_CHECKPOINT_SHA256 = (
     "1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4"
 )
+COMBINED_BASELINE_COMMIT = "e69f79af9c3de06e17a77e43bb41cb971879aed0"
+_BASELINE_TRAINING_SECONDS = 13_102.42
+_BASELINE_PEAK_CUDA_MEMORY_BYTES = 741_710_848
 
 _STUDY_COLUMNS = (
     "study_index",
@@ -163,6 +177,13 @@ class CombinedBaselineConfig:
     val_fraction: float
     split_seed: int
     reload_absolute_tolerance: float
+    aggregation: StudyAggregation = "mean"
+    paired_bootstrap_seed: int = 20260825
+    paired_bootstrap_replicates: int = 10_000
+    paired_bootstrap_confidence: float = 0.95
+    minimum_macro_auc_delta: float = 0.005
+    minimum_bootstrap_positive_fraction: float = 0.95
+    large_target_regression: float = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,8 +200,8 @@ class CombinedBaselineOutcome:
     artifact_dir: Path
     checkpoint_path: Path
     report_path: Path
-    submission_path: Path
-    validation_report_path: Path
+    submission_path: Path | None
+    validation_report_path: Path | None
     manifest_path: Path
 
 
@@ -203,6 +224,12 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
     training_raw = _mapping(raw, "training")
     split_raw = _mapping(raw, "split")
     validation_raw = _mapping(raw, "validation")
+    model_raw = raw.get("model", {})
+    if not isinstance(model_raw, dict):
+        raise TypeError("Configuration field model must be a table")
+    aggregation = model_raw.get("aggregation", "mean")
+    if aggregation not in {"mean", "target_plane_gate"}:
+        raise ValueError("model.aggregation must be mean or target_plane_gate")
     preprocessing = PreprocessingConfig(
         slice_count=_positive_int(preprocessing_raw, "slice_count"),
         lower_percentile=_number(preprocessing_raw, "lower_percentile"),
@@ -224,6 +251,25 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         reload_absolute_tolerance=_positive_number(
             validation_raw, "reload_absolute_tolerance"
         ),
+        aggregation=cast(StudyAggregation, aggregation),
+        paired_bootstrap_seed=_optional_nonnegative_int(
+            validation_raw, "paired_bootstrap_seed", 20260825
+        ),
+        paired_bootstrap_replicates=_optional_positive_int(
+            validation_raw, "paired_bootstrap_replicates", 10_000
+        ),
+        paired_bootstrap_confidence=_optional_number(
+            validation_raw, "paired_bootstrap_confidence", 0.95
+        ),
+        minimum_macro_auc_delta=_optional_number(
+            validation_raw, "minimum_macro_auc_delta", 0.005
+        ),
+        minimum_bootstrap_positive_fraction=_optional_number(
+            validation_raw, "minimum_bootstrap_positive_fraction", 0.95
+        ),
+        large_target_regression=_optional_positive_number(
+            validation_raw, "large_target_regression", 0.02
+        ),
     )
     if not (
         0 <= preprocessing.lower_percentile < preprocessing.upper_percentile <= 100
@@ -237,6 +283,10 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         raise ValueError("Unexpected initialization weight identity")
     if not 0 < config.val_fraction < 1:
         raise ValueError("val_fraction must be between 0 and 1")
+    if not 0 < config.paired_bootstrap_confidence < 1:
+        raise ValueError("paired bootstrap confidence must be between zero and one")
+    if not 0 < config.minimum_bootstrap_positive_fraction <= 1:
+        raise ValueError("minimum bootstrap positive fraction must be in (0, 1]")
     return config
 
 
@@ -568,16 +618,16 @@ def derive_patient_split(
     )
 
 
-def discover_combined_checkpoint(input_root: Path) -> Path:
-    """Find exactly one attached copy of the frozen competition checkpoint."""
+def discover_combined_checkpoint(
+    input_root: Path,
+    *,
+    expected_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
+) -> Path:
+    """Find exactly one attached checkpoint with the required digest."""
     candidates = sorted(
         path for path in input_root.rglob("checkpoint.pt") if path.is_file()
     )
-    matching = [
-        path
-        for path in candidates
-        if _sha256(path) == COMBINED_BASELINE_CHECKPOINT_SHA256
-    ]
+    matching = [path for path in candidates if _sha256(path) == expected_sha256]
     if len(matching) == 1 and len(candidates) == 1:
         return matching[0]
     if not candidates:
@@ -586,8 +636,7 @@ def discover_combined_checkpoint(input_root: Path) -> Path:
         )
     if not matching:
         raise ValueError(
-            "Attached checkpoint SHA-256 mismatch; expected "
-            f"{COMBINED_BASELINE_CHECKPOINT_SHA256}"
+            f"Attached checkpoint SHA-256 mismatch; expected {expected_sha256}"
         )
     raise ValueError("Expected exactly one attached checkpoint.pt")
 
@@ -644,26 +693,7 @@ def load_verified_combined_checkpoint(
         "val_study_count": 450,
     }:
         raise ValueError("Checkpoint partition metadata is incompatible")
-    if checkpoint.get("configuration") != {
-        "preprocessing": {
-            "slice_count": 8,
-            "lower_percentile": 1.0,
-            "upper_percentile": 99.0,
-            "image_size": 224,
-        },
-        "training": {
-            "epochs": 3,
-            "batch_size": 16,
-            "learning_rate": 0.0001,
-            "weight_decay": 0.0001,
-            "seed": 20260825,
-            "mixed_precision": True,
-            "architecture": "torchvision.models.resnet18",
-            "weight_identity": "ResNet18_Weights.IMAGENET1K_V1",
-        },
-        "split": {"val_fraction": 0.1, "split_seed": 20260825},
-        "validation": {"reload_absolute_tolerance": 1e-5},
-    }:
+    if checkpoint.get("configuration") != _expected_baseline_configuration():
         raise ValueError("Checkpoint configuration metadata is incompatible")
     priors = checkpoint.get("priors")
     if (
@@ -685,6 +715,126 @@ def load_verified_combined_checkpoint(
     return model, checkpoint
 
 
+def load_verified_plane_gated_checkpoint(
+    path: Path,
+    *,
+    device: torch.device,
+    expected_sha256: str,
+    contract_path: Path | None = None,
+) -> tuple[GoldResNet18, dict[str, Any]]:
+    """Verify a retained #28 checkpoint before hidden-test inference."""
+    if not path.is_file() or _sha256(path) != expected_sha256:
+        raise ValueError("Plane-gated checkpoint SHA-256 mismatch")
+    model, checkpoint = load_combined_checkpoint(path, device=device)
+    targets = load_verified_submission_contract(contract_path).target_names
+    if checkpoint.get("targets") != list(targets):
+        raise ValueError("Plane-gated checkpoint target order differs from competition")
+    if checkpoint.get("aggregation") != _plane_gate_metadata(targets):
+        raise ValueError("Plane-gated checkpoint aggregation metadata is incompatible")
+    configuration = checkpoint.get("configuration")
+    if not isinstance(configuration, dict):
+        raise TypeError("Plane-gated checkpoint configuration is malformed")
+    baseline_view = dict(configuration)
+    baseline_view.pop("model", None)
+    baseline_view["validation"] = {
+        "reload_absolute_tolerance": configuration.get("validation", {}).get(
+            "reload_absolute_tolerance"
+        )
+        if isinstance(configuration.get("validation"), dict)
+        else None
+    }
+    if baseline_view != _expected_baseline_configuration():
+        raise ValueError("Plane-gated checkpoint changed the #27 control configuration")
+    validation = configuration.get("validation")
+    if not isinstance(validation, dict) or configuration.get("model") != {
+        "aggregation": "target_plane_gate"
+    }:
+        raise ValueError("Plane-gated checkpoint experiment metadata is missing")
+    if validation != {
+        "reload_absolute_tolerance": 1e-5,
+        "paired_bootstrap_method": PAIRED_BOOTSTRAP_METHOD_VERSION,
+        "paired_bootstrap_seed": 20260825,
+        "paired_bootstrap_replicates": 10_000,
+        "paired_bootstrap_confidence": 0.95,
+        "minimum_macro_auc_delta": 0.005,
+        "minimum_bootstrap_positive_fraction": 0.95,
+        "large_target_regression": 0.02,
+    }:
+        raise ValueError(
+            "Plane-gated checkpoint decision configuration is incompatible"
+        )
+    if checkpoint.get("preprocessing") != {
+        "slice_count": 8,
+        "lower_percentile": 1.0,
+        "upper_percentile": 99.0,
+        "image_size": 224,
+        "shared_contract": "preprocess_series_result",
+        "channel_adapter": "grayscale_repeat_to_rgb",
+        "imagenet_mean": [0.485, 0.456, 0.406],
+        "imagenet_std": [0.229, 0.224, 0.225],
+    }:
+        raise ValueError(
+            "Plane-gated checkpoint preprocessing metadata is incompatible"
+        )
+    if checkpoint.get("completed_epochs") != 3:
+        raise ValueError("Plane-gated checkpoint epoch count is incompatible")
+    if checkpoint.get("cohort") != {
+        "selection_rule_version": _COMBINED_COHORT_RULE_VERSION,
+        "digest": "b066a7e6cd7119f4bef330a006a86a0e08e664d7b5347a111ec781e72abe1fdc",
+        "gold_study_count": 58,
+        "non_gold_study_count": 4349,
+        "total_study_count": 4407,
+    } or checkpoint.get("partition") != {
+        "split_rule_version": _COMBINED_SPLIT_RULE_VERSION,
+        "split_seed": 20260825,
+        "val_fraction": 0.1,
+        "train_study_count": 3957,
+        "val_study_count": 450,
+    }:
+        raise ValueError("Plane-gated checkpoint cohort/partition is incompatible")
+    priors = checkpoint.get("priors")
+    if (
+        not isinstance(priors, list)
+        or len(priors) != len(targets)
+        or any(not _is_probability(value) for value in priors)
+    ):
+        raise ValueError("Plane-gated checkpoint fallback priors are incompatible")
+    initialization = checkpoint.get("initialization")
+    if (
+        not isinstance(initialization, dict)
+        or initialization.get("artifact_sha256")
+        != "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec"
+        or initialization.get("artifact_size_bytes") != 46830571
+        or initialization.get("contract_sha256")
+        != "cbd3639197247bf8b4bd83f11047f5cac5bf8b13ba92e881c423f7c61fabc4ca"
+    ):
+        raise ValueError("Plane-gated checkpoint initialization is incompatible")
+    return model, checkpoint
+
+
+def _expected_baseline_configuration() -> dict[str, object]:
+    return {
+        "preprocessing": {
+            "slice_count": 8,
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "image_size": 224,
+        },
+        "training": {
+            "epochs": 3,
+            "batch_size": 16,
+            "learning_rate": 0.0001,
+            "weight_decay": 0.0001,
+            "seed": 20260825,
+            "mixed_precision": True,
+            "architecture": "torchvision.models.resnet18",
+            "weight_identity": "ResNet18_Weights.IMAGENET1K_V1",
+        },
+        "split": {"val_fraction": 0.1, "split_seed": 20260825},
+        "validation": {"reload_absolute_tolerance": 1e-5},
+    }
+
+
 def run_combined_scoring(
     *,
     input_root: Path,
@@ -695,14 +845,35 @@ def run_combined_scoring(
     source_provenance: Mapping[str, object] | None = None,
     notebook: Mapping[str, object] | None = None,
     competition_contract_path: Path | None = None,
+    aggregation: StudyAggregation = "mean",
+    expected_checkpoint_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
 ) -> CombinedScoringOutcome:
     """Run inference-only scoring against the live competition test mount."""
-    checkpoint = checkpoint_path or discover_combined_checkpoint(input_root)
-    model, checkpoint_payload = load_verified_combined_checkpoint(
-        checkpoint,
-        device=torch.device("cpu"),
-        contract_path=competition_contract_path,
+    checkpoint = checkpoint_path or (
+        discover_combined_checkpoint(input_root)
+        if expected_checkpoint_sha256 == COMBINED_BASELINE_CHECKPOINT_SHA256
+        else discover_combined_checkpoint(
+            input_root, expected_sha256=expected_checkpoint_sha256
+        )
     )
+    if aggregation == "target_plane_gate":
+        model, checkpoint_payload = load_verified_plane_gated_checkpoint(
+            checkpoint,
+            device=torch.device("cpu"),
+            expected_sha256=expected_checkpoint_sha256,
+            contract_path=competition_contract_path,
+        )
+    elif (
+        aggregation == "mean"
+        and expected_checkpoint_sha256 == COMBINED_BASELINE_CHECKPOINT_SHA256
+    ):
+        model, checkpoint_payload = load_verified_combined_checkpoint(
+            checkpoint,
+            device=torch.device("cpu"),
+            contract_path=competition_contract_path,
+        )
+    else:
+        raise ValueError("Unsupported scoring checkpoint identity")
     cuda_evidence = require_approved_cuda(approved=approved_gpu)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -782,6 +953,7 @@ def run_combined_scoring(
                     "path": checkpoint.name,
                     "sha256": _sha256(checkpoint),
                     "targets": list(submission_inputs.contract.target_names),
+                    "aggregation": aggregation,
                 },
                 "live_test": {
                     "study_count": len(submission_inputs.entity_ids),
@@ -794,6 +966,9 @@ def run_combined_scoring(
                     ),
                     "test_series_csv_sha256": _sha256(
                         submission_inputs.competition_root / "test_series.csv"
+                    ),
+                    "plane_availability": plane_availability(
+                        live_index, submission_inputs.entity_ids
                     ),
                 },
                 "inference": {
@@ -862,10 +1037,12 @@ def run_combined_baseline(
     index_artifact_dir: Path | None = None,
     public_dataset_root: Path | None = None,
     pretrained_checkpoint_path: Path | None = None,
+    control_checkpoint_path: Path | None = None,
     weight_path: Path | None = None,
     competition_contract_path: Path | None = None,
     public_dataset_contract_path: Path | None = None,
     data_index_contract_path: Path | None = None,
+    run_test_inference: bool = True,
 ) -> CombinedBaselineOutcome:
     """Execute complete combined gold + public baseline training and validation."""
     cuda_evidence = require_approved_cuda(approved=approved_gpu)
@@ -916,7 +1093,35 @@ def run_combined_baseline(
         split="test",
     )
 
-    if pretrained_checkpoint_path is None:
+    control_val_pred = None
+    control_checkpoint_sha256 = None
+    if config.aggregation == "target_plane_gate":
+        if control_checkpoint_path is None:
+            control_checkpoint_path = _discover_control_checkpoint(input_root)
+        control_model, control_checkpoint = load_verified_combined_checkpoint(
+            control_checkpoint_path, device=device
+        )
+        if control_checkpoint["configuration"] != _baseline_config_record(config):
+            raise ValueError("Plane-gating control configuration differs from #27")
+        control_val_pred = predict_partition(
+            model=control_model,
+            indexed=training_index,
+            studies=partition.val_studies,
+            preprocessing=config.preprocessing,
+            mixed_precision=config.mixed_precision,
+            device=device,
+        )
+        control_checkpoint_sha256 = _sha256(control_checkpoint_path)
+        del control_model
+        torch.cuda.empty_cache()
+    elif control_checkpoint_path is not None:
+        raise ValueError("A baseline run does not accept a separate control checkpoint")
+
+    if config.aggregation != "mean" and pretrained_checkpoint_path is not None:
+        raise ValueError(
+            "A plane-gated run must initialize from the frozen ImageNet weights"
+        )
+    if config.aggregation == "mean" and pretrained_checkpoint_path is None:
         candidate_paths = (
             input_root / "rsna-knee-combined-baseline-checkpoint" / "checkpoint.pt",
             input_root
@@ -930,9 +1135,14 @@ def run_combined_baseline(
                 pretrained_checkpoint_path = cand
                 break
 
-    artifact_dir = work_root / _ARTIFACT_DIRECTORY
+    artifact_dir = work_root / (
+        _PLANE_GATED_ARTIFACT_DIRECTORY
+        if config.aggregation == "target_plane_gate"
+        else _ARTIFACT_DIRECTORY
+    )
     artifact_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = artifact_dir / "checkpoint.pt"
+    initialization_equivalence = None
 
     if pretrained_checkpoint_path is not None:
         model, ckpt_payload = load_combined_checkpoint(
@@ -961,8 +1171,12 @@ def run_combined_baseline(
         ]
     else:
         model, initialization = build_initialized_model(
-            inputs.weight_path, cohort.target_names
+            inputs.weight_path,
+            cohort.target_names,
+            aggregation=config.aggregation,
         )
+        if config.aggregation == "target_plane_gate":
+            initialization_equivalence = _zero_gate_equivalence(model)
         initialization_sha256 = initialization.sha256
         model.to(device)
         optimizer = torch.optim.AdamW(
@@ -1022,13 +1236,23 @@ def run_combined_baseline(
                     "val_mean_roc_auc": val_metrics["mean_roc_auc"],
                     "val_per_target": val_metrics["per_target"],
                     "optimizer_steps": train_rec["optimizer_step_count"],
+                    "valid_training_slices": train_rec["valid_slice_count"],
+                    "decode_seconds": train_rec["decode_seconds"],
+                    "forward_backward_seconds": train_rec["forward_backward_seconds"],
+                    "training_slices_per_second": (
+                        train_rec["valid_slice_count"] / train_rec["training_seconds"]
+                    ),
                 }
             )
 
         total_training_seconds = time.perf_counter() - total_training_start
 
         checkpoint_payload = {
-            "checkpoint_schema_version": _COMBINED_CHECKPOINT_SCHEMA_VERSION,
+            "checkpoint_schema_version": (
+                _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION
+                if config.aggregation == "target_plane_gate"
+                else _COMBINED_CHECKPOINT_SCHEMA_VERSION
+            ),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scaler_state_dict": scaler.state_dict(),
@@ -1083,6 +1307,10 @@ def run_combined_baseline(
                 else [],
             },
         }
+        if config.aggregation == "target_plane_gate":
+            checkpoint_payload["aggregation"] = _plane_gate_metadata(
+                cohort.target_names
+            )
         save_checkpoint(checkpoint_path, checkpoint_payload)
 
     pre_reload_val_pred = predict_partition(
@@ -1133,21 +1361,78 @@ def run_combined_baseline(
             f"exceeds tolerance {config.reload_absolute_tolerance:.8f}"
         )
 
-    submission_prediction = _predict_combined_submission(
-        model=reloaded_model,
-        submission_inputs=submission_inputs,
-        indexed=test_index,
-        work_root=artifact_dir,
-        preprocessing=config.preprocessing,
-        priors=priors,
-        mixed_precision=config.mixed_precision,
-        device=device,
+    comparison = None
+    decision = None
+    validation_predictions_path = None
+    if control_val_pred is not None:
+        control_uids = tuple(study.study_uid for study in control_val_pred.studies)
+        gated_uids = tuple(study.study_uid for study in reloaded_val_pred.studies)
+        if control_uids != gated_uids:
+            raise RuntimeError("Control and plane-gated validation membership differs")
+        comparison = evaluate_paired_auc_delta(
+            patient_ids=[study.patient_id for study in reloaded_val_pred.studies],
+            labels=[study.labels for study in reloaded_val_pred.studies],
+            baseline_predictions=control_val_pred.probabilities,
+            candidate_predictions=reloaded_val_pred.probabilities,
+            target_names=cohort.target_names,
+            bootstrap=PatientBootstrapConfig(
+                method_version=PAIRED_BOOTSTRAP_METHOD_VERSION,
+                seed=config.paired_bootstrap_seed,
+                replicate_count=config.paired_bootstrap_replicates,
+                confidence_level=config.paired_bootstrap_confidence,
+            ),
+        )
+        baseline_diagnostics = _evaluate_predictions(
+            control_val_pred.probabilities,
+            [study.labels for study in control_val_pred.studies],
+            cohort.target_names,
+        )
+        candidate_diagnostics = _evaluate_predictions(
+            reloaded_val_pred.probabilities,
+            [study.labels for study in reloaded_val_pred.studies],
+            cohort.target_names,
+        )
+        comparison["secondary_masked_bce"] = {
+            "baseline": baseline_diagnostics["mean_binary_cross_entropy"],
+            "candidate": candidate_diagnostics["mean_binary_cross_entropy"],
+            "delta": (
+                candidate_diagnostics["mean_binary_cross_entropy"]
+                - baseline_diagnostics["mean_binary_cross_entropy"]
+            ),
+        }
+        decision = _plane_gate_decision(comparison, config)
+        validation_predictions_path = artifact_dir / "validation-predictions.csv"
+        _write_paired_validation_predictions(
+            validation_predictions_path,
+            control_val_pred,
+            reloaded_val_pred,
+            cohort.target_names,
+        )
+
+    submission_prediction = (
+        _predict_combined_submission(
+            model=reloaded_model,
+            submission_inputs=submission_inputs,
+            indexed=test_index,
+            work_root=artifact_dir,
+            preprocessing=config.preprocessing,
+            priors=priors,
+            mixed_precision=config.mixed_precision,
+            device=device,
+        )
+        if run_test_inference
+        else None
     )
 
     report_path = artifact_dir / "training-report.json"
+    peak_cuda_memory = (
+        torch.cuda.max_memory_allocated(device) if torch.cuda.is_available() else 0
+    )
     report_data = {
         "schema_version": _COMBINED_REPORT_SCHEMA_VERSION,
         "status": "complete",
+        "implementation": dict(source_provenance or {}),
+        "configuration": _combined_config_record(config),
         "cohort": {
             "rule_version": _COMBINED_COHORT_RULE_VERSION,
             "digest": cohort.digest,
@@ -1156,16 +1441,107 @@ def run_combined_baseline(
             "non_gold_studies": cohort.non_gold_study_count,
             "per_target": cohort.per_target,
         },
+        "model": {
+            **_model_report(model=reloaded_model, targets=cohort.target_names),
+            "zero_initialized_equivalence": initialization_equivalence,
+        },
+        "baseline_reproducibility": {
+            "control_commit": COMBINED_BASELINE_COMMIT,
+            "control_checkpoint_sha256": control_checkpoint_sha256,
+            "cohort_digest": cohort.digest,
+            "supervision_recipe": "organizer gold precedence plus frozen public verdicts",
+            "physical_dicom_ordering": "frozen selected_slices index",
+            "deterministic_slice_sampling": True,
+            "slice_to_series_reduction": "masked mean",
+            "encoder_input_changed": False,
+            "unavoidable_drift": None,
+        },
+        "controlled_comparison": (
+            {
+                "baseline_commit": COMBINED_BASELINE_COMMIT,
+                "baseline_checkpoint_sha256": control_checkpoint_sha256,
+                "validation_design": (
+                    "paired deterministic PatientID-disjoint split; no ready "
+                    "combined-supervision OOF artifact exists"
+                ),
+                "paired_validation_membership": True,
+                "validation_membership_digest": _validation_membership_digest(
+                    reloaded_val_pred.studies
+                ),
+                "validation_prediction_count": len(reloaded_val_pred.studies),
+                "validation_predictions_sha256": _sha256(
+                    cast(Path, validation_predictions_path)
+                ),
+                "metrics": comparison,
+                "decision": decision,
+                "leakage_safeguards": {
+                    "grouping_entity": "PatientID",
+                    "train_validation_patients_disjoint": (
+                        partition.train_patients.isdisjoint(partition.val_patients)
+                    ),
+                    "validation_studies_excluded_from_training": True,
+                    "organizer_gold_validation_studies_held_out": True,
+                },
+            }
+            if comparison is not None
+            else None
+        ),
         "partition_summary": partition.summary,
+        "plane_availability": {
+            "train": plane_availability(
+                training_index, [study.study_uid for study in partition.train_studies]
+            ),
+            "validation": plane_availability(
+                training_index, [study.study_uid for study in partition.val_studies]
+            ),
+            "test": plane_availability(test_index, submission_inputs.entity_ids),
+        },
         "training_execution": {
             "approved_gpu": approved_gpu,
             "cuda_readiness": cuda_evidence,
             "total_training_seconds": total_training_seconds,
             "epochs_completed": config.epochs,
             "epoch_logs": epoch_logs,
-            "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(device)
-            if torch.cuda.is_available()
-            else 0,
+            "control_validation_decode_seconds": (
+                control_val_pred.decode_seconds
+                if control_val_pred is not None
+                else None
+            ),
+            "control_validation_forward_seconds": (
+                control_val_pred.forward_seconds
+                if control_val_pred is not None
+                else None
+            ),
+            "candidate_validation_decode_seconds": reloaded_val_pred.decode_seconds,
+            "candidate_validation_forward_seconds": reloaded_val_pred.forward_seconds,
+            "peak_cuda_memory_bytes": peak_cuda_memory,
+            "baseline_resource_reference": {
+                "gpu": "Tesla T4",
+                "total_training_seconds": _BASELINE_TRAINING_SECONDS,
+                "peak_cuda_memory_bytes": _BASELINE_PEAK_CUDA_MEMORY_BYTES,
+                "throughput": "not recorded for #27",
+            },
+            "resource_comparison": {
+                "training_time_ratio_vs_27": (
+                    total_training_seconds / _BASELINE_TRAINING_SECONDS
+                ),
+                "peak_memory_ratio_vs_27": (
+                    peak_cuda_memory / _BASELINE_PEAK_CUDA_MEMORY_BYTES
+                ),
+                "paired_validation_forward_time_ratio": (
+                    reloaded_val_pred.forward_seconds / control_val_pred.forward_seconds
+                    if control_val_pred is not None
+                    and control_val_pred.forward_seconds > 0
+                    else None
+                ),
+                "material_difference_threshold_fraction": 0.10,
+                "material_training_time_difference": (
+                    abs(total_training_seconds / _BASELINE_TRAINING_SECONDS - 1) > 0.10
+                ),
+                "material_peak_memory_difference": (
+                    abs(peak_cuda_memory / _BASELINE_PEAK_CUDA_MEMORY_BYTES - 1) > 0.10
+                ),
+            },
         },
         "checkpoint": {
             "path": checkpoint_path.name,
@@ -1175,14 +1551,27 @@ def run_combined_baseline(
             "max_reload_absolute_diff": max_diff,
             "reload_reproducible": True,
         },
-        "submission": {
-            "path": submission_prediction.artifacts.submission_path.name,
-            "sha256": _sha256(submission_prediction.artifacts.submission_path),
-            "prediction_count": submission_prediction.prediction_count,
-            "fallback_count": submission_prediction.fallback_count,
-            "inference_seconds": submission_prediction.inference_seconds,
-        },
+        "submission": (
+            {
+                "path": submission_prediction.artifacts.submission_path.name,
+                "sha256": _sha256(submission_prediction.artifacts.submission_path),
+                "prediction_count": submission_prediction.prediction_count,
+                "fallback_count": submission_prediction.fallback_count,
+                "inference_seconds": submission_prediction.inference_seconds,
+            }
+            if submission_prediction is not None
+            else {
+                "status": "not_run",
+                "reason": "separate hidden-test inference approval required",
+            }
+        ),
         "runtime": runtime_record(),
+        "interpretation_risks": [
+            "weak-label/protocol confounding",
+            "plane identity may be too coarse without sequence properties",
+            "the backbone may already infer plane implicitly",
+            "small validation effects may be unstable",
+        ],
     }
     report_path.write_text(
         json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1208,9 +1597,16 @@ def run_combined_baseline(
         artifacts=[
             checkpoint_path,
             report_path,
-            submission_prediction.artifacts.submission_path,
-            submission_prediction.artifacts.fallbacks_path,
-            submission_prediction.artifacts.validation_report_path,
+            *(
+                [
+                    submission_prediction.artifacts.submission_path,
+                    submission_prediction.artifacts.fallbacks_path,
+                    submission_prediction.artifacts.validation_report_path,
+                ]
+                if submission_prediction is not None
+                else []
+            ),
+            *([validation_predictions_path] if validation_predictions_path else []),
         ],
         artifact_root=artifact_dir,
     )
@@ -1219,8 +1615,16 @@ def run_combined_baseline(
         artifact_dir=artifact_dir,
         checkpoint_path=checkpoint_path,
         report_path=report_path,
-        submission_path=submission_prediction.artifacts.submission_path,
-        validation_report_path=submission_prediction.artifacts.validation_report_path,
+        submission_path=(
+            submission_prediction.artifacts.submission_path
+            if submission_prediction is not None
+            else None
+        ),
+        validation_report_path=(
+            submission_prediction.artifacts.validation_report_path
+            if submission_prediction is not None
+            else None
+        ),
         manifest_path=manifest_path,
     )
 
@@ -1251,9 +1655,15 @@ def load_combined_checkpoint(
         "artifact_hashes",
         "rng_state",
     }
+    schema_version = checkpoint.get("checkpoint_schema_version")
+    if schema_version == _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION:
+        required.add("aggregation")
     if set(checkpoint) != required:
         raise ValueError("Combined checkpoint fields are incomplete or unexpected")
-    if checkpoint["checkpoint_schema_version"] != _COMBINED_CHECKPOINT_SCHEMA_VERSION:
+    if schema_version not in {
+        _COMBINED_CHECKPOINT_SCHEMA_VERSION,
+        _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION,
+    }:
         raise ValueError("Unsupported combined checkpoint schema")
     targets = checkpoint["targets"]
     if (
@@ -1262,7 +1672,13 @@ def load_combined_checkpoint(
         or not all(isinstance(target, str) and target for target in targets)
     ):
         raise TypeError("Checkpoint targets are malformed")
-    model = _new_uninitialized_model(len(targets))
+    aggregation: StudyAggregation = "mean"
+    if schema_version == _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION:
+        aggregation_record = checkpoint.get("aggregation")
+        if aggregation_record != _plane_gate_metadata(targets):
+            raise ValueError("Plane-gated checkpoint metadata is incompatible")
+        aggregation = "target_plane_gate"
+    model = _new_uninitialized_model(len(targets), aggregation=aggregation)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.to(device)
     return model, checkpoint
@@ -1309,6 +1725,99 @@ def verify_combined_baseline_artifact(artifact_dir: Path) -> dict[str, Any]:
             "epochs_completed"
         ),
         "total_studies": report.get("cohort", {}).get("total_studies"),
+    }
+
+
+def verify_plane_gating_artifact(artifact_dir: Path) -> dict[str, Any]:
+    """Verify a completed local/remote #28 training and paired-validation artifact."""
+    required = (
+        artifact_dir / "checkpoint.pt",
+        artifact_dir / "training-report.json",
+        artifact_dir / "run-manifest.json",
+        artifact_dir / "validation-predictions.csv",
+    )
+    for path in required:
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing plane-gating artifact: {path.name}")
+    report = json.loads((artifact_dir / "training-report.json").read_text())
+    manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
+    if manifest.get("schema_version") != 1:
+        raise ValueError("Plane-gating manifest schema is invalid")
+    records = manifest.get("artifacts")
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) or not isinstance(record.get("path"), str)
+        for record in records
+    ):
+        raise TypeError("Plane-gating manifest artifact records are malformed")
+    typed_records = cast(list[dict[str, Any]], records)
+    if {record["path"] for record in typed_records} != {
+        "checkpoint.pt",
+        "training-report.json",
+        "validation-predictions.csv",
+    }:
+        raise ValueError("Plane-gating manifest artifact inventory is invalid")
+    for record in typed_records:
+        path = artifact_dir / record["path"]
+        if (
+            not path.is_file()
+            or record.get("sha256") != _sha256(path)
+            or record.get("size_bytes") != path.stat().st_size
+        ):
+            raise ValueError(
+                f"Plane-gating artifact does not match manifest: {path.name}"
+            )
+    model = report.get("model")
+    comparison = report.get("controlled_comparison")
+    if (
+        report.get("status") != "complete"
+        or not isinstance(model, dict)
+        or model.get("aggregation") != "target_plane_gate"
+        or model.get("learned_aggregation_scalars") != 36
+        or not isinstance(model.get("zero_initialized_equivalence"), dict)
+        or model["zero_initialized_equivalence"].get("passed") is not True
+        or not isinstance(comparison, dict)
+        or comparison.get("paired_validation_membership") is not True
+        or comparison.get("validation_predictions_sha256")
+        != _sha256(artifact_dir / "validation-predictions.csv")
+        or not isinstance(comparison.get("metrics"), dict)
+        or not isinstance(comparison.get("decision"), dict)
+        or comparison["decision"].get("result") not in {"keep", "reject"}
+        or report.get("submission")
+        != {
+            "status": "not_run",
+            "reason": "separate hidden-test inference approval required",
+        }
+    ):
+        raise ValueError("Plane-gating report is incomplete or inconsistent")
+    checkpoint_path = artifact_dir / "checkpoint.pt"
+    checkpoint_model, checkpoint = load_verified_plane_gated_checkpoint(
+        checkpoint_path,
+        device=torch.device("cpu"),
+        expected_sha256=_sha256(checkpoint_path),
+    )
+    if checkpoint_model.aggregation != "target_plane_gate" or checkpoint.get(
+        "aggregation"
+    ) != _plane_gate_metadata(checkpoint["targets"]):
+        raise ValueError("Plane-gating checkpoint identity is invalid")
+    if checkpoint.get("configuration") != report.get("configuration") or manifest.get(
+        "configuration"
+    ) != report.get("configuration"):
+        raise ValueError("Plane-gating configuration provenance differs")
+    implementation = report.get("implementation")
+    source = manifest.get("source")
+    if (
+        not isinstance(implementation, dict)
+        or not isinstance(source, dict)
+        or any(source.get(key) != value for key, value in implementation.items())
+    ):
+        raise ValueError("Plane-gating source provenance differs")
+    return {
+        "valid": True,
+        "checkpoint_sha256": _sha256(artifact_dir / "checkpoint.pt"),
+        "validation_predictions_sha256": _sha256(
+            artifact_dir / "validation-predictions.csv"
+        ),
+        "decision": comparison.get("decision"),
     }
 
 
@@ -1472,12 +1981,22 @@ def _predict_combined_submission(
             pixels = decoded.pixels.unsqueeze(0).to(device)
             slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
             series_mask = decoded.series_mask.unsqueeze(0).to(device)
+            plane_indices = (
+                decoded.plane_indices
+                if decoded.plane_indices is not None
+                else torch.full_like(decoded.series_mask, -1, dtype=torch.long)
+            )
+            plane_indices = plane_indices.unsqueeze(0).to(device)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.float16,
                 enabled=mixed_precision and device.type == "cuda",
             ):
-                probabilities = torch.sigmoid(model(pixels, slice_mask, series_mask))[0]
+                probabilities = torch.sigmoid(
+                    model(pixels, slice_mask, series_mask, plane_indices)
+                    if getattr(model, "aggregation", "mean") == "target_plane_gate"
+                    else model(pixels, slice_mask, series_mask)
+                )[0]
             predictions[study_uid] = tuple(
                 float(value) for value in probabilities.float().cpu()
             )
@@ -1514,7 +2033,7 @@ def _predict_combined_submission(
 
 
 def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]:
-    return {
+    record: dict[str, object] = {
         "preprocessing": asdict(config.preprocessing),
         "training": {
             "epochs": config.epochs,
@@ -1534,6 +2053,189 @@ def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]
             "reload_absolute_tolerance": config.reload_absolute_tolerance,
         },
     }
+    if config.aggregation != "mean":
+        record["model"] = {"aggregation": config.aggregation}
+        cast(dict[str, object], record["validation"]).update(
+            {
+                "paired_bootstrap_method": PAIRED_BOOTSTRAP_METHOD_VERSION,
+                "paired_bootstrap_seed": config.paired_bootstrap_seed,
+                "paired_bootstrap_replicates": config.paired_bootstrap_replicates,
+                "paired_bootstrap_confidence": config.paired_bootstrap_confidence,
+                "minimum_macro_auc_delta": config.minimum_macro_auc_delta,
+                "minimum_bootstrap_positive_fraction": (
+                    config.minimum_bootstrap_positive_fraction
+                ),
+                "large_target_regression": config.large_target_regression,
+            }
+        )
+    return record
+
+
+def _baseline_config_record(config: CombinedBaselineConfig) -> dict[str, object]:
+    record = _combined_config_record(config)
+    record.pop("model", None)
+    record["validation"] = {
+        "reload_absolute_tolerance": config.reload_absolute_tolerance
+    }
+    return record
+
+
+def _discover_control_checkpoint(input_root: Path) -> Path:
+    return discover_combined_checkpoint(input_root)
+
+
+def _write_paired_validation_predictions(
+    path: Path,
+    baseline: PartitionPrediction,
+    candidate: PartitionPrediction,
+    targets: Sequence[str],
+) -> None:
+    columns = ["StudyInstanceUID", "PatientID"]
+    for target in targets:
+        columns.extend(
+            (f"{target}__label", f"{target}__baseline", f"{target}__plane_gate")
+        )
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(columns)
+        for base_study, candidate_study, base_values, candidate_values in zip(
+            baseline.studies,
+            candidate.studies,
+            baseline.probabilities,
+            candidate.probabilities,
+            strict=True,
+        ):
+            if (
+                base_study.study_uid != candidate_study.study_uid
+                or base_study.patient_id != candidate_study.patient_id
+                or tuple(base_study.labels) != tuple(candidate_study.labels)
+            ):
+                raise RuntimeError("Paired validation rows differ")
+            values: list[object] = [base_study.study_uid, base_study.patient_id]
+            for label, base_value, candidate_value in zip(
+                base_study.labels, base_values, candidate_values, strict=True
+            ):
+                values.extend(
+                    ("" if label is None else label, base_value, candidate_value)
+                )
+            writer.writerow(values)
+
+
+def _plane_gate_decision(
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+) -> dict[str, object]:
+    delta = comparison["delta"]["official_macro_auc"]
+    uncertainty = comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"]
+    positive_fraction = uncertainty["fraction_positive"]
+    target_deltas = {
+        target: record["delta_roc_auc"]
+        for target, record in comparison["delta"]["per_target"].items()
+    }
+    non_decreasing = sum(
+        value is not None and value >= 0 for value in target_deltas.values()
+    )
+    large_regressions = sorted(
+        target
+        for target, value in target_deltas.items()
+        if value is not None and value < -config.large_target_regression
+    )
+    keep = (
+        delta is not None
+        and delta >= config.minimum_macro_auc_delta
+        and positive_fraction is not None
+        and positive_fraction >= config.minimum_bootstrap_positive_fraction
+    )
+    return {
+        "result": "keep" if keep else "reject",
+        "minimum_macro_auc_delta": config.minimum_macro_auc_delta,
+        "minimum_bootstrap_positive_fraction": (
+            config.minimum_bootstrap_positive_fraction
+        ),
+        "targets_non_decreasing": non_decreasing,
+        "ideal_targets_non_decreasing": 8,
+        "large_regression_threshold": config.large_target_regression,
+        "large_regression_targets": large_regressions,
+        "open_sequence_aware_issue_29": keep,
+    }
+
+
+def plane_availability(
+    indexed: Mapping[str, IndexedStudy], study_uids: Sequence[str]
+) -> dict[str, int]:
+    counts = Counter(
+        series.plane or "unresolved"
+        for study_uid in study_uids
+        for series in indexed[study_uid].series
+    )
+    return {
+        "total": sum(counts.values()),
+        **{plane: counts[plane] for plane in ANATOMICAL_PLANES},
+        "unresolved": counts["unresolved"],
+    }
+
+
+def _plane_gate_metadata(targets: Sequence[str]) -> dict[str, object]:
+    return {
+        "kind": "target_plane_gate",
+        "target_order": list(targets),
+        "plane_order": list(ANATOMICAL_PLANES),
+        "parameterization": "exp(log_weight)",
+        "initial_log_weight": 0.0,
+        "unresolved_plane_weight": 1.0,
+        "learned_scalar_count": len(targets) * len(ANATOMICAL_PLANES),
+    }
+
+
+def _model_report(*, model: GoldResNet18, targets: Sequence[str]) -> dict[str, object]:
+    if model.plane_gate is None:
+        return {"aggregation": "mean", "learned_aggregation_scalars": 0}
+    gate = model.plane_gate
+    values = gate.effective_weights().cpu().tolist()
+    return {
+        "aggregation": "target_plane_gate",
+        "learned_aggregation_scalars": sum(
+            parameter.numel() for parameter in gate.parameters()
+        ),
+        "unresolved_plane_weight": 1.0,
+        "effective_plane_weights": {
+            target: dict(zip(ANATOMICAL_PLANES, row, strict=True))
+            for target, row in zip(targets, values, strict=True)
+        },
+        "encoder_forward_pass_change": 0,
+        "encoder_backward_pass_change": 0,
+    }
+
+
+def _zero_gate_equivalence(model: GoldResNet18) -> dict[str, object]:
+    if model.plane_gate is None:
+        raise ValueError("Equivalence probe requires plane-gated aggregation")
+    target_count = model.head.out_features
+    series_logits = torch.arange(4 * target_count, dtype=torch.float32).view(
+        1, 4, target_count
+    )
+    series_mask = torch.tensor([[True, True, True, False]])
+    plane_indices = torch.tensor([[0, 0, -1, 2]])
+    with torch.no_grad():
+        gated = model.plane_gate(series_logits, series_mask, plane_indices)
+    baseline = series_logits[:, :3].mean(dim=1)
+    max_diff = float((gated - baseline).abs().max())
+    return {
+        "probe": "fixed series logits with duplicate sagittal, unresolved, and padding",
+        "max_absolute_difference": max_diff,
+        "tolerance": 1e-6,
+        "passed": max_diff <= 1e-6,
+    }
+
+
+def _validation_membership_digest(
+    studies: Sequence[PartitionStudy],
+) -> str:
+    digest = hashlib.sha256()
+    for study in studies:
+        digest.update(
+            _canonical_json([study.study_uid, study.patient_id, "val"]) + b"\n"
+        )
+    return digest.hexdigest()
 
 
 def _verify_accepted_index(
@@ -1705,6 +2407,14 @@ def _nonnegative_int(parent: Mapping[str, Any], key: str) -> int:
     return value
 
 
+def _optional_nonnegative_int(parent: Mapping[str, Any], key: str, default: int) -> int:
+    return default if key not in parent else _nonnegative_int(parent, key)
+
+
+def _optional_positive_int(parent: Mapping[str, Any], key: str, default: int) -> int:
+    return default if key not in parent else _positive_int(parent, key)
+
+
 def _number(parent: Mapping[str, Any], key: str) -> float:
     value = parent.get(key)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1715,11 +2425,21 @@ def _number(parent: Mapping[str, Any], key: str) -> float:
     return result
 
 
+def _optional_number(parent: Mapping[str, Any], key: str, default: float) -> float:
+    return default if key not in parent else _number(parent, key)
+
+
 def _positive_number(parent: Mapping[str, Any], key: str) -> float:
     value = _number(parent, key)
     if value <= 0:
         raise ValueError(f"Field {key} must be positive")
     return value
+
+
+def _optional_positive_number(
+    parent: Mapping[str, Any], key: str, default: float
+) -> float:
+    return default if key not in parent else _positive_number(parent, key)
 
 
 def _nonnegative_number(parent: Mapping[str, Any], key: str) -> float:
