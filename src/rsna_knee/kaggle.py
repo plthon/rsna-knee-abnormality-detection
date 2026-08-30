@@ -128,13 +128,25 @@ class WheelDataset:
 
 
 @dataclass(frozen=True, slots=True)
+class WeightDataset:
+    root: Path
+    weight_path: Path
+    contract_path: Path
+    provenance_path: Path
+    metadata_path: Path
+
+
+type AttachedDataset = WheelDataset | WeightDataset
+
+
+@dataclass(frozen=True, slots=True)
 class KaggleBundle:
     root: Path
     kernel_root: Path
     notebook_path: Path
     kernel_metadata_path: Path
     provenance_path: Path
-    dataset: WheelDataset | None = None
+    dataset: AttachedDataset | None = None
 
 
 def build_kaggle_bundle(
@@ -142,7 +154,7 @@ def build_kaggle_bundle(
     output_root: Path,
     spec: KaggleSpec,
     *,
-    dataset: WheelDataset | None = None,
+    dataset: AttachedDataset | None = None,
     gpu_approved: bool = False,
 ) -> KaggleBundle:
     """Render one validated notebook bundle without contacting Kaggle."""
@@ -209,7 +221,9 @@ def build_kaggle_bundle(
                     "metadata_sha256": _sha256(metadata_path),
                 },
                 "config_sha256": (
-                    _sha256(dataset.config_path) if dataset is not None else None
+                    _sha256(dataset.config_path)
+                    if isinstance(dataset, WheelDataset)
+                    else None
                 ),
                 "dataset_id": _dataset_id(dataset),
                 "validator": spec.validator,
@@ -238,8 +252,15 @@ def load_kaggle_bundle(root: Path) -> KaggleBundle:
     code_file = metadata.get("code_file")
     if not isinstance(code_file, str):
         raise TypeError("Kaggle metadata code_file is malformed")
-    dataset_root = root / "wheel-dataset"
-    dataset = _load_wheel_dataset(dataset_root) if dataset_root.is_dir() else None
+    wheel_dataset_root = root / "wheel-dataset"
+    weight_dataset_root = root / "weight-dataset"
+    if wheel_dataset_root.is_dir() and weight_dataset_root.is_dir():
+        raise ValueError("Kaggle bundle cannot contain two managed Datasets")
+    dataset: AttachedDataset | None = None
+    if wheel_dataset_root.is_dir():
+        dataset = _load_wheel_dataset(wheel_dataset_root)
+    elif weight_dataset_root.is_dir():
+        dataset = _load_weight_dataset(weight_dataset_root)
     return KaggleBundle(
         root=root,
         kernel_root=kernel_root,
@@ -421,6 +442,68 @@ def build_wheel_dataset(
         metadata_path=metadata_path,
         config_path=copied_config_path,
     )
+
+
+def build_dinov2_weight_dataset(
+    project_root: Path,
+    output_root: Path,
+    *,
+    weight_path: Path,
+) -> WeightDataset:
+    """Package the exact offline DINOv2 bytes as a private Kaggle Dataset."""
+    contract_source = project_root / "contracts" / "dinov2-vits14-lvd142m.json"
+    dataset_id, weight_record = _weight_dataset_contract(contract_source)
+    if (
+        not weight_path.is_file()
+        or weight_path.stat().st_size != weight_record["size_bytes"]
+        or _sha256(weight_path) != weight_record["sha256"]
+    ):
+        raise ValueError("DINOv2 weight artifact differs from the frozen contract")
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    copied_weight_path = output_root / str(weight_record["filename"])
+    copied_contract_path = output_root / contract_source.name
+    shutil.copy2(weight_path, copied_weight_path)
+    shutil.copy2(contract_source, copied_contract_path)
+    metadata_path = output_root / "dataset-metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            _dataset_metadata(
+                dataset_id,
+                description=(
+                    "Private offline Meta DINOv2 ViT-S/14 LVD-142M initialization "
+                    "artifact for the controlled RSNA Knee experiment."
+                ),
+                title="DINOv2 ViT-S/14 LVD-142M",
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    provenance_path = output_root / "weight-provenance.json"
+    provenance_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": dataset_id,
+                "contract_sha256": _sha256(copied_contract_path),
+                "weight": weight_record,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    dataset = WeightDataset(
+        root=output_root,
+        weight_path=copied_weight_path,
+        contract_path=copied_contract_path,
+        provenance_path=provenance_path,
+        metadata_path=metadata_path,
+    )
+    _validate_weight_dataset(dataset)
+    return dataset
 
 
 def build_public_notebook_bundle(project_root: Path, output_root: Path) -> KaggleBundle:
@@ -782,6 +865,7 @@ def build_dinov2_training_bundle(
     project_root: Path,
     output_root: Path,
     *,
+    weight_path: Path,
     kernel_id: str = "plthon/rsna-knee-dinov2-vit-s-14",
     gpu_approved: bool = False,
 ) -> KaggleBundle:
@@ -798,6 +882,11 @@ def build_dinov2_training_bundle(
     git_commit, git_dirty = _git_state(project_root)
     if git_dirty:
         raise ValueError("DINOv2 training requires a clean committed Git revision")
+    weight_dataset = build_dinov2_weight_dataset(
+        project_root,
+        output_root / "weight-dataset",
+        weight_path=weight_path,
+    )
     bundle = build_kaggle_bundle(
         project_root,
         output_root,
@@ -825,6 +914,7 @@ def build_dinov2_training_bundle(
             package_contracts=contract_names,
             validator="dinov2_training",
         ),
+        dataset=weight_dataset,
         gpu_approved=gpu_approved,
     )
     return _record_rendered_notebook_hash(bundle, label="DINOv2 training")
@@ -1129,11 +1219,16 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
     elif validator == "source_comparison":
         _validate_source_comparison_source(_notebook_source(source))
     if bundle.dataset is not None:
-        if provenance.get("config_sha256") != _sha256(bundle.dataset.config_path):
-            raise ValueError("Configuration digest does not match the rendered bundle")
         if _dataset_id(bundle.dataset) not in metadata.get("dataset_sources", []):
             raise ValueError("Attached Dataset is missing from kernel metadata")
-        _validate_wheel_dataset(bundle.dataset)
+        if isinstance(bundle.dataset, WheelDataset):
+            if provenance.get("config_sha256") != _sha256(bundle.dataset.config_path):
+                raise ValueError(
+                    "Configuration digest does not match the rendered bundle"
+                )
+            _validate_wheel_dataset(bundle.dataset)
+        else:
+            _validate_weight_dataset(bundle.dataset)
     return gpu_value == "true"
 
 
@@ -1157,6 +1252,56 @@ def _validate_wheel_dataset(dataset: WheelDataset) -> None:
     _require_pure_python_wheel(dataset.wheel_path)
 
 
+def _validate_weight_dataset(dataset: WeightDataset) -> None:
+    metadata = json.loads(dataset.metadata_path.read_text())
+    dataset_id, weight_record = _weight_dataset_contract(dataset.contract_path)
+    provenance = json.loads(dataset.provenance_path.read_text())
+    if (
+        metadata.get("id") != dataset_id
+        or metadata.get("isPublic") is not None
+        or provenance
+        != {
+            "schema_version": 1,
+            "dataset_id": dataset_id,
+            "contract_sha256": _sha256(dataset.contract_path),
+            "weight": weight_record,
+        }
+        or dataset.weight_path.name != weight_record["filename"]
+        or not dataset.weight_path.is_file()
+        or dataset.weight_path.stat().st_size != weight_record["size_bytes"]
+        or _sha256(dataset.weight_path) != weight_record["sha256"]
+    ):
+        raise ValueError("DINOv2 weight Dataset differs from the frozen contract")
+
+
+def _weight_dataset_contract(path: Path) -> tuple[str, dict[str, object]]:
+    contract = json.loads(path.read_text())
+    artifact = contract.get("artifact")
+    offline_input = contract.get("offline_kaggle_input")
+    if not isinstance(artifact, dict) or not isinstance(offline_input, dict):
+        raise TypeError("DINOv2 weight contract is malformed")
+    filename = artifact.get("filename")
+    sha256 = artifact.get("sha256")
+    size_bytes = artifact.get("size_bytes")
+    dataset_id = offline_input.get("dataset_id")
+    if (
+        not isinstance(filename, str)
+        or Path(filename).name != filename
+        or not isinstance(sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        or type(size_bytes) is not int
+        or size_bytes <= 0
+        or not isinstance(dataset_id, str)
+    ):
+        raise TypeError("DINOv2 weight contract fields are malformed")
+    _require_resolved_kaggle_id(dataset_id)
+    return dataset_id, {
+        "filename": filename,
+        "sha256": sha256,
+        "size_bytes": size_bytes,
+    }
+
+
 def _load_wheel_dataset(root: Path) -> WheelDataset:
     wheels = list(root.glob("*.whl"))
     if len(wheels) != 1:
@@ -1173,7 +1318,19 @@ def _load_wheel_dataset(root: Path) -> WheelDataset:
     )
 
 
-def _dataset_id(dataset: WheelDataset | None) -> str | None:
+def _load_weight_dataset(root: Path) -> WeightDataset:
+    contract_path = root / "dinov2-vits14-lvd142m.json"
+    _, weight_record = _weight_dataset_contract(contract_path)
+    return WeightDataset(
+        root=root,
+        weight_path=root / str(weight_record["filename"]),
+        contract_path=contract_path,
+        provenance_path=root / "weight-provenance.json",
+        metadata_path=root / "dataset-metadata.json",
+    )
+
+
+def _dataset_id(dataset: AttachedDataset | None) -> str | None:
     if dataset is None:
         return None
     value = json.loads(dataset.metadata_path.read_text()).get("id")
@@ -1217,7 +1374,7 @@ def _dataset_metadata(
 
 
 def _wait_for_dataset_ready(
-    dataset: WheelDataset,
+    dataset: AttachedDataset,
     *,
     runner: CommandRunner,
     wait: Waiter,

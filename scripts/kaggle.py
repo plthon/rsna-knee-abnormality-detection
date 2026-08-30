@@ -58,6 +58,7 @@ def main() -> None:
     build.add_argument("--checkpoint-dataset-id")
     build.add_argument("--checkpoint-sha256")
     build.add_argument("--approve-retained-gate", action="store_true")
+    build.add_argument("--weight-path", type=Path)
 
     push = subparsers.add_parser("push", help="push a previously built bundle")
     push.add_argument("bundle", type=Path)
@@ -127,9 +128,12 @@ def main() -> None:
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "dinov2-training":
+            if arguments.weight_path is None:
+                parser.error("dinov2-training requires --weight-path")
             bundle = build_dinov2_training_bundle(
                 project_root,
                 arguments.output,
+                weight_path=arguments.weight_path,
                 kernel_id=arguments.kernel_id or "plthon/rsna-knee-dinov2-vit-s-14",
                 gpu_approved=arguments.approve_gpu,
             )

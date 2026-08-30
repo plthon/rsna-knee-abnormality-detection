@@ -14,9 +14,11 @@ import pytest
 
 from rsna_knee.kaggle import (
     KaggleSpec,
+    WeightDataset,
     WheelDataset,
     build_dinov2_scoring_bundle,
     build_dinov2_training_bundle,
+    build_dinov2_weight_dataset,
     build_kaggle_bundle,
     build_plane_gated_scoring_bundle,
     build_plane_gating_bundle,
@@ -25,6 +27,7 @@ from rsna_knee.kaggle import (
     build_report_source_comparison_bundle,
     build_reports_bundle,
     build_wheel_dataset,
+    load_kaggle_bundle,
     pull_kaggle_output,
     push_kaggle_bundle,
 )
@@ -72,6 +75,90 @@ def _attached_dataset(
         ),
         config_path,
     )
+
+
+def _attached_weight_dataset(root: Path) -> WeightDataset:
+    root.mkdir(parents=True, exist_ok=True)
+    weight_path = root / "dinov2_vits14_pretrain.pth"
+    weight_path.write_bytes(b"verified-test-weights")
+    weight_sha256 = hashlib.sha256(weight_path.read_bytes()).hexdigest()
+    contract_path = root / "dinov2-vits14-lvd142m.json"
+    contract_path.write_text(
+        json.dumps(
+            {
+                "artifact": {
+                    "filename": weight_path.name,
+                    "sha256": weight_sha256,
+                    "size_bytes": weight_path.stat().st_size,
+                },
+                "offline_kaggle_input": {"dataset_id": "plthon/dinov2-vits14-lvd142m"},
+            }
+        )
+    )
+    metadata_path = root / "dataset-metadata.json"
+    metadata_path.write_text(json.dumps({"id": "plthon/dinov2-vits14-lvd142m"}))
+    provenance_path = root / "weight-provenance.json"
+    provenance_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset_id": "plthon/dinov2-vits14-lvd142m",
+                "contract_sha256": hashlib.sha256(
+                    contract_path.read_bytes()
+                ).hexdigest(),
+                "weight": {
+                    "filename": weight_path.name,
+                    "sha256": weight_sha256,
+                    "size_bytes": weight_path.stat().st_size,
+                },
+            }
+        )
+    )
+    return WeightDataset(
+        root=root,
+        weight_path=weight_path,
+        contract_path=contract_path,
+        provenance_path=provenance_path,
+        metadata_path=metadata_path,
+    )
+
+
+def test_dinov2_weight_dataset_requires_and_packages_exact_contract_bytes(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    contracts = project / "contracts"
+    contracts.mkdir(parents=True)
+    source_path = tmp_path / "dinov2_vits14_pretrain.pth"
+    source_path.write_bytes(b"verified-test-weights")
+    contract = {
+        "artifact": {
+            "filename": source_path.name,
+            "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "size_bytes": source_path.stat().st_size,
+        },
+        "offline_kaggle_input": {"dataset_id": "plthon/dinov2-vits14-lvd142m"},
+    }
+    (contracts / "dinov2-vits14-lvd142m.json").write_text(json.dumps(contract))
+
+    dataset = build_dinov2_weight_dataset(
+        project, tmp_path / "dataset", weight_path=source_path
+    )
+
+    assert dataset.weight_path.read_bytes() == source_path.read_bytes()
+    assert json.loads(dataset.metadata_path.read_text())["id"] == (
+        "plthon/dinov2-vits14-lvd142m"
+    )
+    assert (
+        json.loads(dataset.provenance_path.read_text())["weight"]
+        == contract["artifact"]
+    )
+
+    source_path.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="DINOv2 weight artifact"):
+        build_dinov2_weight_dataset(
+            project, tmp_path / "rejected", weight_path=source_path
+        )
 
 
 def test_kaggle_boundary_renders_safe_metadata_and_requires_remote_approval(
@@ -872,13 +959,27 @@ def test_dinov2_training_bundle_is_clean_offline_and_training_only(
 ) -> None:
     project = Path(__file__).parents[1]
     output = tmp_path / "dinov2-training"
+    weight_path = tmp_path / "dinov2_vits14_pretrain.pth"
+    weight_path.write_bytes(b"verified-test-weights")
     monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, True))
     with pytest.raises(ValueError, match="clean committed Git revision"):
-        build_dinov2_training_bundle(project, output, gpu_approved=True)
+        build_dinov2_training_bundle(
+            project, output, weight_path=weight_path, gpu_approved=True
+        )
     assert not output.exists()
 
     monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, False))
-    bundle = build_dinov2_training_bundle(project, output, gpu_approved=True)
+    monkeypatch.setattr(
+        "rsna_knee.kaggle.build_dinov2_weight_dataset",
+        lambda project_root, output_root, *, weight_path: _attached_weight_dataset(
+            output_root
+        ),
+    )
+    bundle = build_dinov2_training_bundle(
+        project, output, weight_path=weight_path, gpu_approved=True
+    )
+    assert isinstance(bundle.dataset, WeightDataset)
+    assert bundle.dataset.weight_path.name == "dinov2_vits14_pretrain.pth"
     metadata = json.loads(bundle.kernel_metadata_path.read_text())
     assert metadata["enable_internet"] == "false"
     assert metadata["dataset_sources"] == [
@@ -892,6 +993,27 @@ def test_dinov2_training_bundle_is_clean_offline_and_training_only(
     assert "run_test_inference=False" in source
     assert "run_combined_scoring" not in source
     assert 'GIT_DIRTY = json.loads("false")' in source
+
+    loaded = load_kaggle_bundle(output)
+    assert isinstance(loaded.dataset, WeightDataset)
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> CompletedProcess[str]:
+        calls.append(command)
+        return CompletedProcess(command, 0, stdout="ready")
+
+    push_kaggle_bundle(
+        loaded,
+        approved=True,
+        gpu_approved=True,
+        runner=runner,
+        wait=lambda _: None,
+    )
+    assert calls == [
+        ["kaggle", "datasets", "create", "-p", str(loaded.dataset.root)],
+        ["kaggle", "datasets", "status", "plthon/dinov2-vits14-lvd142m"],
+        ["kaggle", "kernels", "push", "-p", str(loaded.kernel_root)],
+    ]
 
 
 def test_dinov2_scoring_bundle_requires_retained_validation_checkpoint(

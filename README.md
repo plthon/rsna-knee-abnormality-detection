@@ -95,7 +95,7 @@ uv run python scripts/kaggle.py build ordering
 uv run --extra training python scripts/kaggle.py build baseline --approve-gpu
 uv run --extra training python scripts/kaggle.py build combined-scoring --approve-gpu
 uv run --extra training python scripts/kaggle.py build plane-gating --approve-gpu
-uv run --extra training python scripts/kaggle.py build dinov2-training --approve-gpu
+uv run --extra training python scripts/kaggle.py build dinov2-training --weight-path /path/to/dinov2_vits14_pretrain.pth --approve-gpu
 uv run python scripts/kaggle.py push build/kaggle/public-dicom-ordering \
   --approve-remote
 ```
@@ -107,7 +107,9 @@ default; the command never changes visibility or publishes a public resource.
 The plane-gating bundle stops after paired validation. Its separate scoring
 bundle additionally requires a recorded keep decision, exact checkpoint hash,
 and checkpoint Dataset ID.
-The DINOv2 training bundle has the same stop point and additionally refuses to
+The DINOv2 training bundle packages the hash-verified weights as a managed
+private Dataset; its guarded push waits for that Dataset before starting the
+kernel. It has the same stop point and additionally refuses to
 build from a dirty Git revision. Its scoring bundle is available only after the
 precommitted validation keep rule passes.
 
