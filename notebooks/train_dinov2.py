@@ -9,9 +9,12 @@
 import base64
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
+
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 GPU_APPROVED = json.loads("__RSNA_KNEE_APPROVED_GPU__")
 GIT_DIRTY = json.loads("__RSNA_KNEE_GIT_DIRTY__")
@@ -50,6 +53,7 @@ source_provenance = {
     "jupytext_source_sha256": "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__",
     "rendered_notebook_sha256": "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__",
     "config_sha256": hashlib.sha256(CONFIG_BYTES).hexdigest(),
+    "pytorch_allocator_configuration": os.environ["PYTORCH_ALLOC_CONF"],
 }
 outcome = run_combined_baseline(
     input_root=input_root,

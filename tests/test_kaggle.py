@@ -993,6 +993,11 @@ def test_dinov2_training_bundle_is_clean_offline_and_training_only(
     assert "run_test_inference=False" in source
     assert "run_combined_scoring" not in source
     assert 'GIT_DIRTY = json.loads("false")' in source
+    allocator_config = 'os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"'
+    assert allocator_config in source
+    assert source.index(allocator_config) < source.index(
+        "from rsna_knee.combined_supervision import"
+    )
 
     loaded = load_kaggle_bundle(output)
     assert isinstance(loaded.dataset, WeightDataset)

@@ -1529,6 +1529,7 @@ def _validate_plane_gated_scoring_source(source: str) -> None:
 
 def _validate_dinov2_training_source(source: str) -> None:
     required = (
+        'os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"',
         'config.architecture != "dinov2_vits14"',
         "discover_combined_checkpoint",
         "run_combined_baseline",

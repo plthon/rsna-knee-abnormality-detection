@@ -38,7 +38,9 @@ slice-to-series-to-study means. Its official LVD-142M artifact is hash-verified
 before a local, network-free ViT-S/14 is constructed. An approved Tesla T4 run
 proved that batch 16 does not fit, so the candidate uses a micro-batch of four
 with four-step gradient accumulation to preserve the effective batch size of
-16. No completed validation or hidden-test result has been produced yet.
+16. A later variable-size batch fragmented 2.51 GiB of reserved CUDA memory, so
+the training notebook enables expandable allocator segments before importing
+PyTorch. No completed validation or hidden-test result has been produced yet.
 
 The recorded gold-only run reports macro AUC 0.6111 on a frozen holdout of four
 patients. Its PatientID bootstrap has 9,065 undefined macro-AUC replicates out
