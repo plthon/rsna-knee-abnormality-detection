@@ -32,6 +32,7 @@ packages = ["src/rsna_knee"]
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/competition.json" = "rsna_knee/competition.json"
 "contracts/report-weak-supervision-v1.json" = "rsna_knee/report-weak-supervision-v1.json"
+"contracts/dinov2-vits14-lvd142m.json" = "rsna_knee/dinov2-vits14-lvd142m.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

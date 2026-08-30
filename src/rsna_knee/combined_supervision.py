@@ -27,6 +27,7 @@ from .competition_contract import (
     load_verified_submission_contract,
 )
 from .config import PreprocessingConfig
+from .dinov2 import DINOV2_VITS14_FEATURE_COUNT
 from .holdout import (
     PAIRED_BOOTSTRAP_METHOD_VERSION,
     PatientBootstrapConfig,
@@ -43,13 +44,14 @@ from .submission import (
 )
 from .training import (
     ANATOMICAL_PLANES,
-    GoldResNet18,
     IndexedStudy,
     Label,
     PartitionPrediction,
     PartitionStudy,
     StudyAggregation,
+    StudyClassifier,
     _new_uninitialized_model,
+    build_dinov2_initialized_model,
     build_initialized_model,
     decode_study,
     load_indexed_studies,
@@ -76,12 +78,14 @@ PUBLIC_VERDICT_TO_LABEL: Mapping[str, Label] = _PUBLIC_VERDICT_TO_LABEL
 
 _COMBINED_CHECKPOINT_SCHEMA_VERSION = 1
 _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION = 2
+_DINOV2_CHECKPOINT_SCHEMA_VERSION = 3
 _COMBINED_REPORT_SCHEMA_VERSION = 1
 _COMBINED_COHORT_RULE_VERSION = "gold-plus-public-verdicts-v1"
 _COMBINED_COHORT_DIGEST_VERSION = "combined-gold-public-cohort-jsonl-v1"
 _COMBINED_SPLIT_RULE_VERSION = "patient-hash-disjoint-v1"
 _ARTIFACT_DIRECTORY = "rsna-knee-combined-baseline-v1"
 _PLANE_GATED_ARTIFACT_DIRECTORY = "rsna-knee-plane-gating-v1"
+_DINOV2_ARTIFACT_DIRECTORY = "rsna-knee-dinov2-vits14-v1"
 _SCORING_ARTIFACT_DIRECTORY = "rsna-knee-scoring-v1"
 COMBINED_BASELINE_CHECKPOINT_SHA256 = (
     "1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4"
@@ -168,6 +172,7 @@ class CombinedBaselineConfig:
     preprocessing: PreprocessingConfig
     epochs: int
     batch_size: int
+    gradient_accumulation_steps: int
     learning_rate: float
     weight_decay: float
     seed: int
@@ -184,6 +189,10 @@ class CombinedBaselineConfig:
     minimum_macro_auc_delta: float = 0.005
     minimum_bootstrap_positive_fraction: float = 0.95
     large_target_regression: float = 0.02
+
+    @property
+    def effective_batch_size(self) -> int:
+        return self.batch_size * self.gradient_accumulation_steps
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +249,9 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         preprocessing=preprocessing,
         epochs=_positive_int(training_raw, "epochs"),
         batch_size=_positive_int(training_raw, "batch_size"),
+        gradient_accumulation_steps=_optional_positive_int(
+            training_raw, "gradient_accumulation_steps", 1
+        ),
         learning_rate=_positive_number(training_raw, "learning_rate"),
         weight_decay=_nonnegative_number(training_raw, "weight_decay"),
         seed=_nonnegative_int(training_raw, "seed"),
@@ -277,10 +289,18 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         raise ValueError("Preprocessing percentiles are invalid")
     if preprocessing.image_size != 224:
         raise ValueError("Baseline requires 224 by 224 pixel inputs")
-    if config.architecture != "torchvision.models.resnet18":
-        raise ValueError("Baseline requires exactly torchvision ResNet-18")
-    if config.weight_identity != "ResNet18_Weights.IMAGENET1K_V1":
+    supported_backbones = {
+        "torchvision.models.resnet18": "ResNet18_Weights.IMAGENET1K_V1",
+        "dinov2_vits14": "dinov2_vits14.LVD142M",
+    }
+    if config.architecture not in supported_backbones:
+        raise ValueError("Configuration names an unsupported backbone")
+    if config.weight_identity != supported_backbones[config.architecture]:
         raise ValueError("Unexpected initialization weight identity")
+    if config.architecture == "dinov2_vits14" and config.aggregation != "mean":
+        raise ValueError("DINOv2 requires ordinary mean aggregation")
+    if config.effective_batch_size != 16:
+        raise ValueError("Combined training requires effective batch size 16")
     if not 0 < config.val_fraction < 1:
         raise ValueError("val_fraction must be between 0 and 1")
     if not 0 < config.paired_bootstrap_confidence < 1:
@@ -296,6 +316,7 @@ def discover_combined_training_inputs(
     index_artifact_dir: Path | None = None,
     public_dataset_root: Path | None = None,
     weight_path: Path | None = None,
+    architecture: str = "torchvision.models.resnet18",
 ) -> CombinedTrainingInputs:
     """Discover competition data, index artifact, ImageNet weight, and public labels."""
     competition_root = discover_submission_inputs(input_root).competition_root
@@ -329,7 +350,12 @@ def discover_combined_training_inputs(
         index_verification = "rebuilt_verified_artifact"
 
     if weight_path is None:
-        contract, _ = _load_json_contract("resnet18-imagenet1k-v1.json", None)
+        contract_name = (
+            "dinov2-vits14-lvd142m.json"
+            if architecture == "dinov2_vits14"
+            else "resnet18-imagenet1k-v1.json"
+        )
+        contract, _ = _load_json_contract(contract_name, None)
         artifact = _mapping(contract, "artifact")
         expected_name = _text(artifact, "filename")
         expected_size = _positive_int(artifact, "size_bytes")
@@ -343,7 +369,7 @@ def discover_combined_training_inputs(
         ]
         if len(weight_candidates) != 1:
             raise ValueError(
-                "Expected exactly one offline ResNet-18 artifact with the approved hash"
+                "Expected exactly one offline initialization artifact with the approved hash"
             )
         resolved_weight_path = weight_candidates[0]
     else:
@@ -647,7 +673,7 @@ def load_verified_combined_checkpoint(
     device: torch.device,
     contract_path: Path | None = None,
     expected_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
-) -> tuple[GoldResNet18, dict[str, Any]]:
+) -> tuple[StudyClassifier, dict[str, Any]]:
     """Verify the frozen checkpoint before deserializing it for scoring."""
     if not path.is_file():
         raise FileNotFoundError(f"Missing checkpoint: {path}")
@@ -721,7 +747,7 @@ def load_verified_plane_gated_checkpoint(
     device: torch.device,
     expected_sha256: str,
     contract_path: Path | None = None,
-) -> tuple[GoldResNet18, dict[str, Any]]:
+) -> tuple[StudyClassifier, dict[str, Any]]:
     """Verify a retained #28 checkpoint before hidden-test inference."""
     if not path.is_file() or _sha256(path) != expected_sha256:
         raise ValueError("Plane-gated checkpoint SHA-256 mismatch")
@@ -812,6 +838,76 @@ def load_verified_plane_gated_checkpoint(
     return model, checkpoint
 
 
+def load_verified_dinov2_checkpoint(
+    path: Path,
+    *,
+    device: torch.device,
+    expected_sha256: str,
+    contract_path: Path | None = None,
+) -> tuple[StudyClassifier, dict[str, Any]]:
+    """Verify one retained DINOv2 checkpoint before hidden-test inference."""
+    if not path.is_file() or _sha256(path) != expected_sha256:
+        raise ValueError("DINOv2 checkpoint SHA-256 mismatch")
+    model, checkpoint = load_combined_checkpoint(path, device=device)
+    targets = load_verified_submission_contract(contract_path).target_names
+    if checkpoint.get("targets") != list(targets):
+        raise ValueError("DINOv2 checkpoint target order differs from competition")
+    if checkpoint.get("checkpoint_schema_version") != _DINOV2_CHECKPOINT_SCHEMA_VERSION:
+        raise ValueError("DINOv2 checkpoint schema is incompatible")
+    if checkpoint.get("preprocessing") != {
+        "slice_count": 8,
+        "lower_percentile": 1.0,
+        "upper_percentile": 99.0,
+        "image_size": 224,
+        "shared_contract": "preprocess_series_result",
+        "channel_adapter": "grayscale_repeat_to_rgb",
+        "imagenet_mean": [0.485, 0.456, 0.406],
+        "imagenet_std": [0.229, 0.224, 0.225],
+    }:
+        raise ValueError("DINOv2 checkpoint preprocessing is incompatible")
+    if checkpoint.get("completed_epochs") != 3:
+        raise ValueError("DINOv2 checkpoint epoch count is incompatible")
+    if checkpoint.get("cohort") != {
+        "selection_rule_version": _COMBINED_COHORT_RULE_VERSION,
+        "digest": "b066a7e6cd7119f4bef330a006a86a0e08e664d7b5347a111ec781e72abe1fdc",
+        "gold_study_count": 58,
+        "non_gold_study_count": 4349,
+        "total_study_count": 4407,
+    } or checkpoint.get("partition") != {
+        "split_rule_version": _COMBINED_SPLIT_RULE_VERSION,
+        "split_seed": 20260825,
+        "val_fraction": 0.1,
+        "train_study_count": 3957,
+        "val_study_count": 450,
+    }:
+        raise ValueError("DINOv2 checkpoint cohort/partition is incompatible")
+    if not _is_expected_dinov2_configuration(checkpoint.get("configuration")):
+        raise ValueError("DINOv2 checkpoint configuration is incompatible")
+    priors = checkpoint.get("priors")
+    if (
+        not isinstance(priors, list)
+        or len(priors) != len(targets)
+        or any(not _is_probability(value) for value in priors)
+    ):
+        raise ValueError("DINOv2 checkpoint fallback priors are incompatible")
+    initialization_contract, initialization_contract_sha256 = _load_json_contract(
+        "dinov2-vits14-lvd142m.json", None
+    )
+    artifact = _mapping(initialization_contract, "artifact")
+    initialization = checkpoint.get("initialization")
+    backbone = checkpoint.get("backbone")
+    if (
+        not isinstance(initialization, dict)
+        or initialization.get("artifact_sha256") != artifact.get("sha256")
+        or initialization.get("artifact_size_bytes") != artifact.get("size_bytes")
+        or initialization.get("contract_sha256") != initialization_contract_sha256
+        or not isinstance(backbone, dict)
+        or backbone.get("initialization_artifact_sha256") != artifact.get("sha256")
+    ):
+        raise ValueError("DINOv2 checkpoint initialization is incompatible")
+    return model, checkpoint
+
+
 def _expected_baseline_configuration() -> dict[str, object]:
     return {
         "preprocessing": {
@@ -835,6 +931,64 @@ def _expected_baseline_configuration() -> dict[str, object]:
     }
 
 
+def _expected_dinov2_configuration() -> dict[str, object]:
+    return {
+        "preprocessing": {
+            "slice_count": 8,
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "image_size": 224,
+        },
+        "training": {
+            "epochs": 3,
+            "batch_size": 16,
+            "gradient_accumulation_steps": 1,
+            "effective_batch_size": 16,
+            "learning_rate": 0.0001,
+            "weight_decay": 0.0001,
+            "seed": 20260825,
+            "mixed_precision": True,
+            "architecture": "dinov2_vits14",
+            "weight_identity": "dinov2_vits14.LVD142M",
+        },
+        "split": {"val_fraction": 0.1, "split_seed": 20260825},
+        "validation": {
+            "reload_absolute_tolerance": 1e-5,
+            "paired_bootstrap_method": PAIRED_BOOTSTRAP_METHOD_VERSION,
+            "paired_bootstrap_seed": 20260825,
+            "paired_bootstrap_replicates": 10_000,
+            "paired_bootstrap_confidence": 0.95,
+            "minimum_macro_auc_delta": 0.005,
+            "minimum_bootstrap_positive_fraction": 0.95,
+            "large_target_regression": 0.02,
+        },
+    }
+
+
+def _is_expected_dinov2_configuration(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("training"), dict):
+        return False
+    training = cast(dict[str, object], value["training"])
+    batch_size = training.get("batch_size")
+    accumulation = training.get("gradient_accumulation_steps")
+    if (
+        type(batch_size) is not int
+        or type(accumulation) is not int
+        or not 0 < batch_size <= 16
+        or accumulation <= 0
+        or batch_size * accumulation != 16
+        or training.get("effective_batch_size") != 16
+    ):
+        return False
+    normalized = dict(value)
+    normalized["training"] = {
+        **training,
+        "batch_size": 16,
+        "gradient_accumulation_steps": 1,
+    }
+    return normalized == _expected_dinov2_configuration()
+
+
 def run_combined_scoring(
     *,
     input_root: Path,
@@ -847,6 +1001,7 @@ def run_combined_scoring(
     competition_contract_path: Path | None = None,
     aggregation: StudyAggregation = "mean",
     expected_checkpoint_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
+    backbone: Literal["resnet18", "dinov2_vits14"] = "resnet18",
 ) -> CombinedScoringOutcome:
     """Run inference-only scoring against the live competition test mount."""
     checkpoint = checkpoint_path or (
@@ -856,7 +1011,18 @@ def run_combined_scoring(
             input_root, expected_sha256=expected_checkpoint_sha256
         )
     )
-    if aggregation == "target_plane_gate":
+    if backbone == "dinov2_vits14":
+        if aggregation != "mean":
+            raise ValueError("DINOv2 scoring requires ordinary mean aggregation")
+        model, checkpoint_payload = load_verified_dinov2_checkpoint(
+            checkpoint,
+            device=torch.device("cpu"),
+            expected_sha256=expected_checkpoint_sha256,
+            contract_path=competition_contract_path,
+        )
+    elif backbone != "resnet18":
+        raise ValueError("Unsupported scoring backbone")
+    elif aggregation == "target_plane_gate":
         model, checkpoint_payload = load_verified_plane_gated_checkpoint(
             checkpoint,
             device=torch.device("cpu"),
@@ -954,6 +1120,7 @@ def run_combined_scoring(
                     "sha256": _sha256(checkpoint),
                     "targets": list(submission_inputs.contract.target_names),
                     "aggregation": aggregation,
+                    "backbone": backbone,
                 },
                 "live_test": {
                     "study_count": len(submission_inputs.entity_ids),
@@ -1002,6 +1169,7 @@ def run_combined_scoring(
         },
         configuration={
             "mode": "inference_only",
+            "backbone": backbone,
             "target_order": list(submission_inputs.contract.target_names),
             "preprocessing": asdict(preprocessing),
         },
@@ -1054,6 +1222,7 @@ def run_combined_baseline(
         index_artifact_dir=index_artifact_dir,
         public_dataset_root=public_dataset_root,
         weight_path=weight_path,
+        architecture=config.architecture,
     )
     submission_inputs = discover_submission_inputs(input_root)
     if submission_inputs.competition_root != inputs.competition_root:
@@ -1095,14 +1264,20 @@ def run_combined_baseline(
 
     control_val_pred = None
     control_checkpoint_sha256 = None
-    if config.aggregation == "target_plane_gate":
+    control_parameter_count = None
+    control_checkpoint_size_bytes = None
+    controlled_experiment = (
+        config.aggregation == "target_plane_gate"
+        or config.architecture == "dinov2_vits14"
+    )
+    if controlled_experiment:
         if control_checkpoint_path is None:
             control_checkpoint_path = _discover_control_checkpoint(input_root)
         control_model, control_checkpoint = load_verified_combined_checkpoint(
             control_checkpoint_path, device=device
         )
-        if control_checkpoint["configuration"] != _baseline_config_record(config):
-            raise ValueError("Plane-gating control configuration differs from #27")
+        if control_checkpoint["configuration"] != _expected_baseline_configuration():
+            raise ValueError("Control checkpoint configuration differs from #27")
         control_val_pred = predict_partition(
             model=control_model,
             indexed=training_index,
@@ -1112,16 +1287,24 @@ def run_combined_baseline(
             device=device,
         )
         control_checkpoint_sha256 = _sha256(control_checkpoint_path)
+        control_parameter_count = sum(
+            parameter.numel() for parameter in control_model.parameters()
+        )
+        control_checkpoint_size_bytes = control_checkpoint_path.stat().st_size
         del control_model
         torch.cuda.empty_cache()
     elif control_checkpoint_path is not None:
         raise ValueError("A baseline run does not accept a separate control checkpoint")
 
-    if config.aggregation != "mean" and pretrained_checkpoint_path is not None:
+    if controlled_experiment and pretrained_checkpoint_path is not None:
         raise ValueError(
-            "A plane-gated run must initialize from the frozen ImageNet weights"
+            "A controlled experiment must initialize from its frozen pretrained weights"
         )
-    if config.aggregation == "mean" and pretrained_checkpoint_path is None:
+    if (
+        config.architecture == "torchvision.models.resnet18"
+        and config.aggregation == "mean"
+        and pretrained_checkpoint_path is None
+    ):
         candidate_paths = (
             input_root / "rsna-knee-combined-baseline-checkpoint" / "checkpoint.pt",
             input_root
@@ -1136,9 +1319,13 @@ def run_combined_baseline(
                 break
 
     artifact_dir = work_root / (
-        _PLANE_GATED_ARTIFACT_DIRECTORY
-        if config.aggregation == "target_plane_gate"
-        else _ARTIFACT_DIRECTORY
+        _DINOV2_ARTIFACT_DIRECTORY
+        if config.architecture == "dinov2_vits14"
+        else (
+            _PLANE_GATED_ARTIFACT_DIRECTORY
+            if config.aggregation == "target_plane_gate"
+            else _ARTIFACT_DIRECTORY
+        )
     )
     artifact_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = artifact_dir / "checkpoint.pt"
@@ -1170,14 +1357,25 @@ def run_combined_baseline(
             }
         ]
     else:
-        model, initialization = build_initialized_model(
-            inputs.weight_path,
-            cohort.target_names,
-            aggregation=config.aggregation,
-        )
+        if config.architecture == "dinov2_vits14":
+            model, initialization = build_dinov2_initialized_model(
+                inputs.weight_path, cohort.target_names
+            )
+        else:
+            model, initialization = build_initialized_model(
+                inputs.weight_path,
+                cohort.target_names,
+                aggregation=config.aggregation,
+            )
         if config.aggregation == "target_plane_gate":
             initialization_equivalence = _zero_gate_equivalence(model)
         initialization_sha256 = initialization.sha256
+        initialization_record = {
+            "contract": initialization.contract,
+            "contract_sha256": initialization.contract_sha256,
+            "artifact_sha256": initialization.sha256,
+            "artifact_size_bytes": initialization.size_bytes,
+        }
         model.to(device)
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -1210,6 +1408,7 @@ def run_combined_baseline(
                 device=device,
                 epoch=epoch,
                 collect_diagnostics=False,
+                gradient_accumulation_steps=config.gradient_accumulation_steps,
             )
 
             val_pred = predict_partition(
@@ -1249,9 +1448,13 @@ def run_combined_baseline(
 
         checkpoint_payload = {
             "checkpoint_schema_version": (
-                _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION
-                if config.aggregation == "target_plane_gate"
-                else _COMBINED_CHECKPOINT_SCHEMA_VERSION
+                _DINOV2_CHECKPOINT_SCHEMA_VERSION
+                if config.architecture == "dinov2_vits14"
+                else (
+                    _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION
+                    if config.aggregation == "target_plane_gate"
+                    else _COMBINED_CHECKPOINT_SCHEMA_VERSION
+                )
             ),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -1311,6 +1514,12 @@ def run_combined_baseline(
             checkpoint_payload["aggregation"] = _plane_gate_metadata(
                 cohort.target_names
             )
+        elif config.architecture == "dinov2_vits14":
+            checkpoint_payload["backbone"] = {
+                "identity": "dinov2_vits14",
+                "feature_count": DINOV2_VITS14_FEATURE_COUNT,
+                "initialization_artifact_sha256": initialization.sha256,
+            }
         save_checkpoint(checkpoint_path, checkpoint_payload)
 
     pre_reload_val_pred = predict_partition(
@@ -1366,9 +1575,9 @@ def run_combined_baseline(
     validation_predictions_path = None
     if control_val_pred is not None:
         control_uids = tuple(study.study_uid for study in control_val_pred.studies)
-        gated_uids = tuple(study.study_uid for study in reloaded_val_pred.studies)
-        if control_uids != gated_uids:
-            raise RuntimeError("Control and plane-gated validation membership differs")
+        candidate_uids = tuple(study.study_uid for study in reloaded_val_pred.studies)
+        if control_uids != candidate_uids:
+            raise RuntimeError("Control and candidate validation membership differs")
         comparison = evaluate_paired_auc_delta(
             patient_ids=[study.patient_id for study in reloaded_val_pred.studies],
             labels=[study.labels for study in reloaded_val_pred.studies],
@@ -1400,13 +1609,22 @@ def run_combined_baseline(
                 - baseline_diagnostics["mean_binary_cross_entropy"]
             ),
         }
-        decision = _plane_gate_decision(comparison, config)
+        decision = (
+            _dinov2_decision(comparison, config)
+            if config.architecture == "dinov2_vits14"
+            else _plane_gate_decision(comparison, config)
+        )
         validation_predictions_path = artifact_dir / "validation-predictions.csv"
         _write_paired_validation_predictions(
             validation_predictions_path,
             control_val_pred,
             reloaded_val_pred,
             cohort.target_names,
+            candidate_name=(
+                "dinov2_vits14"
+                if config.architecture == "dinov2_vits14"
+                else "plane_gate"
+            ),
         )
 
     submission_prediction = (
@@ -1428,6 +1646,21 @@ def run_combined_baseline(
     peak_cuda_memory = (
         torch.cuda.max_memory_allocated(device) if torch.cuda.is_available() else 0
     )
+    parameter_count = sum(
+        parameter.numel() for parameter in reloaded_model.parameters()
+    )
+    checkpoint_size_bytes = checkpoint_path.stat().st_size
+    valid_training_slices = sum(
+        cast(int, record.get("valid_training_slices", 0)) for record in epoch_logs
+    )
+    training_slice_seconds = sum(
+        cast(float, record.get("train_seconds", 0.0)) for record in epoch_logs
+    )
+    training_slices_per_second = (
+        valid_training_slices / training_slice_seconds
+        if training_slice_seconds > 0 and valid_training_slices > 0
+        else None
+    )
     report_data = {
         "schema_version": _COMBINED_REPORT_SCHEMA_VERSION,
         "status": "complete",
@@ -1443,18 +1676,42 @@ def run_combined_baseline(
         },
         "model": {
             **_model_report(model=reloaded_model, targets=cohort.target_names),
+            "backbone": config.architecture,
+            "feature_count": reloaded_model.feature_count,
+            "parameter_count": parameter_count,
+            "head": "linear_12_target",
             "zero_initialized_equivalence": initialization_equivalence,
         },
+        "initialization": initialization_record,
         "baseline_reproducibility": {
             "control_commit": COMBINED_BASELINE_COMMIT,
             "control_checkpoint_sha256": control_checkpoint_sha256,
+            "control_configuration": (
+                _expected_baseline_configuration() if controlled_experiment else None
+            ),
             "cohort_digest": cohort.digest,
             "supervision_recipe": "organizer gold precedence plus frozen public verdicts",
             "physical_dicom_ordering": "frozen selected_slices index",
             "deterministic_slice_sampling": True,
             "slice_to_series_reduction": "masked mean",
             "encoder_input_changed": False,
-            "unavoidable_drift": None,
+            "encoder_changed": config.architecture == "dinov2_vits14",
+            "unavoidable_drift": (
+                {
+                    "baseline_micro_batch_size": 16,
+                    "candidate_micro_batch_size": config.batch_size,
+                    "gradient_accumulation_steps": (config.gradient_accumulation_steps),
+                    "effective_batch_size_preserved": (
+                        config.effective_batch_size == 16
+                    ),
+                    "reason": (
+                        "DINOv2 did not fit baseline micro-batch size on the "
+                        "approved GPU"
+                    ),
+                }
+                if config.architecture == "dinov2_vits14" and config.batch_size != 16
+                else None
+            ),
         },
         "controlled_comparison": (
             {
@@ -1501,6 +1758,9 @@ def run_combined_baseline(
             "cuda_readiness": cuda_evidence,
             "total_training_seconds": total_training_seconds,
             "epochs_completed": config.epochs,
+            "micro_batch_size": config.batch_size,
+            "gradient_accumulation_steps": config.gradient_accumulation_steps,
+            "effective_batch_size": config.effective_batch_size,
             "epoch_logs": epoch_logs,
             "control_validation_decode_seconds": (
                 control_val_pred.decode_seconds
@@ -1514,14 +1774,35 @@ def run_combined_baseline(
             ),
             "candidate_validation_decode_seconds": reloaded_val_pred.decode_seconds,
             "candidate_validation_forward_seconds": reloaded_val_pred.forward_seconds,
+            "hidden_test_inference_estimate_seconds": (
+                _retained_hidden_test_inference_estimate(
+                    decision=decision,
+                    validation_study_count=len(reloaded_val_pred.studies),
+                    validation_seconds=(
+                        reloaded_val_pred.decode_seconds
+                        + reloaded_val_pred.forward_seconds
+                    ),
+                    hidden_test_study_count=len(submission_inputs.entity_ids),
+                )
+            ),
             "peak_cuda_memory_bytes": peak_cuda_memory,
             "baseline_resource_reference": {
                 "gpu": "Tesla T4",
                 "total_training_seconds": _BASELINE_TRAINING_SECONDS,
                 "peak_cuda_memory_bytes": _BASELINE_PEAK_CUDA_MEMORY_BYTES,
-                "throughput": "not recorded for #27",
+                "valid_training_slices": None,
+                "training_slices_per_second": None,
+                "throughput_evidence": "not recorded for #27",
+                "parameter_count": control_parameter_count,
+                "checkpoint_size_bytes": control_checkpoint_size_bytes,
             },
             "resource_comparison": {
+                "candidate": {
+                    "valid_training_slices": valid_training_slices,
+                    "training_slices_per_second": training_slices_per_second,
+                    "parameter_count": parameter_count,
+                    "checkpoint_size_bytes": checkpoint_size_bytes,
+                },
                 "training_time_ratio_vs_27": (
                     total_training_seconds / _BASELINE_TRAINING_SECONDS
                 ),
@@ -1546,7 +1827,7 @@ def run_combined_baseline(
         "checkpoint": {
             "path": checkpoint_path.name,
             "sha256": _sha256(checkpoint_path),
-            "size_bytes": checkpoint_path.stat().st_size,
+            "size_bytes": checkpoint_size_bytes,
             "reloaded_before_inference": True,
             "max_reload_absolute_diff": max_diff,
             "reload_reproducible": True,
@@ -1566,12 +1847,20 @@ def run_combined_baseline(
             }
         ),
         "runtime": runtime_record(),
-        "interpretation_risks": [
-            "weak-label/protocol confounding",
-            "plane identity may be too coarse without sequence properties",
-            "the backbone may already infer plane implicitly",
-            "small validation effects may be unstable",
-        ],
+        "interpretation_risks": (
+            [
+                "weak-label/protocol confounding",
+                "DINOv2 may require backbone-specific optimization beyond this one controlled run",
+                "small validation effects may be unstable",
+            ]
+            if config.architecture == "dinov2_vits14"
+            else [
+                "weak-label/protocol confounding",
+                "plane identity may be too coarse without sequence properties",
+                "the backbone may already infer plane implicitly",
+                "small validation effects may be unstable",
+            ]
+        ),
     }
     report_path.write_text(
         json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1580,7 +1869,12 @@ def run_combined_baseline(
     manifest_path = artifact_dir / "run-manifest.json"
     write_run_manifest(
         manifest_path,
-        run_id=run_id or create_run_id("combined-baseline"),
+        run_id=run_id
+        or create_run_id(
+            "dinov2-vits14"
+            if config.architecture == "dinov2_vits14"
+            else "combined-baseline"
+        ),
         source={
             **dict(source_provenance or {}),
             "competition_contract_sha256": cohort.gold_contract_sha256,
@@ -1631,7 +1925,7 @@ def run_combined_baseline(
 
 def load_combined_checkpoint(
     path: Path, *, device: torch.device
-) -> tuple[GoldResNet18, dict[str, Any]]:
+) -> tuple[StudyClassifier, dict[str, Any]]:
     """Load and validate combined supervision training checkpoint."""
     raw = torch.load(path, map_location=device, weights_only=False)
     if not isinstance(raw, dict):
@@ -1658,11 +1952,14 @@ def load_combined_checkpoint(
     schema_version = checkpoint.get("checkpoint_schema_version")
     if schema_version == _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION:
         required.add("aggregation")
+    elif schema_version == _DINOV2_CHECKPOINT_SCHEMA_VERSION:
+        required.add("backbone")
     if set(checkpoint) != required:
         raise ValueError("Combined checkpoint fields are incomplete or unexpected")
     if schema_version not in {
         _COMBINED_CHECKPOINT_SCHEMA_VERSION,
         _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION,
+        _DINOV2_CHECKPOINT_SCHEMA_VERSION,
     }:
         raise ValueError("Unsupported combined checkpoint schema")
     targets = checkpoint["targets"]
@@ -1678,7 +1975,36 @@ def load_combined_checkpoint(
         if aggregation_record != _plane_gate_metadata(targets):
             raise ValueError("Plane-gated checkpoint metadata is incompatible")
         aggregation = "target_plane_gate"
-    model = _new_uninitialized_model(len(targets), aggregation=aggregation)
+    if schema_version == _DINOV2_CHECKPOINT_SCHEMA_VERSION:
+        backbone = checkpoint.get("backbone")
+        configuration = checkpoint.get("configuration")
+        training = (
+            configuration.get("training") if isinstance(configuration, dict) else None
+        )
+        digest = (
+            backbone.get("initialization_artifact_sha256")
+            if isinstance(backbone, dict)
+            else None
+        )
+        if (
+            not isinstance(backbone, dict)
+            or set(backbone)
+            != {"identity", "feature_count", "initialization_artifact_sha256"}
+            or backbone.get("identity") != "dinov2_vits14"
+            or backbone.get("feature_count") != DINOV2_VITS14_FEATURE_COUNT
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or not isinstance(training, dict)
+            or training.get("architecture") != "dinov2_vits14"
+            or training.get("weight_identity") != "dinov2_vits14.LVD142M"
+        ):
+            raise ValueError("DINOv2 checkpoint backbone metadata is incompatible")
+        model = _new_uninitialized_model(
+            len(targets), aggregation=aggregation, architecture="dinov2_vits14"
+        )
+    else:
+        model = _new_uninitialized_model(len(targets), aggregation=aggregation)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.to(device)
     return model, checkpoint
@@ -1821,6 +2147,76 @@ def verify_plane_gating_artifact(artifact_dir: Path) -> dict[str, Any]:
     }
 
 
+def verify_dinov2_artifact(artifact_dir: Path) -> dict[str, Any]:
+    """Verify a completed #29 checkpoint and paired-validation artifact."""
+    required = (
+        artifact_dir / "checkpoint.pt",
+        artifact_dir / "training-report.json",
+        artifact_dir / "run-manifest.json",
+        artifact_dir / "validation-predictions.csv",
+    )
+    for path in required:
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing DINOv2 artifact: {path.name}")
+    report = json.loads((artifact_dir / "training-report.json").read_text())
+    manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
+    records = manifest.get("artifacts")
+    if not isinstance(records, list) or {
+        record.get("path") for record in records if isinstance(record, dict)
+    } != {"checkpoint.pt", "training-report.json", "validation-predictions.csv"}:
+        raise ValueError("DINOv2 manifest artifact inventory is invalid")
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            raise TypeError("DINOv2 manifest artifact record is malformed")
+        path = artifact_dir / record["path"]
+        if (
+            not path.is_file()
+            or record.get("sha256") != _sha256(path)
+            or record.get("size_bytes") != path.stat().st_size
+        ):
+            raise ValueError(f"DINOv2 artifact does not match manifest: {path.name}")
+    model = report.get("model")
+    comparison = report.get("controlled_comparison")
+    submission = report.get("submission")
+    if (
+        report.get("status") != "complete"
+        or not isinstance(model, dict)
+        or model.get("backbone") != "dinov2_vits14"
+        or model.get("feature_count") != DINOV2_VITS14_FEATURE_COUNT
+        or model.get("aggregation") != "mean"
+        or model.get("learned_aggregation_scalars") != 0
+        or not isinstance(comparison, dict)
+        or comparison.get("paired_validation_membership") is not True
+        or not isinstance(comparison.get("metrics"), dict)
+        or not isinstance(comparison.get("decision"), dict)
+        or comparison["decision"].get("result") not in {"keep", "reject"}
+        or submission
+        != {
+            "status": "not_run",
+            "reason": "separate hidden-test inference approval required",
+        }
+    ):
+        raise ValueError("DINOv2 report is incomplete or inconsistent")
+    checkpoint_path = artifact_dir / "checkpoint.pt"
+    checkpoint_sha256 = _sha256(checkpoint_path)
+    _, checkpoint = load_verified_dinov2_checkpoint(
+        checkpoint_path,
+        device=torch.device("cpu"),
+        expected_sha256=checkpoint_sha256,
+    )
+    if checkpoint.get("targets") != list(
+        load_verified_submission_contract().target_names
+    ):
+        raise ValueError("DINOv2 checkpoint target order is invalid")
+    return {
+        "valid": True,
+        "run_id": manifest.get("run_id"),
+        "checkpoint_sha256": checkpoint_sha256,
+        "decision": comparison["decision"]["result"],
+        "validation_membership_digest": comparison.get("validation_membership_digest"),
+    }
+
+
 def _combined_cohort_digest(
     studies: Sequence[CombinedStudy],
     targets: Sequence[str],
@@ -1951,7 +2347,7 @@ def _evaluate_predictions(
 
 def _predict_combined_submission(
     *,
-    model: GoldResNet18,
+    model: StudyClassifier,
     submission_inputs: SubmissionInputs,
     indexed: Mapping[str, IndexedStudy],
     work_root: Path,
@@ -2033,18 +2429,29 @@ def _predict_combined_submission(
 
 
 def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]:
+    training: dict[str, object] = {
+        "epochs": config.epochs,
+        "batch_size": config.batch_size,
+        "learning_rate": config.learning_rate,
+        "weight_decay": config.weight_decay,
+        "seed": config.seed,
+        "mixed_precision": config.mixed_precision,
+        "architecture": config.architecture,
+        "weight_identity": config.weight_identity,
+    }
+    if (
+        config.gradient_accumulation_steps != 1
+        or config.architecture == "dinov2_vits14"
+    ):
+        training.update(
+            {
+                "gradient_accumulation_steps": config.gradient_accumulation_steps,
+                "effective_batch_size": config.effective_batch_size,
+            }
+        )
     record: dict[str, object] = {
         "preprocessing": asdict(config.preprocessing),
-        "training": {
-            "epochs": config.epochs,
-            "batch_size": config.batch_size,
-            "learning_rate": config.learning_rate,
-            "weight_decay": config.weight_decay,
-            "seed": config.seed,
-            "mixed_precision": config.mixed_precision,
-            "architecture": config.architecture,
-            "weight_identity": config.weight_identity,
-        },
+        "training": training,
         "split": {
             "val_fraction": config.val_fraction,
             "split_seed": config.split_seed,
@@ -2053,8 +2460,9 @@ def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]
             "reload_absolute_tolerance": config.reload_absolute_tolerance,
         },
     }
-    if config.aggregation != "mean":
-        record["model"] = {"aggregation": config.aggregation}
+    if config.aggregation != "mean" or config.architecture == "dinov2_vits14":
+        if config.aggregation != "mean":
+            record["model"] = {"aggregation": config.aggregation}
         cast(dict[str, object], record["validation"]).update(
             {
                 "paired_bootstrap_method": PAIRED_BOOTSTRAP_METHOD_VERSION,
@@ -2089,11 +2497,17 @@ def _write_paired_validation_predictions(
     baseline: PartitionPrediction,
     candidate: PartitionPrediction,
     targets: Sequence[str],
+    *,
+    candidate_name: str = "plane_gate",
 ) -> None:
     columns = ["StudyInstanceUID", "PatientID"]
     for target in targets:
         columns.extend(
-            (f"{target}__label", f"{target}__baseline", f"{target}__plane_gate")
+            (
+                f"{target}__label",
+                f"{target}__baseline",
+                f"{target}__{candidate_name}",
+            )
         )
     with path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
@@ -2159,6 +2573,61 @@ def _plane_gate_decision(
     }
 
 
+def _dinov2_decision(
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+) -> dict[str, object]:
+    delta = comparison["delta"]["official_macro_auc"]
+    uncertainty = comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"]
+    positive_fraction = uncertainty["fraction_positive"]
+    target_deltas = {
+        target: record["delta_roc_auc"]
+        for target, record in comparison["delta"]["per_target"].items()
+    }
+    non_decreasing = sum(
+        value is not None and value >= 0 for value in target_deltas.values()
+    )
+    large_regressions = sorted(
+        target
+        for target, value in target_deltas.items()
+        if value is not None and value < -config.large_target_regression
+    )
+    keep = (
+        delta is not None
+        and delta >= config.minimum_macro_auc_delta
+        and positive_fraction is not None
+        and positive_fraction >= config.minimum_bootstrap_positive_fraction
+        and not large_regressions
+    )
+    return {
+        "result": "keep" if keep else "reject",
+        "minimum_macro_auc_delta": config.minimum_macro_auc_delta,
+        "minimum_bootstrap_positive_fraction": (
+            config.minimum_bootstrap_positive_fraction
+        ),
+        "targets_non_decreasing": non_decreasing,
+        "ideal_targets_non_decreasing": 8,
+        "large_regression_threshold": config.large_target_regression,
+        "large_regression_targets": large_regressions,
+        "generic_backbone_recommendation": "continue" if keep else "stop",
+    }
+
+
+def _retained_hidden_test_inference_estimate(
+    *,
+    decision: Mapping[str, object] | None,
+    validation_study_count: int,
+    validation_seconds: float,
+    hidden_test_study_count: int,
+) -> float | None:
+    if (
+        decision is None
+        or decision.get("result") != "keep"
+        or validation_study_count <= 0
+    ):
+        return None
+    return validation_seconds * hidden_test_study_count / validation_study_count
+
+
 def plane_availability(
     indexed: Mapping[str, IndexedStudy], study_uids: Sequence[str]
 ) -> dict[str, int]:
@@ -2186,7 +2655,9 @@ def _plane_gate_metadata(targets: Sequence[str]) -> dict[str, object]:
     }
 
 
-def _model_report(*, model: GoldResNet18, targets: Sequence[str]) -> dict[str, object]:
+def _model_report(
+    *, model: StudyClassifier, targets: Sequence[str]
+) -> dict[str, object]:
     if model.plane_gate is None:
         return {"aggregation": "mean", "learned_aggregation_scalars": 0}
     gate = model.plane_gate
@@ -2206,7 +2677,7 @@ def _model_report(*, model: GoldResNet18, targets: Sequence[str]) -> dict[str, o
     }
 
 
-def _zero_gate_equivalence(model: GoldResNet18) -> dict[str, object]:
+def _zero_gate_equivalence(model: StudyClassifier) -> dict[str, object]:
     if model.plane_gate is None:
         raise ValueError("Equivalence probe requires plane-gated aggregation")
     target_count = model.head.out_features

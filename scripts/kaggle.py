@@ -5,6 +5,8 @@ from pathlib import Path
 from rsna_knee.kaggle import (
     build_combined_baseline_bundle,
     build_combined_scoring_bundle,
+    build_dinov2_scoring_bundle,
+    build_dinov2_training_bundle,
     build_plane_gated_scoring_bundle,
     build_plane_gating_bundle,
     build_public_baseline_bundle,
@@ -39,6 +41,8 @@ def main() -> None:
             "combined-scoring",
             "plane-gating",
             "plane-gating-scoring",
+            "dinov2-training",
+            "dinov2-scoring",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -81,6 +85,8 @@ def main() -> None:
                 "combined-scoring": "gold-public-scoring",
                 "plane-gating": "plane-gating",
                 "plane-gating-scoring": "plane-gated-scoring",
+                "dinov2-training": "dinov2-training",
+                "dinov2-scoring": "dinov2-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -95,19 +101,36 @@ def main() -> None:
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
                 gpu_approved=arguments.approve_gpu,
             )
-        elif arguments.target == "plane-gating-scoring":
+        elif arguments.target in {"plane-gating-scoring", "dinov2-scoring"}:
             if not arguments.checkpoint_dataset_id or not arguments.checkpoint_sha256:
                 parser.error(
-                    "plane-gating-scoring requires --checkpoint-dataset-id and "
+                    f"{arguments.target} requires --checkpoint-dataset-id and "
                     "--checkpoint-sha256"
                 )
-            bundle = build_plane_gated_scoring_bundle(
+            scoring_builder = (
+                build_dinov2_scoring_bundle
+                if arguments.target == "dinov2-scoring"
+                else build_plane_gated_scoring_bundle
+            )
+            bundle = scoring_builder(
                 project_root,
                 arguments.output,
                 checkpoint_dataset_id=arguments.checkpoint_dataset_id,
                 checkpoint_sha256=arguments.checkpoint_sha256,
                 validation_kept=arguments.approve_retained_gate,
-                kernel_id=arguments.kernel_id or "plthon/rsna-knee-plane-gated-scoring",
+                kernel_id=arguments.kernel_id
+                or (
+                    "plthon/rsna-knee-dinov2-scoring"
+                    if arguments.target == "dinov2-scoring"
+                    else "plthon/rsna-knee-plane-gated-scoring"
+                ),
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "dinov2-training":
+            bundle = build_dinov2_training_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id or "plthon/rsna-knee-dinov2-vit-s-14",
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target in {

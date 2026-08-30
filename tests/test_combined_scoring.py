@@ -2,7 +2,7 @@ import csv
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import numpy as np
 import pytest
@@ -45,8 +45,11 @@ class _MeanModel(nn.Module):
         return value.unsqueeze(1).repeat(1, len(TARGETS))
 
 
+@pytest.mark.parametrize("backbone", ("resnet18", "dinov2_vits14"))
 def test_scoring_uses_live_hidden_test_index_and_never_trains(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backbone: Literal["resnet18", "dinov2_vits14"],
 ) -> None:
     input_root = tmp_path / "input"
     competition_root = input_root / "competitions" / "rsna-knee-abnormality-detection"
@@ -118,6 +121,13 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         lambda path, *, device, contract_path=None: (_MeanModel(), payload),
     )
     monkeypatch.setattr(
+        "rsna_knee.combined_supervision.load_verified_dinov2_checkpoint",
+        lambda path, *, device, expected_sha256, contract_path=None: (
+            _MeanModel(),
+            payload,
+        ),
+    )
+    monkeypatch.setattr(
         "rsna_knee.combined_supervision.require_approved_cuda",
         lambda approved: {"approved": approved, "device_name": "CPU"},
     )
@@ -132,6 +142,7 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         approved_gpu=True,
         checkpoint_path=None,
         competition_contract_path=PROJECT_ROOT / "contracts/competition.json",
+        backbone=backbone,
     )
 
     indexed_rows = _read_csv(outcome.index_artifact_dir / "studies.csv")
@@ -145,6 +156,10 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
     assert not set(frozen_ids) & {row[0] for row in submission_rows[1:]}
     assert json.loads(outcome.scoring_report_path.read_text())["mode"] == (
         "inference_only"
+    )
+    assert (
+        json.loads(outcome.scoring_report_path.read_text())["checkpoint"]["backbone"]
+        == backbone
     )
     assert outcome.fallbacks_path.read_text() == "StudyInstanceUID,reason\n"
 

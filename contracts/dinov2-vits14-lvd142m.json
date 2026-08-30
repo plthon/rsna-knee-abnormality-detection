@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "backbone": "dinov2_vits14",
+    "feature_count": 384,
+    "implementation_commit": "7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+    "implementation_entrypoint": "dinov2.hub.backbones.dinov2_vits14",
+    "pretraining": "LVD-142M",
+    "register_tokens": 0
+  },
+  "artifact": {
+    "filename": "dinov2_vits14_pretrain.pth",
+    "sha256": "b938bf1bc15cd2ec0feacfe3a1bb553fe8ea9ca46a7e1d8d00217f29aef60cd9",
+    "size_bytes": 88283115,
+    "source_url": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
+  },
+  "upstream": {
+    "repository": "https://github.com/facebookresearch/dinov2",
+    "source_revision": "https://github.com/facebookresearch/dinov2/tree/7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+    "license": "Apache-2.0",
+    "model_card": "https://github.com/facebookresearch/dinov2/blob/7764ea0f912e53c92e82eb78a2a1631e92725fc8/MODEL_CARD.md"
+  },
+  "weight_preprocessing": {
+    "input": "shared preprocess_series_result float32 grayscale in [0,1] at 224x224",
+    "channel_adapter": "repeat one grayscale channel to RGB",
+    "normalization": "ImageNet mean [0.485,0.456,0.406] and standard deviation [0.229,0.224,0.225]",
+    "feature": "final normalized CLS token",
+    "feature_count": 384
+  },
+  "offline_kaggle_input": {
+    "dataset_id": "plthon/dinov2-vits14-lvd142m",
+    "visibility": "private",
+    "internet_required_at_runtime": false
+  },
+  "construction_policy": {
+    "validate_before_model_construction": true,
+    "network_download_allowed_at_runtime": false,
+    "silent_weight_fallback_allowed": false,
+    "random_initialization_fallback_allowed": false,
+    "strict_state_dict_load": true
+  }
+}

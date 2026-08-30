@@ -32,6 +32,14 @@ initialized-neutral target-by-plane scalars. The paired macro-AUC delta was only
 `+0.00107`, so the precommitted rule rejected it and the default remains `mean`.
 See the [plane-gating experiment report](docs/plane-gating-report.md).
 
+Issue #29 adds one controlled candidate, `dinov2_vits14`, while retaining the
+same 224-pixel grayscale-to-RGB input, eight slices per series, masked loss, and
+slice-to-series-to-study means. Its official LVD-142M artifact is hash-verified
+before a local, network-free ViT-S/14 is constructed. The candidate starts with
+the unchanged batch size of 16; gradient accumulation is available only if an
+approved GPU run proves that a smaller micro-batch is necessary. No validation
+or hidden-test result has been run yet.
+
 The recorded gold-only run reports macro AUC 0.6111 on a frozen holdout of four
 patients. Its PatientID bootstrap has 9,065 undefined macro-AUC replicates out
 of 10,000, so this is pipeline evidence, not a reliable model-comparison
@@ -87,6 +95,7 @@ uv run python scripts/kaggle.py build ordering
 uv run --extra training python scripts/kaggle.py build baseline --approve-gpu
 uv run --extra training python scripts/kaggle.py build combined-scoring --approve-gpu
 uv run --extra training python scripts/kaggle.py build plane-gating --approve-gpu
+uv run --extra training python scripts/kaggle.py build dinov2-training --approve-gpu
 uv run python scripts/kaggle.py push build/kaggle/public-dicom-ordering \
   --approve-remote
 ```
@@ -98,6 +107,9 @@ default; the command never changes visibility or publishes a public resource.
 The plane-gating bundle stops after paired validation. Its separate scoring
 bundle additionally requires a recorded keep decision, exact checkpoint hash,
 and checkpoint Dataset ID.
+The DINOv2 training bundle has the same stop point and additionally refuses to
+build from a dirty Git revision. Its scoring bundle is available only after the
+precommitted validation keep rule passes.
 
 ## Project status
 

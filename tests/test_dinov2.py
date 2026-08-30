@@ -1,0 +1,444 @@
+import hashlib
+import json
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+import torch
+from torch import Tensor, nn
+
+import rsna_knee.training as training_module
+from rsna_knee.combined_supervision import (
+    _dinov2_decision,
+    _retained_hidden_test_inference_estimate,
+    load_combined_baseline_config,
+    load_combined_checkpoint,
+    load_verified_combined_checkpoint,
+    load_verified_dinov2_checkpoint,
+)
+from rsna_knee.config import PreprocessingConfig
+from rsna_knee.dinov2 import (
+    DINOV2_VITS14_FEATURE_COUNT,
+    DinoV2ViTS14,
+    dinov2_vits14,
+)
+from rsna_knee.training import (
+    DecodedStudy,
+    GoldResNet18,
+    GoldStudy,
+    IndexedStudy,
+    Label,
+    _new_uninitialized_model,
+    build_dinov2_initialized_model,
+    train_epoch,
+    verify_dinov2_initialization_artifact,
+)
+
+PROJECT_ROOT = Path(__file__).parents[1]
+TARGETS = tuple(
+    json.loads((PROJECT_ROOT / "contracts/competition.json").read_text())["targets"][
+        "order"
+    ]
+)
+
+
+def test_dinov2_config_names_the_only_supported_candidate(tmp_path: Path) -> None:
+    config = load_combined_baseline_config(PROJECT_ROOT / "configs/dinov2.toml")
+    assert config.architecture == "dinov2_vits14"
+    assert config.weight_identity == "dinov2_vits14.LVD142M"
+    assert config.aggregation == "mean"
+    assert config.batch_size == 16
+    assert config.gradient_accumulation_steps == 1
+    assert config.effective_batch_size == 16
+
+    unsupported = (
+        (PROJECT_ROOT / "configs/dinov2.toml")
+        .read_text()
+        .replace('architecture = "dinov2_vits14"', 'architecture = "dinov2_vitb14"')
+    )
+    path = tmp_path / "unsupported.toml"
+    path.write_text(unsupported)
+    with pytest.raises(ValueError, match="supported backbone"):
+        load_combined_baseline_config(path)
+
+
+@pytest.mark.training
+def test_dinov2_encoder_returns_the_cls_feature() -> None:
+    model = dinov2_vits14()
+    with torch.no_grad():
+        features = model(torch.zeros(1, 3, 224, 224))
+    assert features.shape == (1, DINOV2_VITS14_FEATURE_COUNT)
+    assert DINOV2_VITS14_FEATURE_COUNT == 384
+
+
+def test_dinov2_contract_pins_official_implementation_and_weights() -> None:
+    contract = json.loads(
+        (PROJECT_ROOT / "contracts/dinov2-vits14-lvd142m.json").read_text()
+    )
+    assert contract["identity"] == {
+        "backbone": "dinov2_vits14",
+        "feature_count": 384,
+        "implementation_commit": "7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+        "implementation_entrypoint": "dinov2.hub.backbones.dinov2_vits14",
+        "pretraining": "LVD-142M",
+        "register_tokens": 0,
+    }
+    assert contract["artifact"] == {
+        "filename": "dinov2_vits14_pretrain.pth",
+        "sha256": "b938bf1bc15cd2ec0feacfe3a1bb553fe8ea9ca46a7e1d8d00217f29aef60cd9",
+        "size_bytes": 88283115,
+        "source_url": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth",
+    }
+
+
+@pytest.mark.training
+def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
+    tmp_path: Path,
+) -> None:
+    weight_path = tmp_path / "dinov2_vits14_pretrain.pth"
+    torch.save(dinov2_vits14().state_dict(), weight_path)
+    contract = json.loads(
+        (PROJECT_ROOT / "contracts/dinov2-vits14-lvd142m.json").read_text()
+    )
+    contract["artifact"]["size_bytes"] = weight_path.stat().st_size
+    contract["artifact"]["sha256"] = hashlib.sha256(
+        weight_path.read_bytes()
+    ).hexdigest()
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(json.dumps(contract))
+
+    model, artifact = build_dinov2_initialized_model(
+        weight_path,
+        tuple(f"target-{index}" for index in range(12)),
+        contract_path=contract_path,
+    )
+    assert artifact.sha256 == contract["artifact"]["sha256"]
+    assert model.head.out_features == 12
+    assert model.plane_gate is None
+
+    logits = model(
+        torch.zeros(1, 1, 1, 224, 224),
+        torch.ones(1, 1, 1, dtype=torch.bool),
+        torch.ones(1, 1, dtype=torch.bool),
+    )
+    assert logits.shape == (1, 12)
+    logits.sum().backward()
+    backbone = cast(DinoV2ViTS14, model.backbone)
+    assert backbone.patch_embed.proj.weight.grad is not None
+    assert model.head.weight.grad is not None
+
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    payload: dict[str, Any] = {
+        "checkpoint_schema_version": 3,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": {},
+        "scaler_state_dict": {},
+        "completed_epochs": 3,
+        "targets": [f"target-{index}" for index in range(12)],
+        "priors": [0.5] * 12,
+        "preprocessing": {},
+        "cohort": {},
+        "partition": {},
+        "initialization": {},
+        "configuration": {
+            "training": {
+                "architecture": "dinov2_vits14",
+                "weight_identity": "dinov2_vits14.LVD142M",
+            }
+        },
+        "code": {},
+        "runtime": {},
+        "artifact_hashes": {},
+        "rng_state": {},
+        "backbone": {
+            "identity": "dinov2_vits14",
+            "feature_count": 384,
+            "initialization_artifact_sha256": artifact.sha256,
+        },
+    }
+    torch.save(payload, checkpoint_path)
+    reloaded, reloaded_payload = load_combined_checkpoint(
+        checkpoint_path, device=torch.device("cpu")
+    )
+    with torch.no_grad():
+        assert torch.equal(
+            reloaded(
+                torch.zeros(1, 1, 1, 224, 224),
+                torch.ones(1, 1, 1, dtype=torch.bool),
+                torch.ones(1, 1, dtype=torch.bool),
+            ),
+            logits.detach(),
+        )
+    assert reloaded_payload["backbone"]["identity"] == "dinov2_vits14"
+
+    official_hash = "b938bf1bc15cd2ec0feacfe3a1bb553fe8ea9ca46a7e1d8d00217f29aef60cd9"
+    payload["targets"] = list(TARGETS)
+    payload["preprocessing"] = {
+        "slice_count": 8,
+        "lower_percentile": 1.0,
+        "upper_percentile": 99.0,
+        "image_size": 224,
+        "shared_contract": "preprocess_series_result",
+        "channel_adapter": "grayscale_repeat_to_rgb",
+        "imagenet_mean": [0.485, 0.456, 0.406],
+        "imagenet_std": [0.229, 0.224, 0.225],
+    }
+    payload["cohort"] = {
+        "selection_rule_version": "gold-plus-public-verdicts-v1",
+        "digest": "b066a7e6cd7119f4bef330a006a86a0e08e664d7b5347a111ec781e72abe1fdc",
+        "gold_study_count": 58,
+        "non_gold_study_count": 4349,
+        "total_study_count": 4407,
+    }
+    payload["partition"] = {
+        "split_rule_version": "patient-hash-disjoint-v1",
+        "split_seed": 20260825,
+        "val_fraction": 0.1,
+        "train_study_count": 3957,
+        "val_study_count": 450,
+    }
+    payload["initialization"] = {
+        "contract_sha256": hashlib.sha256(
+            (PROJECT_ROOT / "contracts/dinov2-vits14-lvd142m.json").read_bytes()
+        ).hexdigest(),
+        "artifact_sha256": official_hash,
+        "artifact_size_bytes": 88283115,
+    }
+    payload["configuration"] = {
+        "preprocessing": {
+            "slice_count": 8,
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "image_size": 224,
+        },
+        "training": {
+            "epochs": 3,
+            "batch_size": 16,
+            "gradient_accumulation_steps": 1,
+            "effective_batch_size": 16,
+            "learning_rate": 0.0001,
+            "weight_decay": 0.0001,
+            "seed": 20260825,
+            "mixed_precision": True,
+            "architecture": "dinov2_vits14",
+            "weight_identity": "dinov2_vits14.LVD142M",
+        },
+        "split": {"val_fraction": 0.1, "split_seed": 20260825},
+        "validation": {
+            "reload_absolute_tolerance": 1e-5,
+            "paired_bootstrap_method": "paired-patient-id-nonparametric-bootstrap-v1",
+            "paired_bootstrap_seed": 20260825,
+            "paired_bootstrap_replicates": 10000,
+            "paired_bootstrap_confidence": 0.95,
+            "minimum_macro_auc_delta": 0.005,
+            "minimum_bootstrap_positive_fraction": 0.95,
+            "large_target_regression": 0.02,
+        },
+    }
+    payload["backbone"] = {
+        **payload["backbone"],
+        "initialization_artifact_sha256": official_hash,
+    }
+    torch.save(payload, checkpoint_path)
+    checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+    verified, verified_payload = load_verified_dinov2_checkpoint(
+        checkpoint_path,
+        device=torch.device("cpu"),
+        expected_sha256=checkpoint_hash,
+        contract_path=PROJECT_ROOT / "contracts/competition.json",
+    )
+    assert verified.head.out_features == len(TARGETS)
+    assert verified_payload["targets"] == list(TARGETS)
+
+    payload["configuration"]["training"].update(
+        {
+            "batch_size": 4,
+            "gradient_accumulation_steps": 4,
+            "effective_batch_size": 16,
+        }
+    )
+    torch.save(payload, checkpoint_path)
+    load_verified_dinov2_checkpoint(
+        checkpoint_path,
+        device=torch.device("cpu"),
+        expected_sha256=hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+        contract_path=PROJECT_ROOT / "contracts/competition.json",
+    )
+
+    with pytest.raises(ValueError, match="configuration metadata"):
+        load_verified_combined_checkpoint(
+            checkpoint_path,
+            device=torch.device("cpu"),
+            expected_sha256=hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+            contract_path=PROJECT_ROOT / "contracts/competition.json",
+        )
+
+    resnet_path = tmp_path / "resnet-checkpoint.pt"
+    resnet_payload = dict(payload)
+    resnet_payload["checkpoint_schema_version"] = 1
+    resnet_payload.pop("backbone")
+    resnet_payload["model_state_dict"] = _new_uninitialized_model(
+        len(TARGETS)
+    ).state_dict()
+    resnet_payload["configuration"] = {
+        "preprocessing": {
+            "slice_count": 8,
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "image_size": 224,
+        },
+        "training": {
+            "epochs": 3,
+            "batch_size": 16,
+            "learning_rate": 0.0001,
+            "weight_decay": 0.0001,
+            "seed": 20260825,
+            "mixed_precision": True,
+            "architecture": "torchvision.models.resnet18",
+            "weight_identity": "ResNet18_Weights.IMAGENET1K_V1",
+        },
+        "split": {"val_fraction": 0.1, "split_seed": 20260825},
+        "validation": {"reload_absolute_tolerance": 1e-5},
+    }
+    torch.save(resnet_payload, resnet_path)
+    with pytest.raises(ValueError, match="DINOv2 checkpoint schema"):
+        load_verified_dinov2_checkpoint(
+            resnet_path,
+            device=torch.device("cpu"),
+            expected_sha256=hashlib.sha256(resnet_path.read_bytes()).hexdigest(),
+            contract_path=PROJECT_ROOT / "contracts/competition.json",
+        )
+
+    payload["targets"] = list(reversed(TARGETS))
+    torch.save(payload, checkpoint_path)
+    with pytest.raises(ValueError, match="target order"):
+        load_verified_dinov2_checkpoint(
+            checkpoint_path,
+            device=torch.device("cpu"),
+            expected_sha256=hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+            contract_path=PROJECT_ROOT / "contracts/competition.json",
+        )
+
+    payload["backbone"] = {
+        **payload["backbone"],
+        "identity": "torchvision.models.resnet18",
+    }
+    torch.save(payload, checkpoint_path)
+    with pytest.raises(ValueError, match="backbone metadata"):
+        load_combined_checkpoint(checkpoint_path, device=torch.device("cpu"))
+
+    weight_path.write_bytes(weight_path.read_bytes()[:-1] + b"x")
+    with pytest.raises(ValueError, match="SHA-256"):
+        verify_dinov2_initialization_artifact(weight_path, contract_path=contract_path)
+
+
+@pytest.mark.training
+def test_gradient_accumulation_matches_one_effective_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MeanBackbone(nn.Module):
+        def forward(self, values: Tensor) -> Tensor:
+            return values.mean(dim=(2, 3))[:, :2]
+
+    studies = tuple(
+        GoldStudy(f"study-{index}", (cast(Label, index % 2),)) for index in range(4)
+    )
+    indexed = {study.study_uid: IndexedStudy(study.study_uid, ()) for study in studies}
+
+    def decode(
+        study: IndexedStudy, preprocessing: object, *, labels: object
+    ) -> DecodedStudy:
+        del preprocessing
+        typed_labels = tuple(cast(Sequence[Label], labels))
+        return DecodedStudy(
+            pixels=torch.full((1, 1, 2, 2), float(study.study_uid[-1]) / 4),
+            slice_mask=torch.ones(1, 1, dtype=torch.bool),
+            series_mask=torch.ones(1, dtype=torch.bool),
+            labels=torch.tensor(typed_labels, dtype=torch.float32),
+            label_mask=torch.ones(len(typed_labels), dtype=torch.bool),
+            valid_slice_count=1,
+            decode_error_counts={},
+        )
+
+    monkeypatch.setattr(training_module, "decode_study", decode)
+    full = GoldResNet18(MeanBackbone(), feature_count=2, target_count=1)
+    accumulated = GoldResNet18(MeanBackbone(), feature_count=2, target_count=1)
+    accumulated.load_state_dict(full.state_dict())
+    for model in (full, accumulated):
+        model.imagenet_mean.zero_()
+        model.imagenet_std.fill_(1)
+    common: dict[str, Any] = {
+        "indexed": indexed,
+        "studies": studies,
+        "preprocessing": PreprocessingConfig(1, 0, 100, 224),
+        "seed": 7,
+        "mixed_precision": False,
+        "device": torch.device("cpu"),
+        "epoch": 0,
+    }
+    full_record = train_epoch(
+        model=full,
+        optimizer=torch.optim.SGD(full.parameters(), lr=0.1),
+        scaler=torch.GradScaler("cuda", enabled=False),
+        batch_size=4,
+        gradient_accumulation_steps=1,
+        **common,
+    )
+    accumulated_record = train_epoch(
+        model=accumulated,
+        optimizer=torch.optim.SGD(accumulated.parameters(), lr=0.1),
+        scaler=torch.GradScaler("cuda", enabled=False),
+        batch_size=1,
+        gradient_accumulation_steps=4,
+        **common,
+    )
+
+    assert full_record["optimizer_step_count"] == 1
+    assert accumulated_record["optimizer_step_count"] == 1
+    for full_parameter, accumulated_parameter in zip(
+        full.parameters(), accumulated.parameters(), strict=True
+    ):
+        assert torch.allclose(full_parameter, accumulated_parameter, atol=1e-7)
+
+
+def test_dinov2_decision_requires_effect_size_evidence_and_no_severe_regression() -> (
+    None
+):
+    config = load_combined_baseline_config(PROJECT_ROOT / "configs/dinov2.toml")
+    comparison: dict[str, Any] = {
+        "delta": {
+            "official_macro_auc": 0.006,
+            "per_target": {target: {"delta_roc_auc": 0.001} for target in TARGETS},
+        },
+        "bootstrap": {
+            "uncertainty": {"official_macro_auc_delta": {"fraction_positive": 0.96}}
+        },
+    }
+    assert _dinov2_decision(comparison, config)["result"] == "keep"
+
+    comparison["delta"]["per_target"][TARGETS[0]]["delta_roc_auc"] = -0.021
+    rejected = _dinov2_decision(comparison, config)
+    assert rejected["result"] == "reject"
+    assert rejected["generic_backbone_recommendation"] == "stop"
+
+
+def test_hidden_inference_estimate_is_only_reported_for_a_retained_candidate() -> None:
+    assert (
+        _retained_hidden_test_inference_estimate(
+            decision={"result": "reject"},
+            validation_study_count=10,
+            validation_seconds=5.0,
+            hidden_test_study_count=20,
+        )
+        is None
+    )
+    assert (
+        _retained_hidden_test_inference_estimate(
+            decision={"result": "keep"},
+            validation_study_count=10,
+            validation_seconds=5.0,
+            hidden_test_study_count=20,
+        )
+        == 10.0
+    )

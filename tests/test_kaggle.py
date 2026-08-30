@@ -15,6 +15,8 @@ import pytest
 from rsna_knee.kaggle import (
     KaggleSpec,
     WheelDataset,
+    build_dinov2_scoring_bundle,
+    build_dinov2_training_bundle,
     build_kaggle_bundle,
     build_plane_gated_scoring_bundle,
     build_plane_gating_bundle,
@@ -862,4 +864,71 @@ def test_plane_gated_scoring_bundle_requires_keep_decision(tmp_path: Path) -> No
     assert metadata["dataset_sources"] == ["plthon/rsna-knee-plane-gating-checkpoint"]
     source = json.dumps(json.loads(bundle.notebook_path.read_text()))
     assert "target_plane_gate" in source
+    assert "Competition submission: not run" in source
+
+
+def test_dinov2_training_bundle_is_clean_offline_and_training_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "dinov2-training"
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, True))
+    with pytest.raises(ValueError, match="clean committed Git revision"):
+        build_dinov2_training_bundle(project, output, gpu_approved=True)
+    assert not output.exists()
+
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, False))
+    bundle = build_dinov2_training_bundle(project, output, gpu_approved=True)
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["enable_internet"] == "false"
+    assert metadata["dataset_sources"] == [
+        "pilkwang/rsna-knee-llm-labels",
+        "plthon/dinov2-vits14-lvd142m",
+        "plthon/rsna-knee-combined-baseline-checkpoint",
+    ]
+    assert metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert "run_test_inference=False" in source
+    assert "run_combined_scoring" not in source
+    assert 'GIT_DIRTY = json.loads("false")' in source
+
+
+def test_dinov2_scoring_bundle_requires_retained_validation_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Path(__file__).parents[1]
+    with pytest.raises(PermissionError, match="recorded keep decision"):
+        build_dinov2_scoring_bundle(
+            project,
+            tmp_path / "dinov2-scoring",
+            checkpoint_dataset_id="plthon/rsna-knee-dinov2-checkpoint",
+            checkpoint_sha256="a" * 64,
+            gpu_approved=True,
+        )
+
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, True))
+    with pytest.raises(ValueError, match="clean committed Git revision"):
+        build_dinov2_scoring_bundle(
+            project,
+            tmp_path / "dinov2-scoring",
+            checkpoint_dataset_id="plthon/rsna-knee-dinov2-checkpoint",
+            checkpoint_sha256="a" * 64,
+            validation_kept=True,
+            gpu_approved=True,
+        )
+
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, False))
+    bundle = build_dinov2_scoring_bundle(
+        project,
+        tmp_path / "dinov2-scoring",
+        checkpoint_dataset_id="plthon/rsna-knee-dinov2-checkpoint",
+        checkpoint_sha256="a" * 64,
+        validation_kept=True,
+        gpu_approved=True,
+    )
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["dataset_sources"] == ["plthon/rsna-knee-dinov2-checkpoint"]
+    source = json.dumps(json.loads(bundle.notebook_path.read_text()))
+    assert 'backbone=\\"dinov2_vits14\\"' in source
     assert "Competition submission: not run" in source

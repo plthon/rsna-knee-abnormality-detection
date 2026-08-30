@@ -35,6 +35,7 @@ from .competition_contract import (
     load_verified_submission_contract,
 )
 from .config import PreprocessingConfig
+from .dinov2 import DINOV2_VITS14_FEATURE_COUNT, dinov2_vits14
 from .indexing import verify_index_artifact
 from .preprocessing import preprocess_series_result
 from .provenance import create_run_id, write_run_manifest
@@ -265,7 +266,7 @@ class TargetSpecificPlaneGate(nn.Module):
         return self.log_weights.detach().exp()
 
 
-class GoldResNet18(nn.Module):
+class StudyClassifier(nn.Module):
     """One shared slice encoder with masked slice and series mean pooling."""
 
     def __init__(
@@ -346,6 +347,9 @@ class GoldResNet18(nn.Module):
         series_counts = series_weights.sum(dim=1).clamp_min(1)
         study_features = (series_features * series_weights).sum(dim=1) / series_counts
         return cast(Tensor, self.head(study_features))
+
+
+GoldResNet18 = StudyClassifier
 
 
 def load_smoke_training_config(path: Path) -> SmokeTrainingConfig:
@@ -502,7 +506,7 @@ def build_initialized_model(
     *,
     contract_path: Path | None = None,
     aggregation: StudyAggregation = "mean",
-) -> tuple[GoldResNet18, InitializationArtifact]:
+) -> tuple[StudyClassifier, InitializationArtifact]:
     """Build only after exact offline bytes pass the frozen initialization contract."""
     initialization = verify_initialization_artifact(
         weight_path, contract_path=contract_path
@@ -515,11 +519,88 @@ def build_initialized_model(
     feature_count = backbone.fc.in_features
     backbone.fc = nn.Identity()
     return (
-        GoldResNet18(
+        StudyClassifier(
             backbone,
             feature_count,
             len(target_names),
             aggregation=aggregation,
+        ),
+        initialization,
+    )
+
+
+def verify_dinov2_initialization_artifact(
+    path: Path, *, contract_path: Path | None = None
+) -> InitializationArtifact:
+    """Validate the one supported DINOv2 artifact before model construction."""
+    contract, contract_sha256 = _load_json_contract(
+        "dinov2-vits14-lvd142m.json", contract_path
+    )
+    if contract.get("schema_version") != 1:
+        raise ValueError("Unsupported DINOv2 initialization contract schema")
+    identity = _mapping(contract, "identity")
+    if identity != {
+        "backbone": "dinov2_vits14",
+        "feature_count": DINOV2_VITS14_FEATURE_COUNT,
+        "implementation_commit": "7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+        "implementation_entrypoint": "dinov2.hub.backbones.dinov2_vits14",
+        "pretraining": "LVD-142M",
+        "register_tokens": 0,
+    }:
+        raise ValueError("DINOv2 contract names an unsupported model identity")
+    artifact = _mapping(contract, "artifact")
+    if path.name != _text(artifact, "filename"):
+        raise ValueError("DINOv2 artifact filename does not match contract")
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing offline DINOv2 artifact: {path}")
+    size = path.stat().st_size
+    digest = _sha256(path)
+    if size != _positive_int(artifact, "size_bytes"):
+        raise ValueError("DINOv2 artifact size mismatch")
+    if digest != _text(artifact, "sha256"):
+        raise ValueError("DINOv2 artifact SHA-256 mismatch")
+    if _text(artifact, "source_url") != (
+        "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
+    ):
+        raise ValueError("DINOv2 artifact URL differs from the official release")
+    if _mapping(contract, "construction_policy") != {
+        "validate_before_model_construction": True,
+        "network_download_allowed_at_runtime": False,
+        "silent_weight_fallback_allowed": False,
+        "random_initialization_fallback_allowed": False,
+        "strict_state_dict_load": True,
+    }:
+        raise ValueError("DINOv2 construction policy has drifted")
+    return InitializationArtifact(
+        path=path,
+        sha256=digest,
+        size_bytes=size,
+        contract_sha256=contract_sha256,
+        contract=contract,
+    )
+
+
+def build_dinov2_initialized_model(
+    weight_path: Path,
+    target_names: Sequence[str],
+    *,
+    contract_path: Path | None = None,
+) -> tuple[StudyClassifier, InitializationArtifact]:
+    """Build ViT-S/14 from verified local bytes and attach one linear head."""
+    initialization = verify_dinov2_initialization_artifact(
+        weight_path, contract_path=contract_path
+    )
+    state_dict = torch.load(weight_path, map_location="cpu", weights_only=True)
+    if not isinstance(state_dict, dict) or not state_dict:
+        raise ValueError("DINOv2 initialization artifact is not a state dict")
+    backbone = dinov2_vits14()
+    backbone.load_state_dict(state_dict, strict=True)
+    return (
+        StudyClassifier(
+            backbone,
+            DINOV2_VITS14_FEATURE_COUNT,
+            len(target_names),
+            aggregation="mean",
         ),
         initialization,
     )
@@ -733,7 +814,7 @@ def masked_binary_cross_entropy(
 
 def train_epoch(
     *,
-    model: GoldResNet18,
+    model: StudyClassifier,
     optimizer: torch.optim.Optimizer,
     scaler: torch.GradScaler,
     indexed: Mapping[str, IndexedStudy],
@@ -745,10 +826,13 @@ def train_epoch(
     device: torch.device,
     epoch: int,
     collect_diagnostics: bool = False,
+    gradient_accumulation_steps: int = 1,
 ) -> dict[str, Any]:
     """Train one partition epoch with the shared decode, mask, and pooling path."""
     if batch_size <= 0:
         raise ValueError("Training batch size must be positive")
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("Gradient accumulation steps must be positive")
     ordered = list(studies)
     random.Random(seed + epoch).shuffle(ordered)
     losses: list[float] = []
@@ -759,6 +843,8 @@ def train_epoch(
     attempted = 0
     optimized = 0
     optimizer_steps = 0
+    pending_known = 0
+    pending_micro_batches = 0
     all_logits: list[Tensor] = []
     all_labels: list[Tensor] = []
     all_known: list[Tensor] = []
@@ -790,7 +876,8 @@ def train_epoch(
         labels = labels.to(device)
         known = known.to(device)
         compute_start = time.perf_counter()
-        optimizer.zero_grad(set_to_none=True)
+        if pending_micro_batches == 0:
+            optimizer.zero_grad(set_to_none=True)
         with torch.autocast(
             device_type=device.type,
             dtype=torch.float16,
@@ -798,19 +885,37 @@ def train_epoch(
         ):
             logits = model(pixels, slice_mask, series_mask, plane_indices)
             loss = masked_binary_cross_entropy(logits, labels, known)
-        scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
-        scaler.step(optimizer)
-        scaler.update()
+        known_count = int(known.sum())
+        scaler.scale(loss * known_count).backward()  # type: ignore[no-untyped-call]
+        pending_known += known_count
+        pending_micro_batches += 1
+        if pending_micro_batches == gradient_accumulation_steps:
+            scaler.unscale_(optimizer)
+            for parameter in model.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.div_(pending_known)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer_steps += 1
+            pending_known = 0
+            pending_micro_batches = 0
         if device.type == "cuda":
             torch.cuda.synchronize()
         forward_backward_seconds += time.perf_counter() - compute_start
         optimized += len(decoded)
-        optimizer_steps += 1
         losses.append(float(loss.detach().cpu()))
         if collect_diagnostics:
             all_logits.append(logits.detach().float().cpu())
             all_labels.append(labels.detach().cpu())
             all_known.append(known.detach().cpu())
+    if pending_micro_batches:
+        scaler.unscale_(optimizer)
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                parameter.grad.div_(pending_known)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer_steps += 1
     training_seconds = time.perf_counter() - start
     if not losses:
         raise RuntimeError("No training study completed an optimizer update")
@@ -839,7 +944,7 @@ def train_epoch(
 
 def predict_partition(
     *,
-    model: GoldResNet18,
+    model: StudyClassifier,
     indexed: Mapping[str, IndexedStudy],
     studies: Sequence[PartitionStudy],
     preprocessing: PreprocessingConfig,
@@ -1239,7 +1344,7 @@ def predict_submission_from_checkpoint(
 
 def _predict_submission_with_model(
     *,
-    model: GoldResNet18,
+    model: StudyClassifier,
     submission_inputs: SubmissionInputs,
     indexed: Mapping[str, IndexedStudy],
     work_root: Path,
@@ -1403,7 +1508,7 @@ def run_local_cpu_check(
 
 def load_training_checkpoint(
     path: Path, *, device: torch.device
-) -> tuple[GoldResNet18, dict[str, Any]]:
+) -> tuple[StudyClassifier, dict[str, Any]]:
     """Strictly reload complete state without consulting a network or weight enum."""
     raw = torch.load(path, map_location=device, weights_only=True)
     if not isinstance(raw, dict):
@@ -1447,7 +1552,7 @@ def load_training_checkpoint(
 def restore_training_state(
     path: Path, *, device: torch.device
 ) -> tuple[
-    GoldResNet18,
+    StudyClassifier,
     torch.optim.Optimizer,
     torch.GradScaler,
     dict[str, Any],
@@ -1879,12 +1984,26 @@ def _is_probability(value: object) -> bool:
 
 
 def _new_uninitialized_model(
-    target_count: int, *, aggregation: StudyAggregation = "mean"
-) -> GoldResNet18:
+    target_count: int,
+    *,
+    aggregation: StudyAggregation = "mean",
+    architecture: str = "torchvision.models.resnet18",
+) -> StudyClassifier:
+    if architecture == "dinov2_vits14":
+        return StudyClassifier(
+            dinov2_vits14(),
+            DINOV2_VITS14_FEATURE_COUNT,
+            target_count,
+            aggregation=aggregation,
+        )
+    if architecture != "torchvision.models.resnet18":
+        raise ValueError("Unsupported checkpoint backbone")
     backbone = resnet18(weights=None)
     feature_count = backbone.fc.in_features
     backbone.fc = nn.Identity()
-    return GoldResNet18(backbone, feature_count, target_count, aggregation=aggregation)
+    return StudyClassifier(
+        backbone, feature_count, target_count, aggregation=aggregation
+    )
 
 
 def decode_study(
@@ -1971,7 +2090,7 @@ def collate_studies(
 
 def build_checkpoint_payload(
     *,
-    model: GoldResNet18,
+    model: StudyClassifier,
     optimizer: torch.optim.Optimizer,
     scaler: torch.GradScaler,
     completed_epochs: int,

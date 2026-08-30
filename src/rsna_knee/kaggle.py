@@ -86,6 +86,11 @@ _PLANE_GATING_DATASET_SOURCES = (
     _COMBINED_CHECKPOINT_DATASET_ID,
 )
 _PLANE_GATING_KERNEL_SOURCES = ("plthon/rsna-knee-data-index",)
+_DINOV2_TRAINING_DATASET_SOURCES = (
+    "pilkwang/rsna-knee-llm-labels",
+    "plthon/dinov2-vits14-lvd142m",
+    _COMBINED_CHECKPOINT_DATASET_ID,
+)
 _PUBLIC_BASELINE_CONTRACTS = (
     "data-index.json",
     "gold-baseline.json",
@@ -174,6 +179,10 @@ def build_kaggle_bundle(
         _validate_plane_gating_source(source)
     elif spec.validator == "plane_gated_scoring":
         _validate_plane_gated_scoring_source(source)
+    elif spec.validator == "dinov2_training":
+        _validate_dinov2_training_source(source)
+    elif spec.validator == "dinov2_scoring":
+        _validate_dinov2_scoring_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -769,6 +778,113 @@ def build_plane_gated_scoring_bundle(
     return _record_rendered_notebook_hash(bundle, label="Plane-gated scoring")
 
 
+def build_dinov2_training_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-dinov2-vit-s-14",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build the clean-revision #29 training and paired-validation bundle."""
+    config_path = project_root / "configs" / "dinov2.toml"
+    source_path = project_root / "notebooks" / "train_dinov2.py"
+    contract_names = (
+        "competition.json",
+        "data-index.json",
+        "public-report-label-dataset-v1.json",
+        "dinov2-vits14-lvd142m.json",
+    )
+    config_bytes = config_path.read_bytes()
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("DINOv2 training requires a clean committed Git revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="train_dinov2.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee DINOv2 ViT-S/14",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=_DINOV2_TRAINING_DATASET_SOURCES,
+            kernel_sources=_PLANE_GATING_KERNEL_SOURCES,
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="dinov2_training",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="DINOv2 training")
+
+
+def build_dinov2_scoring_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    checkpoint_dataset_id: str,
+    checkpoint_sha256: str,
+    validation_kept: bool = False,
+    kernel_id: str = "plthon/rsna-knee-dinov2-scoring",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build inference-only scoring for a validation-retained #29 checkpoint."""
+    if not validation_kept:
+        raise PermissionError("DINOv2 scoring requires a recorded keep decision")
+    _require_resolved_kaggle_id(checkpoint_dataset_id)
+    if re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256) is None:
+        raise ValueError("DINOv2 checkpoint SHA-256 is malformed")
+    source_path = project_root / "notebooks" / "score_dinov2.py"
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("DINOv2 scoring requires a clean committed Git revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="score_dinov2.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee DINOv2 Scoring",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=(checkpoint_dataset_id,),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_CHECKPOINT_SHA256__": checkpoint_sha256,
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=(
+                "competition.json",
+                "dinov2-vits14-lvd142m.json",
+            ),
+            validator="dinov2_scoring",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="DINOv2 scoring")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -991,6 +1107,19 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             raise ValueError(
                 "Plane-gated scoring requires one retained checkpoint input"
             )
+    elif validator == "dinov2_training":
+        _validate_dinov2_training_source(_notebook_source(source))
+        if tuple(metadata.get("dataset_sources", ())) != (
+            _DINOV2_TRAINING_DATASET_SOURCES
+        ):
+            raise ValueError("DINOv2 training attached unexpected Dataset inputs")
+        if tuple(metadata.get("kernel_sources", ())) != _PLANE_GATING_KERNEL_SOURCES:
+            raise ValueError("DINOv2 training must attach the frozen index output")
+    elif validator == "dinov2_scoring":
+        _validate_dinov2_scoring_source(_notebook_source(source))
+        dataset_sources = metadata.get("dataset_sources")
+        if not isinstance(dataset_sources, list) or len(dataset_sources) != 1:
+            raise ValueError("DINOv2 scoring requires one retained checkpoint input")
     elif validator == "reports":
         _validate_reports_source(_notebook_source(source))
     elif validator == "report_llm":
@@ -1239,6 +1368,52 @@ def _validate_plane_gated_scoring_source(source: str) -> None:
     forbidden = ("run_combined_baseline", "train_epoch", "derive_combined_cohort")
     if any(value in source for value in forbidden):
         raise ValueError("Plane-gated scoring notebook contains training work")
+
+
+def _validate_dinov2_training_source(source: str) -> None:
+    required = (
+        'config.architecture != "dinov2_vits14"',
+        "discover_combined_checkpoint",
+        "run_combined_baseline",
+        "verify_dinov2_artifact",
+        "control_checkpoint_path=control_checkpoint",
+        "run_test_inference=False",
+        '"competition_submission": False',
+        "Hidden-test inference: not run",
+        "Competition submission: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("DINOv2 training notebook omits an experiment safeguard")
+    forbidden = (
+        "run_combined_scoring",
+        "write_submission",
+        "validate_submission",
+        "kaggle competitions submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("DINOv2 training notebook contains hidden scoring work")
+
+
+def _validate_dinov2_scoring_source(source: str) -> None:
+    required = (
+        "EXPECTED_CHECKPOINT_SHA256",
+        "load_verified_dinov2_checkpoint",
+        "run_combined_scoring",
+        'backbone="dinov2_vits14"',
+        "expected_checkpoint_sha256=EXPECTED_CHECKPOINT_SHA256",
+        "build_competition_index",
+        "verify_index_artifact",
+        "load_indexed_studies",
+        "write_submission",
+        "validate_submission",
+        '"competition_submission": False',
+        "Competition submission: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("DINOv2 scoring notebook omits an inference safeguard")
+    forbidden = ("run_combined_baseline", "train_epoch", "derive_combined_cohort")
+    if any(value in source for value in forbidden):
+        raise ValueError("DINOv2 scoring notebook contains training work")
 
 
 def _validate_reports_source(source: str) -> None:

@@ -30,10 +30,10 @@ from .holdout import (
 )
 from .provenance import create_run_id, write_run_manifest
 from .training import (
-    GoldResNet18,
     GoldTrainingCohort,
     InitializationArtifact,
     PartitionPrediction,
+    StudyClassifier,
     TrainingInputs,
     build_checkpoint_payload,
     build_initialized_model,
@@ -973,7 +973,7 @@ def _duration_estimate_from_issue_8(
 
 def _baseline_checkpoint_payload(
     *,
-    model: GoldResNet18,
+    model: StudyClassifier,
     optimizer: torch.optim.Optimizer,
     scaler: torch.GradScaler,
     completed_epochs: int,
