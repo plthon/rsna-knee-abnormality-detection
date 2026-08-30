@@ -32,7 +32,7 @@ initialized-neutral target-by-plane scalars. The paired macro-AUC delta was only
 `+0.00107`, so the precommitted rule rejected it and the default remains `mean`.
 See the [plane-gating experiment report](docs/plane-gating-report.md).
 
-Issue #29 adds one controlled candidate, `dinov2_vits14`, while retaining the
+Issue #29 tested one controlled candidate, `dinov2_vits14`, while retaining the
 same 224-pixel grayscale-to-RGB input, eight slices per series, masked loss, and
 slice-to-series-to-study means. Its official LVD-142M artifact is hash-verified
 before a local, network-free ViT-S/14 is constructed. An approved Tesla T4 run
@@ -40,7 +40,10 @@ proved that batch 16 does not fit, so the candidate uses a micro-batch of four
 with four-step gradient accumulation to preserve the effective batch size of
 16. A later variable-size batch fragmented 2.51 GiB of reserved CUDA memory, so
 the training notebook enables expandable allocator segments before importing
-PyTorch. No completed validation or hidden-test result has been produced yet.
+PyTorch. The controlled macro AUC fell from `0.83828` to `0.63418`, so the
+precommitted rule rejected DINOv2 and generic backbone replacement should stop.
+No hidden-test inference or submission was run. See the
+[DINOv2 experiment report](docs/dinov2-report.md).
 
 The recorded gold-only run reports macro AUC 0.6111 on a frozen holdout of four
 patients. Its PatientID bootstrap has 9,065 undefined macro-AUC replicates out
