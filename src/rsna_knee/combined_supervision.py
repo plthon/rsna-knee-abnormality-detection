@@ -1708,6 +1708,16 @@ def run_combined_baseline(
                         "DINOv2 did not fit baseline micro-batch size on the "
                         "approved GPU"
                     ),
+                    "evidence": {
+                        "kernel_id": "plthon/rsna-knee-dinov2-vit-s-14",
+                        "source_commit": ("89d40f330cb1e3a0e58e60367df92cc530b14373"),
+                        "gpu": "Tesla T4",
+                        "outcome": "CUDA OOM during the first training epoch",
+                        "requested_allocation_mib": 556.0,
+                        "pytorch_allocated_gib": 14.22,
+                        "free_mib": 90.81,
+                        "reserved_unallocated_mib": 122.88,
+                    },
                 }
                 if config.architecture == "dinov2_vits14" and config.batch_size != 16
                 else None

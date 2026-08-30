@@ -35,10 +35,10 @@ See the [plane-gating experiment report](docs/plane-gating-report.md).
 Issue #29 adds one controlled candidate, `dinov2_vits14`, while retaining the
 same 224-pixel grayscale-to-RGB input, eight slices per series, masked loss, and
 slice-to-series-to-study means. Its official LVD-142M artifact is hash-verified
-before a local, network-free ViT-S/14 is constructed. The candidate starts with
-the unchanged batch size of 16; gradient accumulation is available only if an
-approved GPU run proves that a smaller micro-batch is necessary. No validation
-or hidden-test result has been run yet.
+before a local, network-free ViT-S/14 is constructed. An approved Tesla T4 run
+proved that batch 16 does not fit, so the candidate uses a micro-batch of four
+with four-step gradient accumulation to preserve the effective batch size of
+16. No completed validation or hidden-test result has been produced yet.
 
 The recorded gold-only run reports macro AUC 0.6111 on a frozen holdout of four
 patients. Its PatientID bootstrap has 9,065 undefined macro-AUC replicates out

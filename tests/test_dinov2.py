@@ -48,8 +48,8 @@ def test_dinov2_config_names_the_only_supported_candidate(tmp_path: Path) -> Non
     assert config.architecture == "dinov2_vits14"
     assert config.weight_identity == "dinov2_vits14.LVD142M"
     assert config.aggregation == "mean"
-    assert config.batch_size == 16
-    assert config.gradient_accumulation_steps == 1
+    assert config.batch_size == 4
+    assert config.gradient_accumulation_steps == 4
     assert config.effective_batch_size == 16
 
     unsupported = (
