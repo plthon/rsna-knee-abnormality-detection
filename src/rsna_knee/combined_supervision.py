@@ -51,8 +51,11 @@ from .training import (
     StudyAggregation,
     StudyClassifier,
     _new_uninitialized_model,
+    _restore_rng_state,
     build_dinov2_initialized_model,
+    build_dinov2_optimizer,
     build_initialized_model,
+    configure_dinov2_finetuning,
     decode_study,
     load_indexed_studies,
     predict_partition,
@@ -78,7 +81,7 @@ PUBLIC_VERDICT_TO_LABEL: Mapping[str, Label] = _PUBLIC_VERDICT_TO_LABEL
 
 _COMBINED_CHECKPOINT_SCHEMA_VERSION = 1
 _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION = 2
-_DINOV2_CHECKPOINT_SCHEMA_VERSION = 3
+_DINOV2_CHECKPOINT_SCHEMA_VERSION = 4
 _COMBINED_REPORT_SCHEMA_VERSION = 1
 _COMBINED_COHORT_RULE_VERSION = "gold-plus-public-verdicts-v1"
 _COMBINED_COHORT_DIGEST_VERSION = "combined-gold-public-cohort-jsonl-v1"
@@ -93,6 +96,7 @@ COMBINED_BASELINE_CHECKPOINT_SHA256 = (
 COMBINED_BASELINE_COMMIT = "e69f79af9c3de06e17a77e43bb41cb971879aed0"
 _BASELINE_TRAINING_SECONDS = 13_102.42
 _BASELINE_PEAK_CUDA_MEMORY_BYTES = 741_710_848
+_DINOV2_29_MACRO_AUC = 0.634180
 
 _STUDY_COLUMNS = (
     "study_index",
@@ -173,7 +177,7 @@ class CombinedBaselineConfig:
     epochs: int
     batch_size: int
     gradient_accumulation_steps: int
-    learning_rate: float
+    learning_rate: float | None
     weight_decay: float
     seed: int
     mixed_precision: bool
@@ -189,10 +193,225 @@ class CombinedBaselineConfig:
     minimum_macro_auc_delta: float = 0.005
     minimum_bootstrap_positive_fraction: float = 0.95
     large_target_regression: float = 0.02
+    backbone_learning_rate: float | None = None
+    head_learning_rate: float | None = None
+    early_stopping_minimum_epochs: int | None = None
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float | None = None
 
     @property
     def effective_batch_size(self) -> int:
         return self.batch_size * self.gradient_accumulation_steps
+
+
+@dataclass(slots=True)
+class DinoV2EarlyStopping:
+    """The fixed #30 validation-macro-AUC stopping policy."""
+
+    minimum_epochs: int
+    maximum_epochs: int
+    patience: int
+    min_delta: float
+    completed_epochs: int = 0
+    retained_best_macro_auc: float | None = None
+    retained_best_epoch: int | None = None
+    reference_best_macro_auc: float | None = None
+    eligible_non_improving_epochs: int = 0
+    stopping_epoch: int | None = None
+    stop_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.minimum_epochs <= 0
+            or self.maximum_epochs < self.minimum_epochs
+            or self.patience <= 0
+            or self.min_delta < 0
+        ):
+            raise ValueError("DINOv2 early-stopping configuration is invalid")
+
+    def observe(self, epoch: int, macro_auc: float) -> bool:
+        """Record one completed epoch and report whether training must stop."""
+        if self.stopping_epoch is not None:
+            raise RuntimeError("DINOv2 early stopping has already stopped")
+        if epoch != self.completed_epochs + 1 or epoch > self.maximum_epochs:
+            raise ValueError("DINOv2 epochs must be recorded consecutively")
+        if not math.isfinite(macro_auc):
+            raise ValueError("DINOv2 validation macro ROC-AUC must be finite")
+
+        self.completed_epochs = epoch
+        if (
+            self.retained_best_macro_auc is None
+            or macro_auc > self.retained_best_macro_auc
+        ):
+            self.retained_best_macro_auc = macro_auc
+            self.retained_best_epoch = epoch
+
+        if (
+            self.reference_best_macro_auc is None
+            or macro_auc >= self.reference_best_macro_auc + self.min_delta
+        ):
+            self.reference_best_macro_auc = macro_auc
+            self.eligible_non_improving_epochs = 0
+            qualified_improvement = True
+        else:
+            qualified_improvement = False
+        if epoch < self.minimum_epochs:
+            return False
+        if not qualified_improvement:
+            self.eligible_non_improving_epochs += 1
+
+        if self.eligible_non_improving_epochs >= self.patience:
+            self.stopping_epoch = epoch
+            self.stop_reason = "patience_exhausted"
+        elif epoch == self.maximum_epochs:
+            self.stopping_epoch = epoch
+            self.stop_reason = "maximum_epochs_reached"
+        return self.stopping_epoch is not None
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "minimum_epochs": self.minimum_epochs,
+            "maximum_epochs": self.maximum_epochs,
+            "patience": self.patience,
+            "min_delta": self.min_delta,
+            "monitor": "validation_study_level_macro_roc_auc",
+            "mode": "maximize",
+            "completed_epochs": self.completed_epochs,
+            "retained_best_macro_auc": self.retained_best_macro_auc,
+            "retained_best_epoch": self.retained_best_epoch,
+            "reference_best_macro_auc": self.reference_best_macro_auc,
+            "eligible_non_improving_epochs": self.eligible_non_improving_epochs,
+            "stopping_epoch": self.stopping_epoch,
+            "stop_reason": self.stop_reason,
+        }
+
+    @classmethod
+    def from_record(cls, record: object) -> DinoV2EarlyStopping:
+        if not isinstance(record, dict):
+            raise TypeError("DINOv2 early-stopping state must be a mapping")
+        expected = {
+            "minimum_epochs",
+            "maximum_epochs",
+            "patience",
+            "min_delta",
+            "monitor",
+            "mode",
+            "completed_epochs",
+            "retained_best_macro_auc",
+            "retained_best_epoch",
+            "reference_best_macro_auc",
+            "eligible_non_improving_epochs",
+            "stopping_epoch",
+            "stop_reason",
+        }
+        if (
+            set(record) != expected
+            or record.get("monitor") != "validation_study_level_macro_roc_auc"
+            or record.get("mode") != "maximize"
+            or any(
+                type(record.get(key)) is not int
+                for key in (
+                    "minimum_epochs",
+                    "maximum_epochs",
+                    "patience",
+                    "completed_epochs",
+                    "eligible_non_improving_epochs",
+                )
+            )
+            or not isinstance(record.get("min_delta"), (int, float))
+        ):
+            raise ValueError("DINOv2 early-stopping state is malformed")
+        state = cls(
+            minimum_epochs=cast(int, record["minimum_epochs"]),
+            maximum_epochs=cast(int, record["maximum_epochs"]),
+            patience=cast(int, record["patience"]),
+            min_delta=float(cast(float, record["min_delta"])),
+            completed_epochs=cast(int, record["completed_epochs"]),
+            eligible_non_improving_epochs=cast(
+                int, record["eligible_non_improving_epochs"]
+            ),
+        )
+        for attribute, key in (
+            ("retained_best_macro_auc", "retained_best_macro_auc"),
+            ("reference_best_macro_auc", "reference_best_macro_auc"),
+        ):
+            value = record[key]
+            if value is not None and (
+                not isinstance(value, (int, float)) or not math.isfinite(value)
+            ):
+                raise ValueError("DINOv2 early-stopping AUC is malformed")
+            setattr(state, attribute, None if value is None else float(value))
+        for attribute, key in (
+            ("retained_best_epoch", "retained_best_epoch"),
+            ("stopping_epoch", "stopping_epoch"),
+        ):
+            value = record[key]
+            if value is not None and type(value) is not int:
+                raise ValueError("DINOv2 early-stopping epoch is malformed")
+            setattr(state, attribute, value)
+        reason = record["stop_reason"]
+        if reason is not None and reason not in {
+            "patience_exhausted",
+            "maximum_epochs_reached",
+        }:
+            raise ValueError("DINOv2 early-stopping reason is malformed")
+        state.stop_reason = cast(str | None, reason)
+        if (
+            not 0 <= state.completed_epochs <= state.maximum_epochs
+            or not 0 <= state.eligible_non_improving_epochs <= state.patience
+            or (state.stopping_epoch is None) != (state.stop_reason is None)
+            or state.stopping_epoch is not None
+            and state.stopping_epoch != state.completed_epochs
+        ):
+            raise ValueError("DINOv2 early-stopping state is inconsistent")
+        return state
+
+
+def _clone_model_state_dict(model: StudyClassifier) -> dict[str, torch.Tensor]:
+    return {
+        name: value.detach().cpu().clone() for name, value in model.state_dict().items()
+    }
+
+
+def _dinov2_finetuning_metadata(
+    model: StudyClassifier,
+    optimizer: torch.optim.Optimizer,
+    *,
+    backbone_learning_rate: float,
+    head_learning_rate: float,
+    weight_decay: float,
+) -> dict[str, object]:
+    if len(optimizer.param_groups) != 2 or [
+        group["lr"] for group in optimizer.param_groups
+    ] != [backbone_learning_rate, head_learning_rate]:
+        raise ValueError("DINOv2 optimizer differs from the #30 recipe")
+    trainable = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
+    total = sum(parameter.numel() for parameter in model.parameters())
+    return {
+        "freeze_policy": {
+            "frozen": [
+                "patch_embed",
+                "cls_token",
+                "pos_embed",
+                "mask_token",
+                "blocks_0_to_5",
+            ],
+            "trainable": ["blocks_6_to_11", "norm", "classification_head"],
+        },
+        "optimizer": {
+            "parameter_group_count": 2,
+            "backbone_learning_rate": backbone_learning_rate,
+            "head_learning_rate": head_learning_rate,
+            "weight_decay": weight_decay,
+        },
+        "parameter_counts": {
+            "total": total,
+            "trainable": trainable,
+            "frozen": total - trainable,
+        },
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +452,17 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
     training_raw = _mapping(raw, "training")
     split_raw = _mapping(raw, "split")
     validation_raw = _mapping(raw, "validation")
+    architecture = _text(training_raw, "architecture")
+    supported_backbones = {
+        "torchvision.models.resnet18": "ResNet18_Weights.IMAGENET1K_V1",
+        "dinov2_vits14": "dinov2_vits14.LVD142M",
+    }
+    if architecture not in supported_backbones:
+        raise ValueError("Configuration names an unsupported backbone")
+    is_dinov2 = architecture == "dinov2_vits14"
+    early_stopping_raw = raw.get("early_stopping", {})
+    if not isinstance(early_stopping_raw, dict):
+        raise TypeError("Configuration field early_stopping must be a table")
     model_raw = raw.get("model", {})
     if not isinstance(model_raw, dict):
         raise TypeError("Configuration field model must be a table")
@@ -252,11 +482,13 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         gradient_accumulation_steps=_optional_positive_int(
             training_raw, "gradient_accumulation_steps", 1
         ),
-        learning_rate=_positive_number(training_raw, "learning_rate"),
+        learning_rate=(
+            None if is_dinov2 else _positive_number(training_raw, "learning_rate")
+        ),
         weight_decay=_nonnegative_number(training_raw, "weight_decay"),
         seed=_nonnegative_int(training_raw, "seed"),
         mixed_precision=_boolean(training_raw, "mixed_precision"),
-        architecture=_text(training_raw, "architecture"),
+        architecture=architecture,
         weight_identity=_text(training_raw, "weight_identity"),
         val_fraction=_number(split_raw, "val_fraction"),
         split_seed=_nonnegative_int(split_raw, "seed"),
@@ -282,6 +514,23 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         large_target_regression=_optional_positive_number(
             validation_raw, "large_target_regression", 0.02
         ),
+        backbone_learning_rate=(
+            _positive_number(training_raw, "backbone_learning_rate")
+            if is_dinov2
+            else None
+        ),
+        head_learning_rate=(
+            _positive_number(training_raw, "head_learning_rate") if is_dinov2 else None
+        ),
+        early_stopping_minimum_epochs=(
+            _positive_int(early_stopping_raw, "minimum_epochs") if is_dinov2 else None
+        ),
+        early_stopping_patience=(
+            _positive_int(early_stopping_raw, "patience") if is_dinov2 else None
+        ),
+        early_stopping_min_delta=(
+            _positive_number(early_stopping_raw, "min_delta") if is_dinov2 else None
+        ),
     )
     if not (
         0 <= preprocessing.lower_percentile < preprocessing.upper_percentile <= 100
@@ -289,12 +538,6 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         raise ValueError("Preprocessing percentiles are invalid")
     if preprocessing.image_size != 224:
         raise ValueError("Baseline requires 224 by 224 pixel inputs")
-    supported_backbones = {
-        "torchvision.models.resnet18": "ResNet18_Weights.IMAGENET1K_V1",
-        "dinov2_vits14": "dinov2_vits14.LVD142M",
-    }
-    if config.architecture not in supported_backbones:
-        raise ValueError("Configuration names an unsupported backbone")
     if config.weight_identity != supported_backbones[config.architecture]:
         raise ValueError("Unexpected initialization weight identity")
     if config.architecture == "dinov2_vits14" and config.aggregation != "mean":
@@ -307,6 +550,18 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         raise ValueError("paired bootstrap confidence must be between zero and one")
     if not 0 < config.minimum_bootstrap_positive_fraction <= 1:
         raise ValueError("minimum bootstrap positive fraction must be in (0, 1]")
+    if is_dinov2 and (
+        "learning_rate" in training_raw
+        or config.epochs != 20
+        or config.batch_size != 4
+        or config.gradient_accumulation_steps != 4
+        or config.backbone_learning_rate != 8e-6
+        or config.head_learning_rate != 1e-3
+        or config.early_stopping_minimum_epochs != 10
+        or config.early_stopping_patience != 4
+        or config.early_stopping_min_delta != 0.002
+    ):
+        raise ValueError("DINOv2 configuration differs from the #30 recipe")
     return config
 
 
@@ -865,7 +1120,8 @@ def load_verified_dinov2_checkpoint(
         "imagenet_std": [0.229, 0.224, 0.225],
     }:
         raise ValueError("DINOv2 checkpoint preprocessing is incompatible")
-    if checkpoint.get("completed_epochs") != 3:
+    completed_epochs = checkpoint.get("completed_epochs")
+    if type(completed_epochs) is not int or not 10 <= completed_epochs <= 20:
         raise ValueError("DINOv2 checkpoint epoch count is incompatible")
     if checkpoint.get("cohort") != {
         "selection_rule_version": _COMBINED_COHORT_RULE_VERSION,
@@ -883,6 +1139,16 @@ def load_verified_dinov2_checkpoint(
         raise ValueError("DINOv2 checkpoint cohort/partition is incompatible")
     if not _is_expected_dinov2_configuration(checkpoint.get("configuration")):
         raise ValueError("DINOv2 checkpoint configuration is incompatible")
+    early_stopping = DinoV2EarlyStopping.from_record(checkpoint.get("early_stopping"))
+    if (
+        early_stopping.completed_epochs != completed_epochs
+        or early_stopping.stopping_epoch != completed_epochs
+        or early_stopping.stop_reason is None
+        or early_stopping.retained_best_epoch is None
+        or early_stopping.retained_best_macro_auc is None
+        or len(cast(list[object], checkpoint.get("epoch_logs"))) != completed_epochs
+    ):
+        raise ValueError("DINOv2 checkpoint early-stopping state is incompatible")
     priors = checkpoint.get("priors")
     if (
         not isinstance(priors, list)
@@ -905,6 +1171,32 @@ def load_verified_dinov2_checkpoint(
         or backbone.get("initialization_artifact_sha256") != artifact.get("sha256")
     ):
         raise ValueError("DINOv2 checkpoint initialization is incompatible")
+    configure_dinov2_finetuning(model)
+    optimizer = build_dinov2_optimizer(
+        model,
+        backbone_learning_rate=8e-6,
+        head_learning_rate=1e-3,
+        weight_decay=1e-4,
+    )
+    if checkpoint.get("finetuning") != _dinov2_finetuning_metadata(
+        model,
+        optimizer,
+        backbone_learning_rate=8e-6,
+        head_learning_rate=1e-3,
+        weight_decay=1e-4,
+    ):
+        raise ValueError("DINOv2 checkpoint fine-tuning metadata is incompatible")
+    retained_state = checkpoint.get("retained_model_state_dict")
+    if (
+        not isinstance(retained_state, dict)
+        or set(retained_state) != set(checkpoint["model_state_dict"])
+        or any(
+            not isinstance(value, torch.Tensor)
+            or not torch.equal(value, checkpoint["model_state_dict"][name])
+            for name, value in retained_state.items()
+        )
+    ):
+        raise ValueError("DINOv2 checkpoint does not retain its best model state")
     return model, checkpoint
 
 
@@ -940,11 +1232,12 @@ def _expected_dinov2_configuration() -> dict[str, object]:
             "image_size": 224,
         },
         "training": {
-            "epochs": 3,
-            "batch_size": 16,
-            "gradient_accumulation_steps": 1,
+            "epochs": 20,
+            "batch_size": 4,
+            "gradient_accumulation_steps": 4,
             "effective_batch_size": 16,
-            "learning_rate": 0.0001,
+            "backbone_learning_rate": 8e-6,
+            "head_learning_rate": 1e-3,
             "weight_decay": 0.0001,
             "seed": 20260825,
             "mixed_precision": True,
@@ -962,31 +1255,19 @@ def _expected_dinov2_configuration() -> dict[str, object]:
             "minimum_bootstrap_positive_fraction": 0.95,
             "large_target_regression": 0.02,
         },
+        "early_stopping": {
+            "minimum_epochs": 10,
+            "maximum_epochs": 20,
+            "patience": 4,
+            "min_delta": 0.002,
+            "monitor": "validation_study_level_macro_roc_auc",
+            "mode": "maximize",
+        },
     }
 
 
 def _is_expected_dinov2_configuration(value: object) -> bool:
-    if not isinstance(value, dict) or not isinstance(value.get("training"), dict):
-        return False
-    training = cast(dict[str, object], value["training"])
-    batch_size = training.get("batch_size")
-    accumulation = training.get("gradient_accumulation_steps")
-    if (
-        type(batch_size) is not int
-        or type(accumulation) is not int
-        or not 0 < batch_size <= 16
-        or accumulation <= 0
-        or batch_size * accumulation != 16
-        or training.get("effective_batch_size") != 16
-    ):
-        return False
-    normalized = dict(value)
-    normalized["training"] = {
-        **training,
-        "batch_size": 16,
-        "gradient_accumulation_steps": 1,
-    }
-    return normalized == _expected_dinov2_configuration()
+    return value == _expected_dinov2_configuration()
 
 
 def run_combined_scoring(
@@ -1330,8 +1611,262 @@ def run_combined_baseline(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = artifact_dir / "checkpoint.pt"
     initialization_equivalence = None
+    model: StudyClassifier
 
-    if pretrained_checkpoint_path is not None:
+    if config.architecture == "dinov2_vits14":
+        if (
+            config.backbone_learning_rate is None
+            or config.head_learning_rate is None
+            or config.early_stopping_minimum_epochs is None
+            or config.early_stopping_patience is None
+            or config.early_stopping_min_delta is None
+        ):
+            raise ValueError("DINOv2 configuration is incomplete")
+        backbone_learning_rate = config.backbone_learning_rate
+        head_learning_rate = config.head_learning_rate
+
+        resumed_model: StudyClassifier | None = None
+        resumed_checkpoint: dict[str, Any] | None = None
+        if checkpoint_path.is_file():
+            try:
+                resumed_model, resumed_checkpoint = load_combined_checkpoint(
+                    checkpoint_path, device=device
+                )
+            except (TypeError, ValueError):
+                resumed_model = None
+                resumed_checkpoint = None
+            else:
+                if resumed_checkpoint.get("configuration") != _combined_config_record(
+                    config
+                ):
+                    del resumed_model
+                    resumed_model = None
+                    resumed_checkpoint = None
+
+        if resumed_model is None or resumed_checkpoint is None:
+            model, initialization = build_dinov2_initialized_model(
+                inputs.weight_path, cohort.target_names
+            )
+            model.to(device)
+            initialization_sha256 = initialization.sha256
+            initialization_record = {
+                "contract": initialization.contract,
+                "contract_sha256": initialization.contract_sha256,
+                "artifact_sha256": initialization.sha256,
+                "artifact_size_bytes": initialization.size_bytes,
+            }
+            train_target_counts = partition.summary["train"]["per_target"]
+            priors = tuple(
+                train_target_counts[target]["total"]["positive"]
+                / max(1, train_target_counts[target]["total"]["known"])
+                for target in cohort.target_names
+            )
+            early_stopping = DinoV2EarlyStopping(
+                minimum_epochs=config.early_stopping_minimum_epochs,
+                maximum_epochs=config.epochs,
+                patience=config.early_stopping_patience,
+                min_delta=config.early_stopping_min_delta,
+            )
+            retained_model_state_dict: dict[str, torch.Tensor] = {}
+            epoch_logs: list[dict[str, Any]] = []
+            prior_training_seconds = 0.0
+        else:
+            model = resumed_model
+            initialization_value = resumed_checkpoint.get("initialization")
+            if not isinstance(initialization_value, dict):
+                raise ValueError("DINOv2 resume checkpoint initialization is malformed")
+            initialization_record = cast(dict[str, Any], initialization_value)
+            initialization_sha256 = str(initialization_record["artifact_sha256"])
+            priors = tuple(float(value) for value in resumed_checkpoint["priors"])
+            early_stopping = DinoV2EarlyStopping.from_record(
+                resumed_checkpoint["early_stopping"]
+            )
+            if (
+                early_stopping.minimum_epochs != config.early_stopping_minimum_epochs
+                or early_stopping.maximum_epochs != config.epochs
+                or early_stopping.patience != config.early_stopping_patience
+                or early_stopping.min_delta != config.early_stopping_min_delta
+            ):
+                raise ValueError("DINOv2 resume checkpoint recipe differs from config")
+            saved_best = resumed_checkpoint["retained_model_state_dict"]
+            if not isinstance(saved_best, dict) or any(
+                not isinstance(value, torch.Tensor) for value in saved_best.values()
+            ):
+                raise ValueError("DINOv2 retained checkpoint state is malformed")
+            retained_model_state_dict = {
+                name: value.detach().cpu()
+                for name, value in cast(dict[str, torch.Tensor], saved_best).items()
+            }
+            raw_epoch_logs = resumed_checkpoint["epoch_logs"]
+            if not isinstance(raw_epoch_logs, list) or any(
+                not isinstance(record, dict) for record in raw_epoch_logs
+            ):
+                raise ValueError("DINOv2 resume epoch logs are malformed")
+            epoch_logs = cast(list[dict[str, Any]], raw_epoch_logs)
+            prior_training_seconds = float(resumed_checkpoint["training_seconds"])
+
+        configure_dinov2_finetuning(model)
+        optimizer = build_dinov2_optimizer(
+            model,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
+            weight_decay=config.weight_decay,
+        )
+        scaler = torch.GradScaler("cuda", enabled=config.mixed_precision)
+        if resumed_checkpoint is not None:
+            optimizer.load_state_dict(resumed_checkpoint["optimizer_state_dict"])
+            scaler.load_state_dict(resumed_checkpoint["scaler_state_dict"])
+            _restore_rng_state(resumed_checkpoint["rng_state"], device=device)
+            if resumed_checkpoint["finetuning"] != _dinov2_finetuning_metadata(
+                model,
+                optimizer,
+                backbone_learning_rate=backbone_learning_rate,
+                head_learning_rate=head_learning_rate,
+                weight_decay=config.weight_decay,
+            ):
+                raise ValueError("DINOv2 resume checkpoint metadata is incompatible")
+
+        total_training_start = time.perf_counter()
+
+        def save_dinov2_checkpoint(current_model: StudyClassifier) -> None:
+            payload: dict[str, Any] = {
+                "checkpoint_schema_version": _DINOV2_CHECKPOINT_SCHEMA_VERSION,
+                "model_state_dict": current_model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
+                "completed_epochs": early_stopping.completed_epochs,
+                "targets": list(cohort.target_names),
+                "priors": list(priors),
+                "preprocessing": {
+                    **asdict(config.preprocessing),
+                    "shared_contract": "preprocess_series_result",
+                    "channel_adapter": "grayscale_repeat_to_rgb",
+                    "imagenet_mean": [0.485, 0.456, 0.406],
+                    "imagenet_std": [0.229, 0.224, 0.225],
+                },
+                "cohort": {
+                    "selection_rule_version": _COMBINED_COHORT_RULE_VERSION,
+                    "digest": cohort.digest,
+                    "gold_study_count": cohort.gold_study_count,
+                    "non_gold_study_count": cohort.non_gold_study_count,
+                    "total_study_count": cohort.total_study_count,
+                },
+                "partition": {
+                    "split_rule_version": _COMBINED_SPLIT_RULE_VERSION,
+                    "split_seed": config.split_seed,
+                    "val_fraction": config.val_fraction,
+                    "train_study_count": len(partition.train_studies),
+                    "val_study_count": len(partition.val_studies),
+                },
+                "initialization": initialization_record,
+                "configuration": _combined_config_record(config),
+                "code": dict(source_provenance or {}),
+                "runtime": runtime_record(),
+                "artifact_hashes": {
+                    "index_manifest_sha256": _sha256(
+                        inputs.index_artifact_dir / "index-manifest.json"
+                    ),
+                    "initialization_artifact_sha256": initialization_sha256,
+                    "public_labels_sha256": cohort.public_labels_sha256,
+                    "public_dataset_contract_sha256": cohort.public_dataset_contract_sha256,
+                    "gold_contract_sha256": cohort.gold_contract_sha256,
+                },
+                "rng_state": {
+                    "python": random.getstate(),
+                    "numpy": _numpy_rng_state(),
+                    "torch_cpu": torch.get_rng_state(),
+                    "torch_cuda": torch.cuda.get_rng_state_all()
+                    if torch.cuda.is_available()
+                    else [],
+                },
+                "backbone": {
+                    "identity": "dinov2_vits14",
+                    "feature_count": DINOV2_VITS14_FEATURE_COUNT,
+                    "initialization_artifact_sha256": initialization_sha256,
+                },
+                "finetuning": _dinov2_finetuning_metadata(
+                    current_model,
+                    optimizer,
+                    backbone_learning_rate=backbone_learning_rate,
+                    head_learning_rate=head_learning_rate,
+                    weight_decay=config.weight_decay,
+                ),
+                "early_stopping": early_stopping.to_record(),
+                "retained_model_state_dict": retained_model_state_dict,
+                "epoch_logs": epoch_logs,
+                "training_seconds": (
+                    prior_training_seconds + time.perf_counter() - total_training_start
+                ),
+            }
+            save_checkpoint(checkpoint_path, payload)
+
+        for epoch in range(early_stopping.completed_epochs, config.epochs):
+            if early_stopping.stopping_epoch is not None:
+                break
+            train_rec = train_epoch(
+                model=model,
+                optimizer=optimizer,
+                scaler=scaler,
+                indexed=training_index,
+                studies=partition.train_studies,
+                preprocessing=config.preprocessing,
+                batch_size=config.batch_size,
+                seed=config.seed,
+                mixed_precision=config.mixed_precision,
+                device=device,
+                epoch=epoch,
+                collect_diagnostics=False,
+                gradient_accumulation_steps=config.gradient_accumulation_steps,
+            )
+            val_pred = predict_partition(
+                model=model,
+                indexed=training_index,
+                studies=partition.val_studies,
+                preprocessing=config.preprocessing,
+                mixed_precision=config.mixed_precision,
+                device=device,
+            )
+            val_metrics = _evaluate_predictions(
+                val_pred.probabilities,
+                [study.labels for study in val_pred.studies],
+                cohort.target_names,
+            )
+            macro_auc = val_metrics["mean_roc_auc"]
+            if macro_auc is None:
+                raise RuntimeError("DINOv2 validation macro ROC-AUC is unavailable")
+            should_stop = early_stopping.observe(epoch + 1, float(macro_auc))
+            epoch_logs.append(
+                {
+                    "epoch": epoch + 1,
+                    "train_mean_loss": train_rec["mean_loss"],
+                    "train_seconds": train_rec["training_seconds"],
+                    "val_mean_bce": val_metrics["mean_binary_cross_entropy"],
+                    "val_accuracy_at_0_5": val_metrics["mean_accuracy_at_0_5"],
+                    "val_mean_roc_auc": macro_auc,
+                    "val_per_target": val_metrics["per_target"],
+                    "optimizer_steps": train_rec["optimizer_step_count"],
+                    "valid_training_slices": train_rec["valid_slice_count"],
+                    "decode_seconds": train_rec["decode_seconds"],
+                    "forward_backward_seconds": train_rec["forward_backward_seconds"],
+                    "training_slices_per_second": (
+                        train_rec["valid_slice_count"] / train_rec["training_seconds"]
+                    ),
+                }
+            )
+            if early_stopping.retained_best_epoch == epoch + 1:
+                retained_model_state_dict = _clone_model_state_dict(model)
+            save_dinov2_checkpoint(model)
+            if should_stop:
+                break
+
+        total_training_seconds = (
+            prior_training_seconds + time.perf_counter() - total_training_start
+        )
+        if early_stopping.stopping_epoch is None or not retained_model_state_dict:
+            raise RuntimeError("DINOv2 training ended without a retained checkpoint")
+        model.load_state_dict(retained_model_state_dict, strict=True)
+        save_dinov2_checkpoint(model)
+    elif pretrained_checkpoint_path is not None:
         model, ckpt_payload = load_combined_checkpoint(
             pretrained_checkpoint_path, device=device
         )
@@ -1357,16 +1892,11 @@ def run_combined_baseline(
             }
         ]
     else:
-        if config.architecture == "dinov2_vits14":
-            model, initialization = build_dinov2_initialized_model(
-                inputs.weight_path, cohort.target_names
-            )
-        else:
-            model, initialization = build_initialized_model(
-                inputs.weight_path,
-                cohort.target_names,
-                aggregation=config.aggregation,
-            )
+        model, initialization = build_initialized_model(
+            inputs.weight_path,
+            cohort.target_names,
+            aggregation=config.aggregation,
+        )
         if config.aggregation == "target_plane_gate":
             initialization_equivalence = _zero_gate_equivalence(model)
         initialization_sha256 = initialization.sha256
@@ -1377,6 +1907,8 @@ def run_combined_baseline(
             "artifact_size_bytes": initialization.size_bytes,
         }
         model.to(device)
+        if config.learning_rate is None:
+            raise ValueError("Baseline learning rate is missing")
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config.learning_rate,
@@ -1448,13 +1980,9 @@ def run_combined_baseline(
 
         checkpoint_payload = {
             "checkpoint_schema_version": (
-                _DINOV2_CHECKPOINT_SCHEMA_VERSION
-                if config.architecture == "dinov2_vits14"
-                else (
-                    _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION
-                    if config.aggregation == "target_plane_gate"
-                    else _COMBINED_CHECKPOINT_SCHEMA_VERSION
-                )
+                _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION
+                if config.aggregation == "target_plane_gate"
+                else _COMBINED_CHECKPOINT_SCHEMA_VERSION
             ),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -1514,12 +2042,6 @@ def run_combined_baseline(
             checkpoint_payload["aggregation"] = _plane_gate_metadata(
                 cohort.target_names
             )
-        elif config.architecture == "dinov2_vits14":
-            checkpoint_payload["backbone"] = {
-                "identity": "dinov2_vits14",
-                "feature_count": DINOV2_VITS14_FEATURE_COUNT,
-                "initialization_artifact_sha256": initialization.sha256,
-            }
         save_checkpoint(checkpoint_path, checkpoint_payload)
 
     pre_reload_val_pred = predict_partition(
@@ -1545,7 +2067,11 @@ def run_combined_baseline(
     del model
     torch.cuda.empty_cache()
 
-    reloaded_model, _ = load_combined_checkpoint(checkpoint_path, device=device)
+    reloaded_model, reloaded_checkpoint = load_combined_checkpoint(
+        checkpoint_path, device=device
+    )
+    if config.architecture == "dinov2_vits14":
+        configure_dinov2_finetuning(reloaded_model)
 
     reloaded_val_pred = predict_partition(
         model=reloaded_model,
@@ -1609,6 +2135,18 @@ def run_combined_baseline(
                 - baseline_diagnostics["mean_binary_cross_entropy"]
             ),
         }
+        if config.architecture == "dinov2_vits14":
+            candidate_macro_auc = comparison["metrics"]["candidate"][
+                "official_macro_auc"
+            ]
+            comparison["optimization_diagnostic"] = {
+                "issue_29_macro_auc": _DINOV2_29_MACRO_AUC,
+                "issue_30_minus_issue_29_macro_auc": (
+                    candidate_macro_auc - _DINOV2_29_MACRO_AUC
+                    if candidate_macro_auc is not None
+                    else None
+                ),
+            }
         decision = (
             _dinov2_decision(comparison, config)
             if config.architecture == "dinov2_vits14"
@@ -1649,6 +2187,17 @@ def run_combined_baseline(
     parameter_count = sum(
         parameter.numel() for parameter in reloaded_model.parameters()
     )
+    trainable_parameter_count = sum(
+        parameter.numel()
+        for parameter in reloaded_model.parameters()
+        if parameter.requires_grad
+    )
+    frozen_parameter_count = parameter_count - trainable_parameter_count
+    dino_early_stopping = (
+        cast(dict[str, Any], reloaded_checkpoint["early_stopping"])
+        if config.architecture == "dinov2_vits14"
+        else None
+    )
     checkpoint_size_bytes = checkpoint_path.stat().st_size
     valid_training_slices = sum(
         cast(int, record.get("valid_training_slices", 0)) for record in epoch_logs
@@ -1681,6 +2230,15 @@ def run_combined_baseline(
             "parameter_count": parameter_count,
             "head": "linear_12_target",
             "zero_initialized_equivalence": initialization_equivalence,
+            **(
+                {
+                    "trainable_parameter_count": trainable_parameter_count,
+                    "frozen_parameter_count": frozen_parameter_count,
+                    "finetuning": reloaded_checkpoint["finetuning"],
+                }
+                if config.architecture == "dinov2_vits14"
+                else {}
+            ),
         },
         "initialization": initialization_record,
         "baseline_reproducibility": {
@@ -1767,11 +2325,20 @@ def run_combined_baseline(
             "approved_gpu": approved_gpu,
             "cuda_readiness": cuda_evidence,
             "total_training_seconds": total_training_seconds,
-            "epochs_completed": config.epochs,
+            "epochs_completed": (
+                reloaded_checkpoint["completed_epochs"]
+                if config.architecture == "dinov2_vits14"
+                else config.epochs
+            ),
             "micro_batch_size": config.batch_size,
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
             "effective_batch_size": config.effective_batch_size,
             "epoch_logs": epoch_logs,
+            **(
+                {"early_stopping": dino_early_stopping}
+                if dino_early_stopping is not None
+                else {}
+            ),
             "control_validation_decode_seconds": (
                 control_val_pred.decode_seconds
                 if control_val_pred is not None
@@ -1812,6 +2379,14 @@ def run_combined_baseline(
                     "training_slices_per_second": training_slices_per_second,
                     "parameter_count": parameter_count,
                     "checkpoint_size_bytes": checkpoint_size_bytes,
+                    **(
+                        {
+                            "trainable_parameter_count": trainable_parameter_count,
+                            "frozen_parameter_count": frozen_parameter_count,
+                        }
+                        if config.architecture == "dinov2_vits14"
+                        else {}
+                    ),
                 },
                 "training_time_ratio_vs_27": (
                     total_training_seconds / _BASELINE_TRAINING_SECONDS
@@ -1841,6 +2416,18 @@ def run_combined_baseline(
             "reloaded_before_inference": True,
             "max_reload_absolute_diff": max_diff,
             "reload_reproducible": True,
+            **(
+                {
+                    "retained_best_epoch": dino_early_stopping["retained_best_epoch"],
+                    "best_validation_macro_auc": dino_early_stopping[
+                        "retained_best_macro_auc"
+                    ],
+                    "stopping_epoch": dino_early_stopping["stopping_epoch"],
+                    "stop_reason": dino_early_stopping["stop_reason"],
+                }
+                if dino_early_stopping is not None
+                else {}
+            ),
         },
         "submission": (
             {
@@ -1963,7 +2550,16 @@ def load_combined_checkpoint(
     if schema_version == _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION:
         required.add("aggregation")
     elif schema_version == _DINOV2_CHECKPOINT_SCHEMA_VERSION:
-        required.add("backbone")
+        required.update(
+            {
+                "backbone",
+                "finetuning",
+                "early_stopping",
+                "retained_model_state_dict",
+                "epoch_logs",
+                "training_seconds",
+            }
+        )
     if set(checkpoint) != required:
         raise ValueError("Combined checkpoint fields are incomplete or unexpected")
     if schema_version not in {
@@ -2010,6 +2606,17 @@ def load_combined_checkpoint(
             or training.get("weight_identity") != "dinov2_vits14.LVD142M"
         ):
             raise ValueError("DINOv2 checkpoint backbone metadata is incompatible")
+        state = DinoV2EarlyStopping.from_record(checkpoint.get("early_stopping"))
+        if (
+            checkpoint.get("completed_epochs") != state.completed_epochs
+            or not isinstance(checkpoint.get("finetuning"), dict)
+            or not isinstance(checkpoint.get("retained_model_state_dict"), dict)
+            or not isinstance(checkpoint.get("epoch_logs"), list)
+            or not isinstance(checkpoint.get("training_seconds"), (int, float))
+            or isinstance(checkpoint.get("training_seconds"), bool)
+            or checkpoint["training_seconds"] < 0
+        ):
+            raise ValueError("DINOv2 checkpoint training state is incompatible")
         model = _new_uninitialized_model(
             len(targets), aggregation=aggregation, architecture="dinov2_vits14"
         )
@@ -2158,7 +2765,7 @@ def verify_plane_gating_artifact(artifact_dir: Path) -> dict[str, Any]:
 
 
 def verify_dinov2_artifact(artifact_dir: Path) -> dict[str, Any]:
-    """Verify a completed #29 checkpoint and paired-validation artifact."""
+    """Verify a completed #30 checkpoint and paired-validation artifact."""
     required = (
         artifact_dir / "checkpoint.pt",
         artifact_dir / "training-report.json",
@@ -2188,6 +2795,7 @@ def verify_dinov2_artifact(artifact_dir: Path) -> dict[str, Any]:
     model = report.get("model")
     comparison = report.get("controlled_comparison")
     submission = report.get("submission")
+    execution = report.get("training_execution")
     if (
         report.get("status") != "complete"
         or not isinstance(model, dict)
@@ -2195,6 +2803,12 @@ def verify_dinov2_artifact(artifact_dir: Path) -> dict[str, Any]:
         or model.get("feature_count") != DINOV2_VITS14_FEATURE_COUNT
         or model.get("aggregation") != "mean"
         or model.get("learned_aggregation_scalars") != 0
+        or not isinstance(model.get("finetuning"), dict)
+        or not isinstance(execution, dict)
+        or not isinstance(execution.get("early_stopping"), dict)
+        or execution.get("epochs_completed") not in range(10, 21)
+        or not isinstance(execution.get("epoch_logs"), list)
+        or len(execution["epoch_logs"]) != execution["epochs_completed"]
         or not isinstance(comparison, dict)
         or comparison.get("paired_validation_membership") is not True
         or not isinstance(comparison.get("metrics"), dict)
@@ -2218,6 +2832,17 @@ def verify_dinov2_artifact(artifact_dir: Path) -> dict[str, Any]:
         load_verified_submission_contract().target_names
     ):
         raise ValueError("DINOv2 checkpoint target order is invalid")
+    if (
+        report.get("configuration") != _expected_dinov2_configuration()
+        or manifest.get("configuration") != report.get("configuration")
+        or checkpoint.get("configuration") != report.get("configuration")
+        or execution["early_stopping"] != checkpoint.get("early_stopping")
+        or report.get("checkpoint", {}).get("retained_best_epoch")
+        != checkpoint["early_stopping"]["retained_best_epoch"]
+        or report.get("checkpoint", {}).get("stopping_epoch")
+        != checkpoint["early_stopping"]["stopping_epoch"]
+    ):
+        raise ValueError("DINOv2 report/checkpoint provenance is inconsistent")
     return {
         "valid": True,
         "run_id": manifest.get("run_id"),
@@ -2442,13 +3067,31 @@ def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]
     training: dict[str, object] = {
         "epochs": config.epochs,
         "batch_size": config.batch_size,
-        "learning_rate": config.learning_rate,
         "weight_decay": config.weight_decay,
         "seed": config.seed,
         "mixed_precision": config.mixed_precision,
         "architecture": config.architecture,
         "weight_identity": config.weight_identity,
     }
+    if config.architecture == "dinov2_vits14":
+        if (
+            config.backbone_learning_rate is None
+            or config.head_learning_rate is None
+            or config.early_stopping_minimum_epochs is None
+            or config.early_stopping_patience is None
+            or config.early_stopping_min_delta is None
+        ):
+            raise ValueError("DINOv2 configuration is incomplete")
+        training.update(
+            {
+                "backbone_learning_rate": config.backbone_learning_rate,
+                "head_learning_rate": config.head_learning_rate,
+            }
+        )
+    else:
+        if config.learning_rate is None:
+            raise ValueError("Baseline learning rate is missing")
+        training["learning_rate"] = config.learning_rate
     if (
         config.gradient_accumulation_steps != 1
         or config.architecture == "dinov2_vits14"
@@ -2486,6 +3129,15 @@ def _combined_config_record(config: CombinedBaselineConfig) -> dict[str, object]
                 "large_target_regression": config.large_target_regression,
             }
         )
+    if config.architecture == "dinov2_vits14":
+        record["early_stopping"] = {
+            "minimum_epochs": config.early_stopping_minimum_epochs,
+            "maximum_epochs": config.epochs,
+            "patience": config.early_stopping_patience,
+            "min_delta": config.early_stopping_min_delta,
+            "monitor": "validation_study_level_macro_roc_auc",
+            "mode": "maximize",
+        }
     return record
 
 

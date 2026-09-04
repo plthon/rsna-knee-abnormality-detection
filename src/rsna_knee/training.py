@@ -35,7 +35,7 @@ from .competition_contract import (
     load_verified_submission_contract,
 )
 from .config import PreprocessingConfig
-from .dinov2 import DINOV2_VITS14_FEATURE_COUNT, dinov2_vits14
+from .dinov2 import DINOV2_VITS14_FEATURE_COUNT, DinoV2ViTS14, dinov2_vits14
 from .indexing import verify_index_artifact
 from .preprocessing import preprocess_series_result
 from .provenance import create_run_id, write_run_manifest
@@ -603,6 +603,59 @@ def build_dinov2_initialized_model(
             aggregation="mean",
         ),
         initialization,
+    )
+
+
+def configure_dinov2_finetuning(model: StudyClassifier) -> None:
+    """Freeze DINOv2's input and first six blocks for the #30 recipe."""
+    if not isinstance(model.backbone, DinoV2ViTS14) or model.plane_gate is not None:
+        raise ValueError("DINOv2 fine-tuning requires the mean-pooled ViT-S/14 model")
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    for block in model.backbone.blocks[6:]:
+        for parameter in block.parameters():
+            parameter.requires_grad_(True)
+    for parameter in model.backbone.norm.parameters():
+        parameter.requires_grad_(True)
+    for parameter in model.head.parameters():
+        parameter.requires_grad_(True)
+
+
+def build_dinov2_optimizer(
+    model: StudyClassifier,
+    *,
+    backbone_learning_rate: float,
+    head_learning_rate: float,
+    weight_decay: float,
+) -> torch.optim.AdamW:
+    """Build the two fixed #30 AdamW parameter groups."""
+    if min(backbone_learning_rate, head_learning_rate) <= 0 or weight_decay < 0:
+        raise ValueError("DINOv2 optimizer hyperparameters are invalid")
+    backbone_parameters = [
+        parameter
+        for parameter in model.backbone.parameters()
+        if parameter.requires_grad
+    ]
+    head_parameters = [
+        parameter for parameter in model.head.parameters() if parameter.requires_grad
+    ]
+    grouped = [*backbone_parameters, *head_parameters]
+    if (
+        not backbone_parameters
+        or not head_parameters
+        or len({id(parameter) for parameter in grouped}) != len(grouped)
+        or {id(parameter) for parameter in grouped}
+        != {
+            id(parameter) for parameter in model.parameters() if parameter.requires_grad
+        }
+    ):
+        raise ValueError("DINOv2 optimizer groups must cover trainable parameters once")
+    return torch.optim.AdamW(
+        [
+            {"params": backbone_parameters, "lr": backbone_learning_rate},
+            {"params": head_parameters, "lr": head_learning_rate},
+        ],
+        weight_decay=weight_decay,
     )
 
 

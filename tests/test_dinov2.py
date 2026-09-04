@@ -10,7 +10,9 @@ from torch import Tensor, nn
 
 import rsna_knee.training as training_module
 from rsna_knee.combined_supervision import (
+    DinoV2EarlyStopping,
     _dinov2_decision,
+    _dinov2_finetuning_metadata,
     _retained_hidden_test_inference_estimate,
     load_combined_baseline_config,
     load_combined_checkpoint,
@@ -31,6 +33,8 @@ from rsna_knee.training import (
     Label,
     _new_uninitialized_model,
     build_dinov2_initialized_model,
+    build_dinov2_optimizer,
+    configure_dinov2_finetuning,
     train_epoch,
     verify_dinov2_initialization_artifact,
 )
@@ -51,6 +55,12 @@ def test_dinov2_config_names_the_only_supported_candidate(tmp_path: Path) -> Non
     assert config.batch_size == 4
     assert config.gradient_accumulation_steps == 4
     assert config.effective_batch_size == 16
+    assert config.epochs == 20
+    assert config.backbone_learning_rate == 8e-6
+    assert config.head_learning_rate == 1e-3
+    assert config.early_stopping_minimum_epochs == 10
+    assert config.early_stopping_patience == 4
+    assert config.early_stopping_min_delta == 0.002
 
     unsupported = (
         (PROJECT_ROOT / "configs/dinov2.toml")
@@ -61,6 +71,109 @@ def test_dinov2_config_names_the_only_supported_candidate(tmp_path: Path) -> Non
     path.write_text(unsupported)
     with pytest.raises(ValueError, match="supported backbone"):
         load_combined_baseline_config(path)
+
+
+def test_dinov2_finetuning_has_two_disjoint_groups_and_frozen_parameters_stay_fixed() -> (
+    None
+):
+    model = GoldResNet18(
+        dinov2_vits14(), DINOV2_VITS14_FEATURE_COUNT, target_count=len(TARGETS)
+    )
+    configure_dinov2_finetuning(model)
+    optimizer = build_dinov2_optimizer(
+        model,
+        backbone_learning_rate=8e-6,
+        head_learning_rate=1e-3,
+        weight_decay=1e-4,
+    )
+    backbone = cast(DinoV2ViTS14, model.backbone)
+
+    assert all(
+        not parameter.requires_grad
+        for parameter in (
+            *backbone.patch_embed.parameters(),
+            backbone.cls_token,
+            backbone.pos_embed,
+            backbone.mask_token,
+            *(
+                parameter
+                for block in backbone.blocks[:6]
+                for parameter in block.parameters()
+            ),
+        )
+    )
+    assert all(
+        parameter.requires_grad
+        for parameter in (
+            *(
+                parameter
+                for block in backbone.blocks[6:]
+                for parameter in block.parameters()
+            ),
+            *backbone.norm.parameters(),
+            *model.head.parameters(),
+        )
+    )
+    assert len(optimizer.param_groups) == 2
+    assert [group["lr"] for group in optimizer.param_groups] == [8e-6, 1e-3]
+    grouped = [
+        parameter
+        for group in optimizer.param_groups
+        for parameter in cast(list[Tensor], group["params"])
+    ]
+    assert len({id(parameter) for parameter in grouped}) == len(grouped)
+    assert {id(parameter) for parameter in grouped} == {
+        id(parameter) for parameter in model.parameters() if parameter.requires_grad
+    }
+
+    frozen_before = backbone.patch_embed.proj.weight.detach().clone()
+    trainable_parameter = next(backbone.blocks[6].parameters())
+    trainable_before = trainable_parameter.detach().clone()
+    trainable_parameter.sum().backward()  # type: ignore[no-untyped-call]
+    model.head.weight.grad = torch.ones_like(model.head.weight)
+    optimizer.step()
+
+    assert torch.equal(backbone.patch_embed.proj.weight, frozen_before)
+    assert trainable_parameter.grad is not None
+    assert model.head.weight.grad is not None
+    assert not torch.equal(trainable_parameter, trainable_before)
+
+
+def test_dinov2_early_stopping_tracks_best_checkpoint_and_eligible_patience() -> None:
+    state = DinoV2EarlyStopping(
+        minimum_epochs=10,
+        maximum_epochs=20,
+        patience=4,
+        min_delta=0.002,
+    )
+    for epoch in range(1, 10):
+        assert state.observe(epoch, 0.5) is False
+    assert state.observe(10, 0.5) is False
+    resumed = DinoV2EarlyStopping.from_record(state.to_record())
+    assert resumed.to_record() == state.to_record()
+    assert state.observe(11, 0.501) is resumed.observe(11, 0.501) is False
+    assert resumed.to_record() == state.to_record()
+    assert state.retained_best_epoch == 11
+    assert state.eligible_non_improving_epochs == 2
+    assert state.observe(12, 0.502) is False
+    assert state.reference_best_macro_auc == 0.502
+    assert state.eligible_non_improving_epochs == 0
+    assert state.observe(13, 0.502) is False
+    assert state.observe(14, 0.501) is False
+    assert state.observe(15, 0.501) is False
+    assert state.observe(16, 0.501) is True
+    assert state.stop_reason == "patience_exhausted"
+    assert state.stopping_epoch == 16
+
+    ties = DinoV2EarlyStopping(10, 20, 4, 0.002)
+    for epoch, auc in enumerate((0.4,) * 11, start=1):
+        ties.observe(epoch, auc)
+    assert ties.retained_best_epoch == 1
+
+    maximum = DinoV2EarlyStopping(10, 20, 4, 0.002)
+    for epoch in range(1, 21):
+        assert maximum.observe(epoch, epoch / 100) is (epoch == 20)
+    assert maximum.stop_reason == "maximum_epochs_reached"
 
 
 @pytest.mark.training
@@ -93,7 +206,7 @@ def test_dinov2_contract_pins_official_implementation_and_weights() -> None:
 
 
 @pytest.mark.training
-def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
+def test_dinov2_offline_build_has_linear_head_and_partial_finetuning_gradients(
     tmp_path: Path,
 ) -> None:
     weight_path = tmp_path / "dinov2_vits14_pretrain.pth"
@@ -116,6 +229,13 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
     assert artifact.sha256 == contract["artifact"]["sha256"]
     assert model.head.out_features == 12
     assert model.plane_gate is None
+    configure_dinov2_finetuning(model)
+    optimizer = build_dinov2_optimizer(
+        model,
+        backbone_learning_rate=8e-6,
+        head_learning_rate=1e-3,
+        weight_decay=1e-4,
+    )
 
     logits = model(
         torch.zeros(1, 1, 1, 224, 224),
@@ -125,16 +245,23 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
     assert logits.shape == (1, 12)
     logits.sum().backward()
     backbone = cast(DinoV2ViTS14, model.backbone)
-    assert backbone.patch_embed.proj.weight.grad is not None
+    assert backbone.patch_embed.proj.weight.grad is None
+    assert any(
+        parameter.grad is not None for parameter in backbone.blocks[6].parameters()
+    )
     assert model.head.weight.grad is not None
+
+    early_stopping = DinoV2EarlyStopping(10, 20, 4, 0.002)
+    for epoch in range(1, 14):
+        early_stopping.observe(epoch, 0.5)
 
     checkpoint_path = tmp_path / "checkpoint.pt"
     payload: dict[str, Any] = {
-        "checkpoint_schema_version": 3,
+        "checkpoint_schema_version": 4,
         "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": {},
+        "optimizer_state_dict": optimizer.state_dict(),
         "scaler_state_dict": {},
-        "completed_epochs": 3,
+        "completed_epochs": early_stopping.completed_epochs,
         "targets": [f"target-{index}" for index in range(12)],
         "priors": [0.5] * 12,
         "preprocessing": {},
@@ -156,6 +283,19 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
             "feature_count": 384,
             "initialization_artifact_sha256": artifact.sha256,
         },
+        "finetuning": _dinov2_finetuning_metadata(
+            model,
+            optimizer,
+            backbone_learning_rate=8e-6,
+            head_learning_rate=1e-3,
+            weight_decay=1e-4,
+        ),
+        "early_stopping": early_stopping.to_record(),
+        "retained_model_state_dict": model.state_dict(),
+        "epoch_logs": [
+            {"epoch": epoch} for epoch in range(1, early_stopping.completed_epochs + 1)
+        ],
+        "training_seconds": 1.0,
     }
     torch.save(payload, checkpoint_path)
     reloaded, reloaded_payload = load_combined_checkpoint(
@@ -213,11 +353,12 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
             "image_size": 224,
         },
         "training": {
-            "epochs": 3,
-            "batch_size": 16,
-            "gradient_accumulation_steps": 1,
+            "epochs": 20,
+            "batch_size": 4,
+            "gradient_accumulation_steps": 4,
             "effective_batch_size": 16,
-            "learning_rate": 0.0001,
+            "backbone_learning_rate": 8e-6,
+            "head_learning_rate": 1e-3,
             "weight_decay": 0.0001,
             "seed": 20260825,
             "mixed_precision": True,
@@ -235,6 +376,14 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
             "minimum_bootstrap_positive_fraction": 0.95,
             "large_target_regression": 0.02,
         },
+        "early_stopping": {
+            "minimum_epochs": 10,
+            "maximum_epochs": 20,
+            "patience": 4,
+            "min_delta": 0.002,
+            "monitor": "validation_study_level_macro_roc_auc",
+            "mode": "maximize",
+        },
     }
     payload["backbone"] = {
         **payload["backbone"],
@@ -250,23 +399,26 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
     )
     assert verified.head.out_features == len(TARGETS)
     assert verified_payload["targets"] == list(TARGETS)
+    assert verified_payload["finetuning"]["freeze_policy"] == {
+        "frozen": [
+            "patch_embed",
+            "cls_token",
+            "pos_embed",
+            "mask_token",
+            "blocks_0_to_5",
+        ],
+        "trainable": ["blocks_6_to_11", "norm", "classification_head"],
+    }
+    assert verified_payload["finetuning"]["optimizer"] == {
+        "parameter_group_count": 2,
+        "backbone_learning_rate": 8e-6,
+        "head_learning_rate": 1e-3,
+        "weight_decay": 1e-4,
+    }
+    assert verified_payload["early_stopping"]["stopping_epoch"] == 13
+    assert verified_payload["early_stopping"]["retained_best_epoch"] == 1
 
-    payload["configuration"]["training"].update(
-        {
-            "batch_size": 4,
-            "gradient_accumulation_steps": 4,
-            "effective_batch_size": 16,
-        }
-    )
-    torch.save(payload, checkpoint_path)
-    load_verified_dinov2_checkpoint(
-        checkpoint_path,
-        device=torch.device("cpu"),
-        expected_sha256=hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
-        contract_path=PROJECT_ROOT / "contracts/competition.json",
-    )
-
-    with pytest.raises(ValueError, match="configuration metadata"):
+    with pytest.raises(ValueError, match="completed 3-epoch run"):
         load_verified_combined_checkpoint(
             checkpoint_path,
             device=torch.device("cpu"),
@@ -277,7 +429,15 @@ def test_dinov2_offline_build_has_linear_head_and_end_to_end_gradients(
     resnet_path = tmp_path / "resnet-checkpoint.pt"
     resnet_payload = dict(payload)
     resnet_payload["checkpoint_schema_version"] = 1
-    resnet_payload.pop("backbone")
+    for key in (
+        "backbone",
+        "finetuning",
+        "early_stopping",
+        "retained_model_state_dict",
+        "epoch_logs",
+        "training_seconds",
+    ):
+        resnet_payload.pop(key)
     resnet_payload["model_state_dict"] = _new_uninitialized_model(
         len(TARGETS)
     ).state_dict()
@@ -442,3 +602,26 @@ def test_hidden_inference_estimate_is_only_reported_for_a_retained_candidate() -
         )
         == 10.0
     )
+
+
+def test_dinov2_model_uses_ordinary_two_stage_mean_reduction_without_gating() -> None:
+    class DummyBackbone(nn.Module):
+        def forward(self, values: Tensor) -> Tensor:
+            flat = values.mean(dim=(1, 2, 3), keepdim=True).flatten(1)
+            return flat.expand(-1, DINOV2_VITS14_FEATURE_COUNT)
+
+    model = GoldResNet18(
+        DummyBackbone(),
+        feature_count=DINOV2_VITS14_FEATURE_COUNT,
+        target_count=len(TARGETS),
+        aggregation="mean",
+    )
+    assert model.aggregation == "mean"
+    assert model.plane_gate is None
+
+    pixels = torch.ones((1, 2, 2, 224, 224), dtype=torch.float32)
+    slice_mask = torch.ones((1, 2, 2), dtype=torch.bool)
+    series_mask = torch.ones((1, 2), dtype=torch.bool)
+
+    output = model(pixels, slice_mask, series_mask)
+    assert output.shape == (1, len(TARGETS))

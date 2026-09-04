@@ -5,12 +5,13 @@ upper_percentile = 99
 image_size = 224
 
 [training]
-epochs = 3
+epochs = 20
 # An approved Tesla T4 attempt at batch 16 exhausted 14.22 GiB of PyTorch
 # allocations and failed on a further 556 MiB allocation.
 batch_size = 4
 gradient_accumulation_steps = 4
-learning_rate = 0.0001
+backbone_learning_rate = 0.000008
+head_learning_rate = 0.001
 weight_decay = 0.0001
 seed = 20260825
 mixed_precision = true
@@ -29,3 +30,8 @@ paired_bootstrap_confidence = 0.95
 minimum_macro_auc_delta = 0.005
 minimum_bootstrap_positive_fraction = 0.95
 large_target_regression = 0.02
+
+[early_stopping]
+minimum_epochs = 10
+patience = 4
+min_delta = 0.002

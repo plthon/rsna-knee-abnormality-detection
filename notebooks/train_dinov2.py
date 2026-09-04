@@ -1,8 +1,8 @@
 # %% [markdown]
-# # RSNA Knee DINOv2 ViT-S/14 Controlled Backbone Experiment
+# # RSNA Knee DINOv2 ViT-S/14 #30 Fine-Tuning Experiment
 #
-# Trains exactly one offline DINOv2 ViT-S/14 candidate and compares it with
-# the frozen #27 ResNet-18 control on the identical validation partition.
+# Trains the one precommitted, partially unfrozen offline DINOv2 ViT-S/14
+# candidate and compares it with the frozen #27 ResNet-18 control.
 # This notebook does not run hidden-test inference or submit.
 
 # %%
@@ -43,7 +43,7 @@ from rsna_knee.combined_supervision import (
 # %%
 config = load_combined_baseline_config(CONFIG_PATH)
 if config.architecture != "dinov2_vits14":
-    raise RuntimeError("Issue #29 requires exactly dinov2_vits14")
+    raise RuntimeError("Issue #30 requires exactly dinov2_vits14")
 
 input_root = Path("/kaggle/input")
 control_checkpoint = discover_combined_checkpoint(input_root)
@@ -90,6 +90,33 @@ print("Verification:", json.dumps(verification, indent=2))
 print("ResNet-18 macro AUC:", comparison["metrics"]["baseline"]["official_macro_auc"])
 print("DINOv2-S macro AUC:", comparison["metrics"]["candidate"]["official_macro_auc"])
 print("Paired macro AUC delta:", comparison["metrics"]["delta"]["official_macro_auc"])
+print(
+    "#30 minus #29:",
+    comparison["optimization_diagnostic"]["issue_30_minus_issue_29_macro_auc"],
+)
+print(
+    "Retained-checkpoint masked BCE:",
+    comparison["secondary_masked_bce"]["candidate"],
+)
+print(
+    "Paired bootstrap 95% interval:",
+    comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
+        "percentile_interval"
+    ],
+)
+print(
+    "Positive-bootstrap fraction:",
+    comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
+        "fraction_positive"
+    ],
+)
+print("Retained-best epoch:", report["checkpoint"]["retained_best_epoch"])
+print("Stopping epoch:", report["checkpoint"]["stopping_epoch"])
+print("Stop reason:", report["checkpoint"]["stop_reason"])
+print(
+    "Resource comparison:",
+    json.dumps(report["training_execution"]["resource_comparison"], indent=2),
+)
 print("Decision:", comparison["decision"]["result"])
 print("Hidden-test inference: not run")
 print("Competition submission: not run")

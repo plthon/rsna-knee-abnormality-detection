@@ -869,7 +869,7 @@ def build_dinov2_training_bundle(
     kernel_id: str = "plthon/rsna-knee-dinov2-vit-s-14",
     gpu_approved: bool = False,
 ) -> KaggleBundle:
-    """Build the clean-revision #29 training and paired-validation bundle."""
+    """Build the clean-revision #30 training and paired-validation bundle."""
     config_path = project_root / "configs" / "dinov2.toml"
     source_path = project_root / "notebooks" / "train_dinov2.py"
     contract_names = (
@@ -930,7 +930,7 @@ def build_dinov2_scoring_bundle(
     kernel_id: str = "plthon/rsna-knee-dinov2-scoring",
     gpu_approved: bool = False,
 ) -> KaggleBundle:
-    """Build inference-only scoring for a validation-retained #29 checkpoint."""
+    """Build inference-only scoring for a validation-retained #30 checkpoint."""
     if not validation_kept:
         raise PermissionError("DINOv2 scoring requires a recorded keep decision")
     _require_resolved_kaggle_id(checkpoint_dataset_id)
