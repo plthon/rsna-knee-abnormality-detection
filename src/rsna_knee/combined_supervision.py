@@ -909,7 +909,7 @@ def discover_combined_checkpoint(
         path for path in input_root.rglob("checkpoint.pt") if path.is_file()
     )
     matching = [path for path in candidates if _sha256(path) == expected_sha256]
-    if len(matching) == 1 and len(candidates) == 1:
+    if len(matching) == 1:
         return matching[0]
     if not candidates:
         raise FileNotFoundError(

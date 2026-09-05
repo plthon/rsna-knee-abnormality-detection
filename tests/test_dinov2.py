@@ -14,6 +14,7 @@ from rsna_knee.combined_supervision import (
     _dinov2_decision,
     _dinov2_finetuning_metadata,
     _retained_hidden_test_inference_estimate,
+    discover_combined_checkpoint,
     load_combined_baseline_config,
     load_combined_checkpoint,
     load_verified_combined_checkpoint,
@@ -679,3 +680,21 @@ def test_train_epoch_skips_batches_without_known_labels_gracefully(
     )
     assert record["optimized_study_count"] == 1
     assert record["optimizer_step_count"] == 1
+
+
+def test_discover_combined_checkpoint_allows_other_checkpoints_when_one_matches(
+    tmp_path: Path,
+) -> None:
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    control_ckpt = control_dir / "checkpoint.pt"
+    control_ckpt.write_bytes(b"matching-control-bytes")
+    expected_hash = hashlib.sha256(b"matching-control-bytes").hexdigest()
+
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other_ckpt = other_dir / "checkpoint.pt"
+    other_ckpt.write_bytes(b"different-bytes")
+
+    found = discover_combined_checkpoint(tmp_path, expected_sha256=expected_hash)
+    assert found == control_ckpt
