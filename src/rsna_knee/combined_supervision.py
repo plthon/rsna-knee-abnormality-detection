@@ -1642,6 +1642,28 @@ def run_combined_baseline(
                     del resumed_model
                     resumed_model = None
                     resumed_checkpoint = None
+        else:
+            candidates = [
+                path
+                for path in sorted(input_root.rglob("checkpoint.pt"))
+                if path.is_file() and path != control_checkpoint_path
+            ]
+            for candidate in candidates:
+                try:
+                    candidate_model, candidate_checkpoint = load_combined_checkpoint(
+                        candidate, device=device
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if candidate_checkpoint.get(
+                    "checkpoint_schema_version"
+                ) == _DINOV2_CHECKPOINT_SCHEMA_VERSION and candidate_checkpoint.get(
+                    "configuration"
+                ) == _combined_config_record(config):
+                    shutil.copyfile(candidate, checkpoint_path)
+                    resumed_model = candidate_model
+                    resumed_checkpoint = candidate_checkpoint
+                    break
 
         if resumed_model is None or resumed_checkpoint is None:
             model, initialization = build_dinov2_initialized_model(

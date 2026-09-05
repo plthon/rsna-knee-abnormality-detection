@@ -625,3 +625,57 @@ def test_dinov2_model_uses_ordinary_two_stage_mean_reduction_without_gating() ->
 
     output = model(pixels, slice_mask, series_mask)
     assert output.shape == (1, len(TARGETS))
+
+
+@pytest.mark.training
+def test_train_epoch_skips_batches_without_known_labels_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MeanBackbone(nn.Module):
+        def forward(self, values: Tensor) -> Tensor:
+            return values.mean(dim=(2, 3))[:, :2]
+
+    studies = (
+        GoldStudy("study-0", (cast(Label, 1),)),
+        GoldStudy("study-1", (cast(Label, None),)),
+    )
+    indexed = {study.study_uid: IndexedStudy(study.study_uid, ()) for study in studies}
+
+    def decode(
+        study: IndexedStudy, preprocessing: object, *, labels: object
+    ) -> DecodedStudy:
+        del preprocessing
+        typed_labels = tuple(cast(Sequence[Label], labels))
+        return DecodedStudy(
+            pixels=torch.full((1, 1, 2, 2), 1.0),
+            slice_mask=torch.ones(1, 1, dtype=torch.bool),
+            series_mask=torch.ones(1, dtype=torch.bool),
+            labels=torch.tensor([0.0 if l is None else float(l) for l in typed_labels]),
+            label_mask=torch.tensor(
+                [l is not None for l in typed_labels], dtype=torch.bool
+            ),
+            valid_slice_count=1,
+            decode_error_counts={},
+        )
+
+    monkeypatch.setattr(training_module, "decode_study", decode)
+    model = GoldResNet18(MeanBackbone(), feature_count=2, target_count=1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scaler = torch.GradScaler("cuda", enabled=False)
+
+    record = train_epoch(
+        model=model,
+        optimizer=optimizer,
+        scaler=scaler,
+        indexed=indexed,
+        studies=studies,
+        preprocessing=PreprocessingConfig(1, 0, 100, 224),
+        batch_size=1,
+        seed=42,
+        mixed_precision=False,
+        device=torch.device("cpu"),
+        epoch=0,
+        gradient_accumulation_steps=1,
+    )
+    assert record["optimized_study_count"] == 1
+    assert record["optimizer_step_count"] == 1

@@ -922,6 +922,8 @@ def train_epoch(
         pixels, slice_mask, series_mask, plane_indices, labels, known = collate_studies(
             decoded
         )
+        if not bool(known.any()):
+            continue
         pixels = pixels.to(device)
         slice_mask = slice_mask.to(device)
         series_mask = series_mask.to(device)
