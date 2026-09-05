@@ -59,6 +59,11 @@ def main() -> None:
     build.add_argument("--checkpoint-sha256")
     build.add_argument("--approve-retained-gate", action="store_true")
     build.add_argument("--weight-path", type=Path)
+    build.add_argument(
+        "--resume",
+        action="store_true",
+        help="Attach previous kernel run output to resume training",
+    )
 
     push = subparsers.add_parser("push", help="push a previously built bundle")
     push.add_argument("bundle", type=Path)
@@ -136,6 +141,7 @@ def main() -> None:
                 weight_path=arguments.weight_path,
                 kernel_id=arguments.kernel_id or "plthon/rsna-knee-dinov2-vit-s-14",
                 gpu_approved=arguments.approve_gpu,
+                resume=arguments.resume,
             )
         elif arguments.target in {
             "combined-baseline",

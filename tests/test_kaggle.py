@@ -988,6 +988,20 @@ def test_dinov2_training_bundle_is_clean_offline_and_training_only(
         "plthon/rsna-knee-combined-baseline-checkpoint",
     ]
     assert metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
+
+    resume_bundle = build_dinov2_training_bundle(
+        project,
+        tmp_path / "dinov2-resume",
+        weight_path=weight_path,
+        gpu_approved=True,
+        resume=True,
+    )
+    resume_metadata = json.loads(resume_bundle.kernel_metadata_path.read_text())
+    assert resume_metadata["kernel_sources"] == [
+        "plthon/rsna-knee-data-index",
+        "plthon/rsna-knee-dinov2-vit-s-14",
+    ]
+
     notebook = json.loads(bundle.notebook_path.read_text())
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
     assert "run_test_inference=False" in source

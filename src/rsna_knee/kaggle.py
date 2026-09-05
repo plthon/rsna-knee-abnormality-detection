@@ -868,6 +868,7 @@ def build_dinov2_training_bundle(
     weight_path: Path,
     kernel_id: str = "plthon/rsna-knee-dinov2-vit-s-14",
     gpu_approved: bool = False,
+    resume: bool = False,
 ) -> KaggleBundle:
     """Build the clean-revision #30 training and paired-validation bundle."""
     config_path = project_root / "configs" / "dinov2.toml"
@@ -887,6 +888,11 @@ def build_dinov2_training_bundle(
         output_root / "weight-dataset",
         weight_path=weight_path,
     )
+    kernel_sources = (
+        (*_PLANE_GATING_KERNEL_SOURCES, kernel_id)
+        if resume
+        else _PLANE_GATING_KERNEL_SOURCES
+    )
     bundle = build_kaggle_bundle(
         project_root,
         output_root,
@@ -897,7 +903,7 @@ def build_dinov2_training_bundle(
             title="RSNA Knee DINOv2 ViT-S/14",
             competition_sources=("rsna-knee-abnormality-detection",),
             dataset_sources=_DINOV2_TRAINING_DATASET_SOURCES,
-            kernel_sources=_PLANE_GATING_KERNEL_SOURCES,
+            kernel_sources=kernel_sources,
             gpu=True,
             machine_shape=_GPU_MACHINE_SHAPE,
             replacements={
@@ -1203,7 +1209,10 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             _DINOV2_TRAINING_DATASET_SOURCES
         ):
             raise ValueError("DINOv2 training attached unexpected Dataset inputs")
-        if tuple(metadata.get("kernel_sources", ())) != _PLANE_GATING_KERNEL_SOURCES:
+        if tuple(metadata.get("kernel_sources", ())) not in {
+            _PLANE_GATING_KERNEL_SOURCES,
+            (*_PLANE_GATING_KERNEL_SOURCES, kernel_id),
+        }:
             raise ValueError("DINOv2 training must attach the frozen index output")
     elif validator == "dinov2_scoring":
         _validate_dinov2_scoring_source(_notebook_source(source))
