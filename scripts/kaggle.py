@@ -100,6 +100,7 @@ def main() -> None:
                 "plane-gating-scoring": "plane-gated-scoring",
                 "dinov2-training": "dinov2-training",
                 "dinov2-scoring": "dinov2-scoring",
+                "dinov2-resume-dataset": "dinov2-resume-dataset",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
