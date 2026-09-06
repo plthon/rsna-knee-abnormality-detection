@@ -5,6 +5,7 @@ from pathlib import Path
 from rsna_knee.kaggle import (
     build_combined_baseline_bundle,
     build_combined_scoring_bundle,
+    build_dinov2_resume_dataset,
     build_dinov2_scoring_bundle,
     build_dinov2_training_bundle,
     build_plane_gated_scoring_bundle,
@@ -43,6 +44,7 @@ def main() -> None:
             "plane-gating-scoring",
             "dinov2-training",
             "dinov2-scoring",
+            "dinov2-resume-dataset",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -59,10 +61,15 @@ def main() -> None:
     build.add_argument("--checkpoint-sha256")
     build.add_argument("--approve-retained-gate", action="store_true")
     build.add_argument("--weight-path", type=Path)
+    build.add_argument("--checkpoint-path", type=Path)
     build.add_argument(
         "--resume",
         action="store_true",
         help="Attach previous kernel run output to resume training",
+    )
+    build.add_argument(
+        "--resume-dataset-id",
+        help="Attach a checkpoint dataset to resume training",
     )
 
     push = subparsers.add_parser("push", help="push a previously built bundle")
@@ -132,6 +139,20 @@ def main() -> None:
                 ),
                 gpu_approved=arguments.approve_gpu,
             )
+        elif arguments.target == "dinov2-resume-dataset":
+            if arguments.checkpoint_path is None:
+                parser.error("dinov2-resume-dataset requires --checkpoint-path")
+            resume_output = arguments.output or (
+                project_root / "build" / "kaggle" / "dinov2-resume-dataset"
+            )
+            dataset_dir = build_dinov2_resume_dataset(
+                resume_output,
+                checkpoint_path=arguments.checkpoint_path,
+                dataset_id=arguments.resume_dataset_id
+                or "plthon/rsna-knee-dinov2-resume",
+            )
+            print(f"Resume dataset created at {dataset_dir}")
+            return
         elif arguments.target == "dinov2-training":
             if arguments.weight_path is None:
                 parser.error("dinov2-training requires --weight-path")
@@ -142,6 +163,7 @@ def main() -> None:
                 kernel_id=arguments.kernel_id or "plthon/rsna-knee-dinov2-vit-s-14",
                 gpu_approved=arguments.approve_gpu,
                 resume=arguments.resume,
+                resume_dataset_id=arguments.resume_dataset_id,
             )
         elif arguments.target in {
             "combined-baseline",

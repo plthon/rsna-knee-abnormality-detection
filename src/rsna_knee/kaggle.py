@@ -506,6 +506,36 @@ def build_dinov2_weight_dataset(
     return dataset
 
 
+def build_dinov2_resume_dataset(
+    output_root: Path,
+    *,
+    checkpoint_path: Path,
+    dataset_id: str = "plthon/rsna-knee-dinov2-resume",
+) -> Path:
+    """Package a validated DINOv2 intermediate checkpoint as a Kaggle resume dataset."""
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+    output_root.mkdir(parents=True, exist_ok=True)
+    copied_checkpoint = output_root / "checkpoint.pt"
+    shutil.copy2(checkpoint_path, copied_checkpoint)
+    metadata_path = output_root / "dataset-metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            _dataset_metadata(
+                dataset_id,
+                description=(
+                    "Intermediate DINOv2 ViT-S/14 checkpoint for training resumption."
+                ),
+                title="RSNA Knee DINOv2 Resume Checkpoint",
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return output_root
+
+
 def build_public_notebook_bundle(project_root: Path, output_root: Path) -> KaggleBundle:
     return build_kaggle_bundle(
         project_root,
@@ -869,6 +899,7 @@ def build_dinov2_training_bundle(
     kernel_id: str = "plthon/rsna-knee-dinov2-vit-s-14",
     gpu_approved: bool = False,
     resume: bool = False,
+    resume_dataset_id: str | None = None,
 ) -> KaggleBundle:
     """Build the clean-revision #30 training and paired-validation bundle."""
     config_path = project_root / "configs" / "dinov2.toml"
@@ -890,8 +921,13 @@ def build_dinov2_training_bundle(
     )
     kernel_sources = (
         (*_PLANE_GATING_KERNEL_SOURCES, kernel_id)
-        if resume
+        if resume and not resume_dataset_id
         else _PLANE_GATING_KERNEL_SOURCES
+    )
+    dataset_sources = (
+        (*_DINOV2_TRAINING_DATASET_SOURCES, resume_dataset_id)
+        if resume_dataset_id
+        else _DINOV2_TRAINING_DATASET_SOURCES
     )
     bundle = build_kaggle_bundle(
         project_root,
@@ -902,7 +938,7 @@ def build_dinov2_training_bundle(
             kernel_id=kernel_id,
             title="RSNA Knee DINOv2 ViT-S/14",
             competition_sources=("rsna-knee-abnormality-detection",),
-            dataset_sources=_DINOV2_TRAINING_DATASET_SOURCES,
+            dataset_sources=dataset_sources,
             kernel_sources=kernel_sources,
             gpu=True,
             machine_shape=_GPU_MACHINE_SHAPE,
@@ -1205,9 +1241,14 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             )
     elif validator == "dinov2_training":
         _validate_dinov2_training_source(_notebook_source(source))
-        if tuple(metadata.get("dataset_sources", ())) != (
-            _DINOV2_TRAINING_DATASET_SOURCES
-        ):
+        actual_datasets = tuple(metadata.get("dataset_sources", ()))
+        is_standard = actual_datasets == _DINOV2_TRAINING_DATASET_SOURCES
+        is_resumed = (
+            len(actual_datasets) == len(_DINOV2_TRAINING_DATASET_SOURCES) + 1
+            and actual_datasets[:-1] == _DINOV2_TRAINING_DATASET_SOURCES
+            and bool(_KAGGLE_ID_PATTERN.fullmatch(actual_datasets[-1]))
+        )
+        if not (is_standard or is_resumed):
             raise ValueError("DINOv2 training attached unexpected Dataset inputs")
         if tuple(metadata.get("kernel_sources", ())) not in {
             _PLANE_GATING_KERNEL_SOURCES,

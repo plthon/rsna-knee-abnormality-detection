@@ -16,6 +16,7 @@ from rsna_knee.kaggle import (
     KaggleSpec,
     WeightDataset,
     WheelDataset,
+    build_dinov2_resume_dataset,
     build_dinov2_scoring_bundle,
     build_dinov2_training_bundle,
     build_dinov2_weight_dataset,
@@ -1001,6 +1002,29 @@ def test_dinov2_training_bundle_is_clean_offline_and_training_only(
         "plthon/rsna-knee-data-index",
         "plthon/rsna-knee-dinov2-vit-s-14",
     ]
+
+    resume_dataset_bundle = build_dinov2_training_bundle(
+        project,
+        tmp_path / "dinov2-resume-ds",
+        weight_path=weight_path,
+        gpu_approved=True,
+        resume_dataset_id="plthon/rsna-knee-dinov2-resume",
+    )
+    resume_ds_metadata = json.loads(
+        resume_dataset_bundle.kernel_metadata_path.read_text()
+    )
+    assert resume_ds_metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
+    assert "plthon/rsna-knee-dinov2-resume" in resume_ds_metadata["dataset_sources"]
+
+    fake_ckpt = tmp_path / "checkpoint.pt"
+    fake_ckpt.write_bytes(b"dummy")
+    dataset_out = build_dinov2_resume_dataset(
+        tmp_path / "resume-ds-out",
+        checkpoint_path=fake_ckpt,
+        dataset_id="plthon/rsna-knee-dinov2-resume",
+    )
+    assert (dataset_out / "checkpoint.pt").read_bytes() == b"dummy"
+    assert (dataset_out / "dataset-metadata.json").is_file()
 
     notebook = json.loads(bundle.notebook_path.read_text())
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
