@@ -86,27 +86,28 @@ for artifact in (
 
 report = json.loads(outcome.report_path.read_text())
 comparison = report["controlled_comparison"]
+metrics = comparison["metrics"]
 print("Verification:", json.dumps(verification, indent=2))
-print("ResNet-18 macro AUC:", comparison["metrics"]["baseline"]["official_macro_auc"])
-print("DINOv2-S macro AUC:", comparison["metrics"]["candidate"]["official_macro_auc"])
-print("Paired macro AUC delta:", comparison["metrics"]["delta"]["official_macro_auc"])
+print("ResNet-18 macro AUC:", metrics["baseline"]["official_macro_auc"])
+print("DINOv2-S macro AUC:", metrics["candidate"]["official_macro_auc"])
+print("Paired macro AUC delta:", metrics["delta"]["official_macro_auc"])
 print(
     "#30 minus #29:",
-    comparison["optimization_diagnostic"]["issue_30_minus_issue_29_macro_auc"],
+    metrics["optimization_diagnostic"]["issue_30_minus_issue_29_macro_auc"],
 )
 print(
     "Retained-checkpoint masked BCE:",
-    comparison["secondary_masked_bce"]["candidate"],
+    metrics["secondary_masked_bce"]["candidate"],
 )
 print(
     "Paired bootstrap 95% interval:",
-    comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
+    metrics["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
         "percentile_interval"
     ],
 )
 print(
     "Positive-bootstrap fraction:",
-    comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
+    metrics["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
         "fraction_positive"
     ],
 )

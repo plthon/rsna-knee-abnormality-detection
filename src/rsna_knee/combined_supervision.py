@@ -2158,9 +2158,7 @@ def run_combined_baseline(
             ),
         }
         if config.architecture == "dinov2_vits14":
-            candidate_macro_auc = comparison["metrics"]["candidate"][
-                "official_macro_auc"
-            ]
+            candidate_macro_auc = comparison["candidate"]["official_macro_auc"]
             comparison["optimization_diagnostic"] = {
                 "issue_29_macro_auc": _DINOV2_29_MACRO_AUC,
                 "issue_30_minus_issue_29_macro_auc": (
