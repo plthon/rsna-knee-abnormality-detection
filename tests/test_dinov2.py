@@ -1,6 +1,8 @@
 import hashlib
+import io
 import json
 from collections.abc import Sequence
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, cast
 
@@ -698,3 +700,40 @@ def test_discover_combined_checkpoint_allows_other_checkpoints_when_one_matches(
 
     found = discover_combined_checkpoint(tmp_path, expected_sha256=expected_hash)
     assert found == control_ckpt
+
+
+def test_training_notebook_displays_report_summary() -> None:
+    metrics = {
+        "baseline": {"official_macro_auc": 0.838277},
+        "candidate": {"official_macro_auc": 0.847875},
+        "delta": {"official_macro_auc": 0.009598},
+        "optimization_diagnostic": {"issue_30_minus_issue_29_macro_auc": 0.213695},
+        "secondary_masked_bce": {"candidate": 0.493540},
+        "bootstrap": {
+            "uncertainty": {
+                "official_macro_auc_delta": {
+                    "interval": {"lower": -0.001906, "upper": 0.021668},
+                    "fraction_positive": 0.9473,
+                }
+            }
+        },
+    }
+    comparison = {"metrics": metrics, "decision": {"result": "reject"}}
+    report = {
+        "controlled_comparison": comparison,
+        "checkpoint": {
+            "retained_best_epoch": 7,
+            "stopping_epoch": 13,
+            "stop_reason": "patience_exhausted",
+        },
+        "training_execution": {"resource_comparison": {}},
+    }
+    source = (Path(__file__).parents[1] / "notebooks/train_dinov2.py").read_text()
+    summary = source[source.index('comparison = report["controlled_comparison"]') :]
+    output = io.StringIO()
+    with redirect_stdout(output):
+        exec(  # noqa: S102 - execute the repository's actual notebook display code
+            summary, {"report": report, "verification": {"valid": True}, "json": json}
+        )
+    assert "'lower': -0.001906, 'upper': 0.021668" in output.getvalue()
+    assert "Decision: reject" in output.getvalue()

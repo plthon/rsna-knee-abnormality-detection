@@ -101,9 +101,7 @@ print(
 )
 print(
     "Paired bootstrap 95% interval:",
-    metrics["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
-        "percentile_interval"
-    ],
+    metrics["bootstrap"]["uncertainty"]["official_macro_auc_delta"]["interval"],
 )
 print(
     "Positive-bootstrap fraction:",
