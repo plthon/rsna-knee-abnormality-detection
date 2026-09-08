@@ -6,7 +6,7 @@ from typing import cast
 import numpy as np
 
 from .config import PreprocessingConfig
-from .dicom import decode_pixels
+from .dicom import decode_pixels_with_spacing
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +17,14 @@ class PreprocessingFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class SpatialEvidence:
+    source_index: int
+    mode: str
+    fallback_reason: str | None
+    crop_shape: tuple[int, int] | None
+
+
+@dataclass(frozen=True, slots=True)
 class PreprocessedSeries:
     pixels: np.ndarray
     mask: np.ndarray
@@ -24,6 +32,7 @@ class PreprocessedSeries:
     failures: tuple[PreprocessingFailure, ...]
     lower_value: float | None
     upper_value: float | None
+    spatial_evidence: tuple[SpatialEvidence, ...] = ()
 
 
 def uniform_indices(length: int, count: int) -> tuple[int, ...]:
@@ -58,10 +67,12 @@ def preprocess_series_result(
 
     decoded: list[tuple[int, np.ndarray]] = []
     failures: list[PreprocessingFailure] = []
+    spacings: dict[int, object] = {}
     for slot, source_index in enumerate(indices):
         path = Path(paths[source_index])
         try:
-            pixels = decode_pixels(path)
+            pixels, spacing = decode_pixels_with_spacing(path)
+            spacings[slot] = spacing
             if pixels.ndim != 2 or not pixels.size:
                 raise ValueError(
                     "Only nonempty single-frame grayscale images are supported"
@@ -104,8 +115,25 @@ def preprocess_series_result(
             for _, pixels in decoded
         ]
 
+    evidence: list[SpatialEvidence] = []
     for (slot, _), image in zip(decoded, normalized, strict=True):
-        output[slot] = _resize_and_pad(image, config.image_size)
+        shape, reason = (None, None)
+        if config.spatial_mode == "physical_crop":
+            shape, reason = physical_crop_shape(spacings[slot], config.physical_fov_mm)
+        if shape is not None:
+            output[slot] = _bilinear_resize(
+                centered_crop_pad(image, shape), config.image_size, config.image_size
+            )
+        else:
+            output[slot] = _resize_and_pad(image, config.image_size)
+        evidence.append(
+            SpatialEvidence(
+                indices[slot],
+                "physical_crop" if shape else "whole_image",
+                reason,
+                shape,
+            )
+        )
         mask[slot] = True
     return PreprocessedSeries(
         pixels=output,
@@ -114,6 +142,7 @@ def preprocess_series_result(
         failures=tuple(failures),
         lower_value=float(lower),
         upper_value=float(upper),
+        spatial_evidence=tuple(evidence),
     )
 
 
@@ -151,4 +180,48 @@ def _bilinear_resize(image: np.ndarray, height: int, width: int) -> np.ndarray:
     bottom += image[y1[:, None], x1[None, :]] * x_weight
     return cast(
         np.ndarray, (top * (1 - y_weight) + bottom * y_weight).astype(np.float32)
+    )
+
+
+def physical_crop_shape(
+    spacing: object, fov_mm: float = 130.0
+) -> tuple[tuple[int, int] | None, str | None]:
+    """DICOM row/column spacing; Python round uses deterministic ties-to-even."""
+    if spacing is None:
+        return None, "missing_pixel_spacing"
+    try:
+        if isinstance(spacing, (str, bytes)):
+            raise TypeError("Expected two spacing components")
+        components: tuple[object, ...] = tuple(spacing)  # type: ignore[arg-type]
+        if len(components) != 2:
+            raise ValueError("Expected two spacing components")
+        row, column = (float(str(value)) for value in components)
+    except (TypeError, ValueError, OverflowError):
+        return None, "malformed_pixel_spacing"
+    if not np.isfinite([row, column]).all():
+        return None, "nonfinite_pixel_spacing"
+    if row <= 0 or column <= 0:
+        return None, "nonpositive_pixel_spacing"
+    dimensions = [fov_mm / row, fov_mm / column]
+    if not np.isfinite(dimensions).all():
+        raise ValueError("Physical crop dimensions exceed numeric limits")
+    shape = (round(dimensions[0]), round(dimensions[1]))
+    if min(shape) < 1:
+        raise ValueError("Physical FOV rounds to an empty pixel crop")
+    return shape, None
+
+
+def centered_crop_pad(image: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Center crop/pad, assigning an unavoidable odd extra pixel bottom/right."""
+    if min(shape) <= 0:
+        raise ValueError("Crop dimensions must be positive")
+    height, width = image.shape
+    crop_h, crop_w = shape
+    top, left = max(0, (height - crop_h) // 2), max(0, (width - crop_w) // 2)
+    cropped = image[top : top + min(height, crop_h), left : left + min(width, crop_w)]
+    pad_h, pad_w = max(0, crop_h - height), max(0, crop_w - width)
+    return np.pad(
+        cropped,
+        ((pad_h // 2, pad_h - pad_h // 2), (pad_w // 2, pad_w - pad_w // 2)),
+        constant_values=0,
     )

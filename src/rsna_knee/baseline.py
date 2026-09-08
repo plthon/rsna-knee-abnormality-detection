@@ -830,7 +830,7 @@ def _verify_rebuilt_index_configuration(
     )
     preprocessing = _mapping(manifest, "preprocessing")
     expected = {
-        **asdict(config.preprocessing),
+        **config.preprocessing.record(),
         "normalization_status": "provisional",
         "resize": "bilinear_aspect_preserving_center_pad",
     }
@@ -1147,7 +1147,7 @@ def _adequacy_decision(
 def _configuration_record(config: BaselineTrainingConfig) -> dict[str, object]:
     return {
         "schema_version": _CONFIG_SCHEMA_VERSION,
-        "preprocessing": asdict(config.preprocessing),
+        "preprocessing": config.preprocessing.record(),
         "training": {
             "epochs": config.epochs,
             "batch_size": config.batch_size,

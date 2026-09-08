@@ -40,6 +40,7 @@ def main() -> None:
             "report-source-comparison",
             "combined-baseline",
             "combined-scoring",
+            "physical-crop",
             "plane-gating",
             "plane-gating-scoring",
             "dinov2-training",
@@ -96,6 +97,7 @@ def main() -> None:
                 "report-source-comparison": "report-source-comparison",
                 "combined-baseline": "gold-public-scoring",
                 "combined-scoring": "gold-public-scoring",
+                "physical-crop": "physical-crop",
                 "plane-gating": "plane-gating",
                 "plane-gating-scoring": "plane-gated-scoring",
                 "dinov2-training": "dinov2-training",
@@ -169,24 +171,29 @@ def main() -> None:
         elif arguments.target in {
             "combined-baseline",
             "combined-scoring",
+            "physical-crop",
             "plane-gating",
         }:
             builder = (
                 build_plane_gating_bundle
-                if arguments.target == "plane-gating"
+                if arguments.target in {"plane-gating", "physical-crop"}
                 else (
                     build_combined_baseline_bundle
                     if arguments.target == "combined-baseline"
                     else build_combined_scoring_bundle
                 )
             )
+            if arguments.target == "physical-crop":
+                from functools import partial
+
+                builder = partial(build_plane_gating_bundle, physical_crop=True)
             bundle = builder(
                 project_root,
                 arguments.output,
                 kernel_id=arguments.kernel_id
                 or (
-                    "plthon/rsna-knee-plane-gating"
-                    if arguments.target == "plane-gating"
+                    f"plthon/rsna-knee-{arguments.target}"
+                    if arguments.target in {"plane-gating", "physical-crop"}
                     else "plthon/rsna-knee-gold-public-scoring"
                 ),
                 gpu_approved=arguments.approve_gpu,

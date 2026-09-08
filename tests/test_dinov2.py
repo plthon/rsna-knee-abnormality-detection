@@ -421,7 +421,7 @@ def test_dinov2_offline_build_has_linear_head_and_partial_finetuning_gradients(
     assert verified_payload["early_stopping"]["stopping_epoch"] == 13
     assert verified_payload["early_stopping"]["retained_best_epoch"] == 1
 
-    with pytest.raises(ValueError, match="completed 3-epoch run"):
+    with pytest.raises(ValueError, match="spatial schema is incompatible"):
         load_verified_combined_checkpoint(
             checkpoint_path,
             device=torch.device("cpu"),

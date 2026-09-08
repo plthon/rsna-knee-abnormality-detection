@@ -14,7 +14,7 @@ import time
 import tomllib
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
@@ -200,6 +200,7 @@ class _SubmissionPrediction:
     prediction_count: int
     fallback_count: int
     decode_errors: dict[str, int]
+    spatial_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +213,7 @@ class DecodedStudy:
     valid_slice_count: int
     decode_error_counts: dict[str, int]
     plane_indices: Tensor | None = None
+    spatial_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +224,7 @@ class PartitionPrediction:
     forward_seconds: float
     valid_slice_count: int
     decode_errors: dict[str, int]
+    spatial_counts: dict[str, int] = field(default_factory=dict)
 
 
 class TargetSpecificPlaneGate(nn.Module):
@@ -363,6 +366,11 @@ def load_smoke_training_config(path: Path) -> SmokeTrainingConfig:
         lower_percentile=_number(preprocessing_raw, "lower_percentile"),
         upper_percentile=_number(preprocessing_raw, "upper_percentile"),
         image_size=_positive_int(preprocessing_raw, "image_size"),
+        spatial_mode=preprocessing_raw.get("spatial_mode", "whole_image"),
+        physical_fov_mm=preprocessing_raw.get("physical_fov_mm", 130.0),
+        spacing_fallback=preprocessing_raw.get(
+            "spacing_fallback", "whole_image_resize_pad"
+        ),
     )
     config = SmokeTrainingConfig(
         preprocessing=preprocessing,
@@ -890,6 +898,7 @@ def train_epoch(
     random.Random(seed + epoch).shuffle(ordered)
     losses: list[float] = []
     decode_errors: Counter[str] = Counter()
+    spatial_counts: Counter[str] = Counter()
     decode_seconds = 0.0
     forward_backward_seconds = 0.0
     valid_slices = 0
@@ -913,6 +922,7 @@ def train_epoch(
                 indexed[study.study_uid], preprocessing, labels=study.labels
             )
             decode_errors.update(item.decode_error_counts)
+            spatial_counts.update(item.spatial_counts)
             valid_slices += item.valid_slice_count
             if item.valid_slice_count:
                 decoded.append(item)
@@ -976,6 +986,7 @@ def train_epoch(
         raise RuntimeError("No training study completed an optimizer update")
     record: dict[str, Any] = {
         "training_seconds": training_seconds,
+        "spatial_counts": dict(spatial_counts),
         "decode_seconds": decode_seconds,
         "forward_backward_seconds": forward_backward_seconds,
         "attempted_study_count": attempted,
@@ -1010,6 +1021,7 @@ def predict_partition(
     probabilities: list[tuple[float, ...]] = []
     successful: list[PartitionStudy] = []
     decode_errors: Counter[str] = Counter()
+    spatial_counts: Counter[str] = Counter()
     decode_seconds = 0.0
     forward_seconds = 0.0
     valid_slices = 0
@@ -1022,6 +1034,7 @@ def predict_partition(
             )
             decode_seconds += time.perf_counter() - decode_start
             decode_errors.update(decoded.decode_error_counts)
+            spatial_counts.update(decoded.spatial_counts)
             valid_slices += decoded.valid_slice_count
             if not decoded.valid_slice_count:
                 raise RuntimeError("Prediction study has no decodable selected slices")
@@ -1057,6 +1070,7 @@ def predict_partition(
         forward_seconds=forward_seconds,
         valid_slice_count=valid_slices,
         decode_errors=dict(sorted(decode_errors.items())),
+        spatial_counts=dict(spatial_counts),
     )
 
 
@@ -1359,6 +1373,11 @@ def predict_submission_from_checkpoint(
         lower_percentile=_number(preprocessing_raw, "lower_percentile"),
         upper_percentile=_number(preprocessing_raw, "upper_percentile"),
         image_size=_positive_int(preprocessing_raw, "image_size"),
+        spatial_mode=preprocessing_raw.get("spatial_mode", "whole_image"),
+        physical_fov_mm=preprocessing_raw.get("physical_fov_mm", 130.0),
+        spacing_fallback=preprocessing_raw.get(
+            "spacing_fallback", "whole_image_resize_pad"
+        ),
     )
     training = _mapping(_mapping(checkpoint, "configuration"), "training")
     mixed_precision = _boolean(training, "mixed_precision")
@@ -1411,6 +1430,7 @@ def _predict_submission_with_model(
     predictions: dict[str, tuple[float, ...]] = {}
     failures: dict[str, str] = {}
     decode_errors: Counter[str] = Counter()
+    spatial_counts: Counter[str] = Counter()
     model.eval()
     inference_start = time.perf_counter()
     with torch.no_grad():
@@ -1422,6 +1442,7 @@ def _predict_submission_with_model(
                 )
             decoded = decode_study(indexed_study, preprocessing, labels=None)
             decode_errors.update(decoded.decode_error_counts)
+            spatial_counts.update(decoded.spatial_counts)
             if decoded.valid_slice_count == 0:
                 failures[study_uid] = "no_decodable_selected_slices"
                 continue
@@ -1463,6 +1484,7 @@ def _predict_submission_with_model(
         prediction_count=len(predictions),
         fallback_count=len(failures),
         decode_errors=dict(sorted(decode_errors.items())),
+        spatial_counts=dict(spatial_counts),
     )
 
 
@@ -2081,11 +2103,31 @@ def decode_study(
     pixels: list[Tensor] = []
     masks: list[Tensor] = []
     errors: Counter[str] = Counter()
+    spatial: Counter[str] = Counter()
     for series in indexed.series:
         result = preprocess_series_result(series.paths, preprocessing)
         pixels.append(torch.from_numpy(result.pixels))
         masks.append(torch.from_numpy(result.mask))
         errors.update(failure.code for failure in result.failures)
+        if preprocessing.spatial_mode == "physical_crop":
+            modes = set()
+            for evidence in result.spatial_evidence:
+                mode = "crop" if evidence.mode == "physical_crop" else "fallback"
+                modes.add(mode)
+                spatial[f"slices_{mode}"] += 1
+                if evidence.fallback_reason:
+                    spatial[f"reason:{evidence.fallback_reason}"] += 1
+                if evidence.crop_shape:
+                    spatial[
+                        f"shape:{evidence.crop_shape[0]}x{evidence.crop_shape[1]}"
+                    ] += 1
+            spatial["series_processed"] += bool(result.spatial_evidence)
+            for mode in modes:
+                spatial[f"series_{mode}"] += 1
+    if spatial["series_processed"] > 0:
+        spatial["studies_processed"] = 1
+        for mode in ("crop", "fallback"):
+            spatial[f"studies_{mode}"] = int(spatial[f"slices_{mode}"] > 0)
     pixel_tensor = torch.stack(pixels)
     mask_tensor = torch.stack(masks)
     label_tensor: Tensor | None = None
@@ -2103,6 +2145,7 @@ def decode_study(
         label_mask=label_mask,
         valid_slice_count=int(mask_tensor.sum()),
         decode_error_counts=dict(errors),
+        spatial_counts=dict(spatial),
         plane_indices=torch.tensor(
             [
                 UNKNOWN_PLANE_INDEX
@@ -2167,7 +2210,7 @@ def build_checkpoint_payload(
         "targets": list(target_names),
         "priors": list(priors),
         "preprocessing": {
-            **asdict(preprocessing),
+            **preprocessing.record(),
             "shared_contract": "preprocess_series_result",
             "channel_adapter": "grayscale_repeat_to_rgb",
             "imagenet_mean": [0.485, 0.456, 0.406],
@@ -2212,7 +2255,7 @@ def save_checkpoint(path: Path, payload: Mapping[str, object]) -> None:
 
 def _configuration_record(config: SmokeTrainingConfig) -> dict[str, object]:
     return {
-        "preprocessing": asdict(config.preprocessing),
+        "preprocessing": config.preprocessing.record(),
         "training": {
             "epochs": config.epochs,
             "batch_size": config.batch_size,

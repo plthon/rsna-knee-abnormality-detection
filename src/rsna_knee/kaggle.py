@@ -187,8 +187,10 @@ def build_kaggle_bundle(
         _validate_public_baseline_source(source)
     elif spec.validator == "combined_baseline":
         _validate_combined_baseline_source(source)
-    elif spec.validator == "plane_gating":
-        _validate_plane_gating_source(source)
+    elif spec.validator in {"plane_gating", "physical_crop"}:
+        _validate_controlled_training_source(
+            source, physical_crop=spec.validator == "physical_crop"
+        )
     elif spec.validator == "plane_gated_scoring":
         _validate_plane_gated_scoring_source(source)
     elif spec.validator == "dinov2_training":
@@ -797,10 +799,13 @@ def build_plane_gating_bundle(
     *,
     kernel_id: str = "plthon/rsna-knee-plane-gating",
     gpu_approved: bool = False,
+    physical_crop: bool = False,
 ) -> KaggleBundle:
     """Build the private #28 training and paired-validation bundle."""
-    config_path = project_root / "configs" / "plane-gating.toml"
-    source_path = project_root / "notebooks" / "train_plane_gating.py"
+    name = "physical-crop" if physical_crop else "plane-gating"
+    source_name = "train_physical_crop" if physical_crop else "train_plane_gating"
+    config_path = project_root / "configs" / f"{name}.toml"
+    source_path = project_root / "notebooks" / f"{source_name}.py"
     contract_names = (
         "competition.json",
         "data-index.json",
@@ -809,19 +814,27 @@ def build_plane_gating_bundle(
     )
     config_bytes = config_path.read_bytes()
     git_commit, git_dirty = _git_state(project_root)
+    if physical_crop and gpu_approved and git_dirty:
+        raise ValueError(
+            "Physical crop GPU execution requires a clean committed revision"
+        )
     bundle = build_kaggle_bundle(
         project_root,
         output_root,
         KaggleSpec(
             source_name=source_path.name,
-            notebook_name="train_plane_gating.ipynb",
+            notebook_name=f"{source_name}.ipynb",
             kernel_id=kernel_id,
-            title="RSNA Knee Plane Gating",
+            title="RSNA Knee Physical Crop"
+            if physical_crop
+            else "RSNA Knee Plane Gating",
             competition_sources=("rsna-knee-abnormality-detection",),
             dataset_sources=_PLANE_GATING_DATASET_SOURCES,
             kernel_sources=_PLANE_GATING_KERNEL_SOURCES,
-            gpu=True,
-            machine_shape=_GPU_MACHINE_SHAPE,
+            gpu=gpu_approved if physical_crop else True,
+            machine_shape=_GPU_MACHINE_SHAPE
+            if gpu_approved or not physical_crop
+            else "",
             replacements={
                 "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
                 "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
@@ -834,7 +847,7 @@ def build_plane_gating_bundle(
             },
             embed_package=True,
             package_contracts=contract_names,
-            validator="plane_gating",
+            validator="physical_crop" if physical_crop else "plane_gating",
         ),
         gpu_approved=gpu_approved,
     )
@@ -1226,8 +1239,10 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             )
         if metadata.get("kernel_sources") != []:
             raise ValueError("Combined scoring must not attach the frozen test index")
-    elif validator == "plane_gating":
-        _validate_plane_gating_source(_notebook_source(source))
+    elif validator in {"plane_gating", "physical_crop"}:
+        _validate_controlled_training_source(
+            _notebook_source(source), physical_crop=validator == "physical_crop"
+        )
         if tuple(metadata.get("dataset_sources", ())) != _PLANE_GATING_DATASET_SOURCES:
             raise ValueError("Plane gating attached unexpected Dataset inputs")
         if tuple(metadata.get("kernel_sources", ())) != _PLANE_GATING_KERNEL_SOURCES:
@@ -1528,13 +1543,26 @@ def _validate_combined_baseline_source(source: str) -> None:
         )
 
 
-def _validate_plane_gating_source(source: str) -> None:
+def _validate_controlled_training_source(
+    source: str, *, physical_crop: bool = False
+) -> None:
+    verifier = (
+        "verify_physical_crop_artifact"
+        if physical_crop
+        else "verify_plane_gating_artifact"
+    )
+    aggregation = "mean" if physical_crop else "target_plane_gate"
+    if (
+        physical_crop
+        and 'config.preprocessing.spatial_mode != "physical_crop"' not in source
+    ):
+        raise ValueError("Physical crop notebook omits spatial safeguard")
     required = (
         "discover_combined_checkpoint",
         "load_combined_baseline_config",
         "run_combined_baseline",
-        "verify_plane_gating_artifact",
-        'config.aggregation != "target_plane_gate"',
+        verifier,
+        f'config.aggregation != "{aggregation}"',
         "control_checkpoint_path=control_checkpoint",
         "run_test_inference=False",
         '"competition_submission": False',

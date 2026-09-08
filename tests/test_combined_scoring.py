@@ -45,11 +45,15 @@ class _MeanModel(nn.Module):
         return value.unsqueeze(1).repeat(1, len(TARGETS))
 
 
-@pytest.mark.parametrize("backbone", ("resnet18", "dinov2_vits14"))
+@pytest.mark.parametrize(
+    "backbone,physical_crop",
+    (("resnet18", False), ("dinov2_vits14", False), ("resnet18", True)),
+)
 def test_scoring_uses_live_hidden_test_index_and_never_trains(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     backbone: Literal["resnet18", "dinov2_vits14"],
+    physical_crop: bool,
 ) -> None:
     input_root = tmp_path / "input"
     competition_root = input_root / "competitions" / "rsna-knee-abnormality-detection"
@@ -112,6 +116,23 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         },
         "configuration": {"training": {"mixed_precision": False}},
     }
+    if physical_crop:
+        payload["preprocessing"] = PreprocessingConfig(
+            8, 1, 99, 224, "physical_crop"
+        ).record()
+        for path in competition_root.rglob("*.dcm"):
+            from pydicom import dcmread
+
+            dataset = dcmread(path)
+            dataset.PixelSpacing = [1.0, 1.0]
+            dataset.save_as(path, enforce_file_format=True)
+    monkeypatch.setattr(
+        "rsna_knee.combined_supervision.load_verified_physical_crop_checkpoint",
+        lambda path, *, device, expected_sha256, contract_path=None: (
+            _MeanModel(),
+            payload,
+        ),
+    )
     monkeypatch.setattr(
         "rsna_knee.combined_supervision.discover_combined_checkpoint",
         lambda _: checkpoint_path,
@@ -143,8 +164,15 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         checkpoint_path=None,
         competition_contract_path=PROJECT_ROOT / "contracts/competition.json",
         backbone=backbone,
+        physical_crop=physical_crop,
     )
 
+    if physical_crop:
+        report = json.loads(outcome.scoring_report_path.read_text())
+        counts = report["inference"]["spatial_evidence"]["counts"]
+        assert counts["slices_crop"] == 3
+        assert counts["shape:130x130"] == 3
+        assert counts["studies_crop"] == 3
     indexed_rows = _read_csv(outcome.index_artifact_dir / "studies.csv")
     assert {row["StudyInstanceUID"] for row in indexed_rows} == set(hidden_ids)
     assert not set(frozen_ids) & {row["StudyInstanceUID"] for row in indexed_rows}

@@ -7,6 +7,11 @@ from pydicom.pixels.processing import apply_modality_lut
 
 
 def decode_pixels(path: str | Path) -> np.ndarray:
+    return decode_pixels_with_spacing(path)[0]
+
+
+def decode_pixels_with_spacing(path: str | Path) -> tuple[np.ndarray, object]:
+    """Decode once, retaining the original spacing for spatial preprocessing."""
     dataset = dcmread(path)
     pixels = _apply_modality_transform(dataset)
     if getattr(dataset, "PhotometricInterpretation", "") == "MONOCHROME1":
@@ -14,7 +19,7 @@ def decode_pixels(path: str | Path) -> np.ndarray:
     output = np.asarray(pixels, dtype=np.float32)
     if not np.isfinite(output).all():
         raise ValueError("Decoded pixels contain non-finite values")
-    return output
+    return output, getattr(dataset, "PixelSpacing", None)
 
 
 def _apply_modality_transform(dataset: Dataset) -> np.ndarray:
