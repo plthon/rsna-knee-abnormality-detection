@@ -333,3 +333,71 @@ def test_crop_bundle_rejects_other_experiment_safeguards(
             kernel_id="plthon/rsna-knee-physical-crop",
             physical_crop=True,
         )
+
+
+def test_physical_crop_scoring_bundle_pins_retained_checkpoint(tmp_path: Path) -> None:
+    import json
+
+    from rsna_knee.kaggle import build_physical_crop_scoring_bundle, load_kaggle_bundle
+
+    bundle = build_physical_crop_scoring_bundle(
+        Path(__file__).parents[1], tmp_path / "scoring"
+    )
+    load_kaggle_bundle(bundle.root)
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["kernel_sources"] == ["plthon/rsna-knee-physical-crop"]
+    assert metadata["dataset_sources"] == []
+    assert metadata["enable_gpu"] == "false"
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join(
+        cell["source"] if isinstance(cell["source"], str) else "".join(cell["source"])
+        for cell in notebook["cells"]
+    )
+    assert "55e9da7854d284a91c2569e25c799281d09301bae61dc5adcecebbd17209f013" in source
+    assert "physical_crop=True" in source
+    assert 'aggregation="mean"' in source
+    assert "run_combined_baseline" not in source
+    assert "train_epoch" not in source
+
+
+def test_scoring_notebook_selects_identical_checkpoint_copies_and_rejects_wrong_hash(
+    tmp_path: Path,
+) -> None:
+    import ast
+    import hashlib
+
+    path = Path(__file__).parents[1] / "notebooks/score_physical_crop.py"
+    tree = ast.parse(path.read_text())
+    # Exercise the notebook's checkpoint-selection cell with synthetic output files.
+    selection: list[ast.stmt] = [
+        node
+        for node in tree.body
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "checkpoint_path"
+                for target in node.targets
+            )
+        )
+        or (
+            isinstance(node, ast.If)
+            and ast.unparse(node.test) == "checkpoint_path is None"
+        )
+    ]
+    compiled = compile(ast.Module(body=selection, type_ignores=[]), str(path), "exec")
+    root_copy = tmp_path / "checkpoint.pt"
+    nested_copy = tmp_path / "nested/checkpoint.pt"
+    nested_copy.parent.mkdir()
+    root_copy.write_bytes(b"retained")
+    nested_copy.write_bytes(b"retained")
+    namespace = {
+        "input_root": tmp_path,
+        "hashlib": hashlib,
+        "EXPECTED_CHECKPOINT_SHA256": hashlib.sha256(b"retained").hexdigest(),
+    }
+    exec(compiled, namespace)  # noqa: S102 - execute only the trusted repository selection cell
+    assert namespace["checkpoint_path"] in {root_copy, nested_copy}
+    root_copy.write_bytes(b"wrong")
+    nested_copy.write_bytes(b"wrong")
+    with pytest.raises(FileNotFoundError, match="missing or changed"):
+        exec(compiled, namespace)  # noqa: S102 - execute only the trusted repository selection cell

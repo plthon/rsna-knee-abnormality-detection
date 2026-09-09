@@ -1,8 +1,8 @@
 # Fixed 130 mm physical crop — issue #31
 
-Status: implemented locally; GPU training, hidden inference and submission have
-not been run. The retained baseline remains #27 whole-image ResNet-18.
-No validation gain, fallback prevalence, or keep decision is claimed yet.
+Status: GPU training completed; the physical crop passed the precommitted keep
+rule. Hidden inference and competition submission have not run. The frozen #27
+whole-image model remains the paired control.
 
 ## Frozen experiment
 
@@ -66,27 +66,67 @@ additional CPU crop/pad and paired control evaluation must be measured rather
 than assumed free. The report already captures training/inference time,
 valid slices/sec, peak CUDA memory, and checkpoint bytes.
 
-## Pending GPU results
+## Completed GPU validation
 
-The generated public-safe training report will contain control/candidate macro
-AUC, all 12 target AUCs and deltas, non-decreasing target count, secondary masked
-BCE, the established 10,000-resample PatientID bootstrap interval, positive
-fraction and valid/undefined counts, crop/fallback prevalence and dimension
-histograms, resource measurements, and checkpoint reload error (tolerance
-`1e-5`). Actual values require the approved GPU run.
+The report hash matches the downloaded run manifest. Training source:
+`5fe133ed01d418b45643f3fe0458be5f0d1f558d` (clean).
 
-Keep only with macro delta ≥0.005, positive bootstrap fraction ≥0.95, and no
-regression worse than −0.02 AUC; report ≥8/12 non-decreasing as a diagnostic
-preference. This conservatively treats the issue's approximate regression
-inspection threshold as a veto. A miss retains #27 without crop-size tuning.
-If kept, the next controlled question is resolution at the same 130 mm FOV;
-otherwise investigate slice context/position. Hidden inference and submission
-remain separate approval steps after a keep result.
+- Control macro AUC: 0.838277; candidate: 0.847212; delta: +0.008935.
+- Paired 95% delta interval: [+0.002261, +0.015622]; positive fraction: 99.57%.
+- 10,000 valid bootstrap replicates; zero undefined. Nine targets improved;
+  no target regressed by more than 0.02. Decision: **keep**.
+- Masked BCE: 0.520846 → 0.462096.
+- The same 450-study validation membership digest was verified.
+- Every decoded sampled slice used the crop: 175,158 training slices per epoch
+  across 21,895 series/3,957 studies; 19,808 validation slices across 2,476
+  series/450 studies. All slice/series/study crop rates were 100%; no fallbacks.
+- Training: 11,312.74 seconds (3.14 hours); reported throughput: 51.34 valid
+  slices/sec. Validation decode + forward: 204.73 seconds.
+- Peak CUDA memory: 11,664,797,184 bytes. This is materially above the recorded
+  #27 reference of 741,710,848 bytes; the report does not establish the cause.
+- Checkpoint: 134,349,191 bytes; reload maximum absolute difference: 0.
+  SHA-256: `55e9da7854d284a91c2569e25c799281d09301bae61dc5adcecebbd17209f013`.
+
+| Target | Control AUC | Crop AUC | Delta |
+| --- | ---: | ---: | ---: |
+| ACL | 0.827635 | 0.844484 | +0.016849 |
+| Baker's | 0.837621 | 0.859292 | +0.021671 |
+| Contusion | 0.784774 | 0.806030 | +0.021256 |
+| Effusion | 0.857027 | 0.858636 | +0.001609 |
+| Fracture | 0.889032 | 0.898986 | +0.009954 |
+| Lateral Meniscus | 0.780045 | 0.791687 | +0.011642 |
+| Lateral OA | 0.868740 | 0.869330 | +0.000590 |
+| MCL | 0.748820 | 0.782509 | +0.033690 |
+| Medial Meniscus | 0.833164 | 0.837201 | +0.004038 |
+| Medial OA | 0.899922 | 0.892097 | -0.007825 |
+| PF OA | 0.863098 | 0.857407 | -0.005692 |
+| Synovitis | 0.869444 | 0.868889 | -0.000556 |
+
+Next: score the retained 130 mm/224×224 checkpoint. A later controlled experiment
+may test higher resolution with the same FOV, without changing this checkpoint.
+
+## Inference notebook
+
+`notebooks/score_physical_crop.py` attaches the completed training kernel output,
+selects the exact retained checkpoint by hash (root/nested identical copies are
+allowed), and calls the shared scoring path with physical crop and ordinary
+mean aggregation. It rebuilds the live test-only index and strictly validates
+`submission.csv`. It never trains or submits. Local builds disable execution;
+a clean revision and `--approve-gpu` enable the user-launched inference run.
+
+```sh
+uv run python scripts/kaggle.py build physical-crop-scoring --approve-gpu
+uv run python scripts/kaggle.py push build/kaggle/physical-crop-scoring --approve-remote --approve-gpu
+```
+
+Running the notebook normally checks the mounted example test studies. Kaggle
+provides hidden test studies during competition scoring; the same notebook then
+indexes those live inputs. Competition submission remains a separate step.
 
 ## Local verification
 
 Completed: locked dependency sync (including the existing training extra),
-341 tests, strict mypy across source/tests/scripts/notebooks, Ruff lint and
+343 tests, strict mypy across source/tests/scripts/notebooks, Ruff lint and
 format checks, source and wheel builds, and `git diff --check`. Synthetic checks
 cover crop geometry, invalid spacing, unchanged normalization/sampling, actual
 ResNet checkpoint reload, live hidden-index inference, and notebook safeguards.
@@ -95,4 +135,5 @@ The separate standards and specification reviews have no remaining findings.
 Their fixes exclude entirely undecodable studies from prevalence denominators
 and validate the crop notebook's actual verifier and mean-aggregation guard.
 The definitive source SHA and artifact hashes are in the locally built bundle's
-provenance; GPU execution remains disabled pending approval.
+provenance; the prepared inference bundle remains execution-disabled until the
+user rebuilds it with GPU approval.

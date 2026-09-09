@@ -191,8 +191,10 @@ def build_kaggle_bundle(
         _validate_controlled_training_source(
             source, physical_crop=spec.validator == "physical_crop"
         )
-    elif spec.validator == "plane_gated_scoring":
-        _validate_plane_gated_scoring_source(source)
+    elif spec.validator in {"plane_gated_scoring", "physical_crop_scoring"}:
+        _validate_plane_gated_scoring_source(
+            source, physical_crop=spec.validator == "physical_crop_scoring"
+        )
     elif spec.validator == "dinov2_training":
         _validate_dinov2_training_source(source)
     elif spec.validator == "dinov2_scoring":
@@ -904,6 +906,50 @@ def build_plane_gated_scoring_bundle(
     return _record_rendered_notebook_hash(bundle, label="Plane-gated scoring")
 
 
+def build_physical_crop_scoring_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-physical-crop-scoring",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Score with the exact #31 checkpoint retained by paired validation."""
+    source_path = project_root / "notebooks" / "score_physical_crop.py"
+    git_commit, git_dirty = _git_state(project_root)
+    if gpu_approved and git_dirty:
+        raise ValueError("Physical crop scoring requires a clean committed revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="score_physical_crop.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Physical Crop Scoring",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            kernel_sources=("plthon/rsna-knee-physical-crop",),
+            gpu=gpu_approved,
+            machine_shape=_GPU_MACHINE_SHAPE if gpu_approved else "",
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_CHECKPOINT_SHA256__": "55e9da7854d284a91c2569e25c799281d09301bae61dc5adcecebbd17209f013",
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=("competition.json",),
+            validator="physical_crop_scoring",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Physical crop scoring")
+
+
 def build_dinov2_training_bundle(
     project_root: Path,
     output_root: Path,
@@ -1247,6 +1293,17 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             raise ValueError("Plane gating attached unexpected Dataset inputs")
         if tuple(metadata.get("kernel_sources", ())) != _PLANE_GATING_KERNEL_SOURCES:
             raise ValueError("Plane gating must attach the frozen index kernel output")
+    elif validator == "physical_crop_scoring":
+        _validate_plane_gated_scoring_source(
+            _notebook_source(source), physical_crop=True
+        )
+        if (
+            metadata.get("kernel_sources") != ["plthon/rsna-knee-physical-crop"]
+            or metadata.get("dataset_sources") != []
+        ):
+            raise ValueError(
+                "Physical crop scoring requires the retained training output only"
+            )
     elif validator == "plane_gated_scoring":
         _validate_plane_gated_scoring_source(_notebook_source(source))
         dataset_sources = metadata.get("dataset_sources")
@@ -1583,12 +1640,22 @@ def _validate_controlled_training_source(
         raise ValueError("Plane-gating training notebook contains hidden scoring work")
 
 
-def _validate_plane_gated_scoring_source(source: str) -> None:
+def _validate_plane_gated_scoring_source(
+    source: str, *, physical_crop: bool = False
+) -> None:
+    verifier = (
+        "load_verified_physical_crop_checkpoint"
+        if physical_crop
+        else "load_verified_plane_gated_checkpoint"
+    )
+    aggregation = "mean" if physical_crop else "target_plane_gate"
+    if physical_crop and "physical_crop=True" not in source:
+        raise ValueError("Physical crop scoring omits the crop safeguard")
     required = (
         "EXPECTED_CHECKPOINT_SHA256",
-        "load_verified_plane_gated_checkpoint",
+        verifier,
         "run_combined_scoring",
-        'aggregation="target_plane_gate"',
+        f'aggregation="{aggregation}"',
         "expected_checkpoint_sha256=EXPECTED_CHECKPOINT_SHA256",
         "build_competition_index",
         "verify_index_artifact",

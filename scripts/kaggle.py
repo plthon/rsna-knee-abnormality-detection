@@ -8,6 +8,7 @@ from rsna_knee.kaggle import (
     build_dinov2_resume_dataset,
     build_dinov2_scoring_bundle,
     build_dinov2_training_bundle,
+    build_physical_crop_scoring_bundle,
     build_plane_gated_scoring_bundle,
     build_plane_gating_bundle,
     build_public_baseline_bundle,
@@ -40,6 +41,7 @@ def main() -> None:
             "report-source-comparison",
             "combined-baseline",
             "combined-scoring",
+            "physical-crop-scoring",
             "physical-crop",
             "plane-gating",
             "plane-gating-scoring",
@@ -98,6 +100,7 @@ def main() -> None:
                 "combined-baseline": "gold-public-scoring",
                 "combined-scoring": "gold-public-scoring",
                 "physical-crop": "physical-crop",
+                "physical-crop-scoring": "physical-crop-scoring",
                 "plane-gating": "plane-gating",
                 "plane-gating-scoring": "plane-gated-scoring",
                 "dinov2-training": "dinov2-training",
@@ -115,6 +118,14 @@ def main() -> None:
                 weight_dataset_id=arguments.weight_dataset_id,
                 kernel_id=arguments.kernel_id
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "physical-crop-scoring":
+            bundle = build_physical_crop_scoring_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-physical-crop-scoring",
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target in {"plane-gating-scoring", "dinov2-scoring"}:
