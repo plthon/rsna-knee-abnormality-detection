@@ -1,8 +1,8 @@
 # Fixed 130 mm physical crop — issue #31
 
-Status: GPU training completed; the physical crop passed the precommitted keep
-rule. Hidden inference and competition submission have not run. The frozen #27
-whole-image model remains the paired control.
+Status: complete. The physical crop passed the precommitted validation keep
+rule and the competition submission scored 0.830, versus #27 at 0.819. Retain
+the 130 mm crop at 224×224; the frozen #27 model remains the paired control.
 
 ## Frozen experiment
 
@@ -137,3 +137,30 @@ and validate the crop notebook's actual verifier and mean-aggregation guard.
 The definitive source SHA and artifact hashes are in the locally built bundle's
 provenance; the prepared inference bundle remains execution-disabled until the
 user rebuilds it with GPU approval.
+
+
+## Competition result — 2026-09-12
+
+Kaggle submission `56178646`, submitted at `2026-09-12 04:42:59.193000`
+(as returned by Kaggle), completed successfully with public score **0.830**.
+The retained #27 submission `55794901` scored **0.819**: improvement **+0.011**.
+The private score is not exposed. One controlled #31 submission was made.
+
+The preceding inference notebook used clean source
+`6492acfe35a759238e8a0913e2f468cb3e649b3c` and the retained checkpoint digest
+recorded above. Its downloaded report and validation hashes match its manifest.
+The mounted example check covered three studies, 15 series and 120 slices,
+with no decode errors or fallback, in 2.545 seconds. It passed strict validation
+with the exact 12-target order. These counts and runtime describe the example
+run, not the hidden rerun; hidden runtime is not provided by the submission
+listing. Successful competition scoring confirms the hidden rerun completed.
+
+Requested crop dimensions in the training and validation histograms are
+summarized below (weighted by decoded sampled slice count; before 224×224 resize).
+
+- Training (one epoch): height min/median/max 111/416/1786 px; width 111/416/1786 px.
+
+- Validation: height min/median/max 111/413/951 px; width 111/413/951 px.
+
+Final decision: **retain**. The next controlled experiment may test higher
+resolution while holding the 130 mm crop and all other choices fixed.
