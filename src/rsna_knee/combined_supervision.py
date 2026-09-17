@@ -102,6 +102,10 @@ PHYSICAL_CROP_CHECKPOINT_SHA256 = (
 PHYSICAL_CROP_COMMIT = "e85e24ebf0b78c6c73e63465d08c6b3dfa098141"
 _BASELINE_TRAINING_SECONDS = 13_102.42
 _BASELINE_PEAK_CUDA_MEMORY_BYTES = 741_710_848
+_PHYSICAL_CROP_TRAINING_SECONDS = 11_312.74
+_PHYSICAL_CROP_PEAK_CUDA_MEMORY_BYTES = 11_664_797_184
+_PHYSICAL_CROP_VALID_TRAINING_SLICES = 525_474
+_PHYSICAL_CROP_TRAINING_SLICES_PER_SECOND = 51.34
 _DINOV2_29_MACRO_AUC = 0.634180
 
 _STUDY_COLUMNS = (
@@ -927,13 +931,14 @@ def discover_combined_checkpoint(
     input_root: Path,
     *,
     expected_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
+    allow_identical_copies: bool = False,
 ) -> Path:
     """Find exactly one attached checkpoint with the required digest."""
     candidates = sorted(
         path for path in input_root.rglob("checkpoint.pt") if path.is_file()
     )
     matching = [path for path in candidates if _sha256(path) == expected_sha256]
-    if len(matching) == 1:
+    if len(matching) == 1 or (allow_identical_copies and matching):
         return matching[0]
     if not candidates:
         raise FileNotFoundError(
@@ -1001,7 +1006,9 @@ def load_verified_combined_checkpoint(
         else _COMBINED_CHECKPOINT_SCHEMA_VERSION
     )
     if checkpoint.get("checkpoint_schema_version") != expected_schema:
-        raise ValueError("Checkpoint spatial schema is incompatible with representation")
+        raise ValueError(
+            "Checkpoint spatial schema is incompatible with representation"
+        )
     if checkpoint.get("preprocessing") != expected_preprocessing:
         raise ValueError("Checkpoint preprocessing metadata is incompatible")
     if checkpoint.get("completed_epochs") != 3:
@@ -2387,6 +2394,17 @@ def run_combined_baseline(
         if training_slice_seconds > 0 and valid_training_slices > 0
         else None
     )
+    resource_control_issue = 31 if is_adjacent_slice else 27
+    resource_training_seconds = (
+        _PHYSICAL_CROP_TRAINING_SECONDS
+        if is_adjacent_slice
+        else _BASELINE_TRAINING_SECONDS
+    )
+    resource_peak_memory = (
+        _PHYSICAL_CROP_PEAK_CUDA_MEMORY_BYTES
+        if is_adjacent_slice
+        else _BASELINE_PEAK_CUDA_MEMORY_BYTES
+    )
     report_data = {
         "schema_version": _COMBINED_REPORT_SCHEMA_VERSION,
         "status": "complete",
@@ -2419,17 +2437,25 @@ def run_combined_baseline(
         },
         "initialization": initialization_record,
         "baseline_reproducibility": {
-            "control_commit": COMBINED_BASELINE_COMMIT,
+            "control_commit": control_commit,
             "control_checkpoint_sha256": control_checkpoint_sha256,
             "control_configuration": (
-                _expected_baseline_configuration() if controlled_experiment else None
+                _expected_physical_crop_configuration()
+                if is_adjacent_slice
+                else _expected_baseline_configuration()
+                if controlled_experiment
+                else None
             ),
             "cohort_digest": cohort.digest,
             "supervision_recipe": "organizer gold precedence plus frozen public verdicts",
-            "physical_dicom_ordering": "frozen selected_slices index",
+            "physical_dicom_ordering": (
+                "full ordered series with frozen deterministic anchor positions"
+                if is_adjacent_slice
+                else "frozen selected_slices index"
+            ),
             "deterministic_slice_sampling": True,
             "slice_to_series_reduction": "masked mean",
-            "encoder_input_changed": False,
+            "encoder_input_changed": is_adjacent_slice,
             "encoder_changed": config.architecture == "dinov2_vits14",
             "unavoidable_drift": (
                 {
@@ -2463,7 +2489,10 @@ def run_combined_baseline(
                 "baseline_commit": control_commit,
                 "baseline_checkpoint_sha256": control_checkpoint_sha256,
                 "validation_design": (
-                    "paired deterministic PatientID-disjoint split; no ready "
+                    "paired deterministic PatientID-disjoint split; retained #31 "
+                    "checkpoint predictions"
+                    if is_adjacent_slice
+                    else "paired deterministic PatientID-disjoint split; no ready "
                     "combined-supervision OOF artifact exists"
                 ),
                 "paired_validation_membership": True,
@@ -2563,12 +2592,23 @@ def run_combined_baseline(
             ),
             "peak_cuda_memory_bytes": peak_cuda_memory,
             "baseline_resource_reference": {
+                "control_issue": resource_control_issue,
                 "gpu": "Tesla T4",
-                "total_training_seconds": _BASELINE_TRAINING_SECONDS,
-                "peak_cuda_memory_bytes": _BASELINE_PEAK_CUDA_MEMORY_BYTES,
-                "valid_training_slices": None,
-                "training_slices_per_second": None,
-                "throughput_evidence": "not recorded for #27",
+                "total_training_seconds": resource_training_seconds,
+                "peak_cuda_memory_bytes": resource_peak_memory,
+                "valid_training_slices": (
+                    _PHYSICAL_CROP_VALID_TRAINING_SLICES if is_adjacent_slice else None
+                ),
+                "training_slices_per_second": (
+                    _PHYSICAL_CROP_TRAINING_SLICES_PER_SECOND
+                    if is_adjacent_slice
+                    else None
+                ),
+                "throughput_evidence": (
+                    "recorded retained #31 report"
+                    if is_adjacent_slice
+                    else "not recorded for #27"
+                ),
                 "parameter_count": control_parameter_count,
                 "checkpoint_size_bytes": control_checkpoint_size_bytes,
             },
@@ -2587,11 +2627,11 @@ def run_combined_baseline(
                         else {}
                     ),
                 },
-                "training_time_ratio_vs_27": (
-                    total_training_seconds / _BASELINE_TRAINING_SECONDS
+                f"training_time_ratio_vs_{resource_control_issue}": (
+                    total_training_seconds / resource_training_seconds
                 ),
-                "peak_memory_ratio_vs_27": (
-                    peak_cuda_memory / _BASELINE_PEAK_CUDA_MEMORY_BYTES
+                f"peak_memory_ratio_vs_{resource_control_issue}": (
+                    peak_cuda_memory / resource_peak_memory
                 ),
                 "paired_validation_forward_time_ratio": (
                     reloaded_val_pred.forward_seconds / control_val_pred.forward_seconds
@@ -2601,10 +2641,10 @@ def run_combined_baseline(
                 ),
                 "material_difference_threshold_fraction": 0.10,
                 "material_training_time_difference": (
-                    abs(total_training_seconds / _BASELINE_TRAINING_SECONDS - 1) > 0.10
+                    abs(total_training_seconds / resource_training_seconds - 1) > 0.10
                 ),
                 "material_peak_memory_difference": (
-                    abs(peak_cuda_memory / _BASELINE_PEAK_CUDA_MEMORY_BYTES - 1) > 0.10
+                    abs(peak_cuda_memory / resource_peak_memory - 1) > 0.10
                 ),
             },
         },

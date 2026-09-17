@@ -93,6 +93,7 @@ class _RepresentativeCandidate:
     source: _SeriesSource
     series_index: int
     selected: tuple[_SelectedSlice, ...]
+    ordered: tuple[tuple[int, Path], ...]
 
 
 @dataclass(slots=True)
@@ -393,10 +394,12 @@ def build_competition_index(
             )
             selected_position_set = set(selected_positions)
             selected: list[_SelectedSlice] = []
+            ordered_slices: list[tuple[int, Path]] = []
             patient_ids: set[str] = set()
             for ordered_position, header in enumerate(ordering.headers):
                 slice_index = next_slice_index
                 next_slice_index += 1
+                ordered_slices.append((slice_index, header.path))
                 patient_ids.update([header.patient_id] if header.patient_id else [])
                 transfer_syntax_counts[header.transfer_syntax or "missing"] += 1
                 slices_writer.writerow(
@@ -460,6 +463,7 @@ def build_competition_index(
                         source=source,
                         series_index=series_index,
                         selected=tuple(selected),
+                        ordered=tuple(ordered_slices),
                     )
                 )
 
@@ -885,12 +889,16 @@ def _run_representative_checks(
 
     checks: list[dict[str, Any]] = []
     for candidate in selected_candidates:
-        paths = [item.path for item in candidate.selected]
+        items = (
+            candidate.ordered
+            if config.input_representation == "adjacent_slice_2_5d"
+            else tuple((item.slice_index, item.path) for item in candidate.selected)
+        )
+        paths = [path for _, path in items]
         result = preprocess_series_result(paths, config)
         study_index = study_lookup[(candidate.source.split, candidate.source.study_uid)]
-        by_path = {item.path: item for item in candidate.selected}
+        by_path = {path: slice_index for slice_index, path in items}
         for failure in result.failures:
-            selected_slice = by_path[failure.path]
             errors.append(
                 _ErrorRecord(
                     severity="error",
@@ -899,7 +907,7 @@ def _run_representative_checks(
                     split=candidate.source.split,
                     study_index=study_index,
                     series_index=candidate.series_index,
-                    slice_index=selected_slice.slice_index,
+                    slice_index=by_path[failure.path],
                     relative_path=failure.path.relative_to(root).as_posix(),
                     detail=failure.exception_type,
                 )
@@ -911,7 +919,8 @@ def _run_representative_checks(
                 "series_index": candidate.series_index,
                 "study_index": study_index,
                 "plane": candidate.source.anatomical_plane,
-                "selected_count": len(paths),
+                "source_count": len(paths),
+                "selected_count": len(result.source_indices),
                 "decoded_count": int(result.mask.sum()),
                 "mask": result.mask.astype(int).tolist(),
                 "output_shape": list(result.pixels.shape),

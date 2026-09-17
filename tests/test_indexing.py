@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -210,6 +211,20 @@ def test_competition_index_is_ordered_compact_and_header_first(
     assert not list(outcome.artifact_dir.glob("*.npz"))
     assert not list(outcome.artifact_dir.glob("*.png"))
     assert verify_index_artifact(outcome.artifact_dir) == outcome.statistics
+
+    adjacent = build_competition_index(
+        input_root,
+        tmp_path / "adjacent-work",
+        replace(config, input_representation="adjacent_slice_2_5d"),
+    )
+    adjacent_checks = adjacent.statistics["preprocessing"]["checks"]
+    geometry_check = next(
+        check for check in adjacent_checks if check["series_index"] == 0
+    )
+    assert geometry_check["source_count"] == 10
+    assert geometry_check["selected_count"] == 8
+    assert geometry_check["output_shape"] == [8, 3, 8, 8]
+    assert verify_index_artifact(adjacent.artifact_dir) == adjacent.statistics
 
     original_manifest = outcome.manifest_path.read_text()
     incomplete_manifest = json.loads(original_manifest)

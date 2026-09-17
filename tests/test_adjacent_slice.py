@@ -390,3 +390,27 @@ def test_adjacent_bundle_is_local_clean_training_only(tmp_path: Path) -> None:
     assert "adjacent_slice_2_5d" in source
     assert "verify_adjacent_slice_artifact" in source
     assert '"competition_submission": False' in source
+
+
+def test_retained_control_discovery_accepts_identical_output_copies(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from rsna_knee.combined_supervision import discover_combined_checkpoint
+
+    first = tmp_path / "a/checkpoint.pt"
+    second = tmp_path / "b/checkpoint.pt"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"retained #31")
+    second.write_bytes(first.read_bytes())
+    digest = hashlib.sha256(first.read_bytes()).hexdigest()
+    assert (
+        discover_combined_checkpoint(
+            tmp_path,
+            expected_sha256=digest,
+            allow_identical_copies=True,
+        )
+        == first
+    )

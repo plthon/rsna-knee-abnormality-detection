@@ -45,7 +45,9 @@ if (
 
 input_root = Path("/kaggle/input")
 control_checkpoint = discover_combined_checkpoint(
-    input_root, expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256
+    input_root,
+    expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
+    allow_identical_copies=True,
 )
 source_provenance = {
     "git_commit": "__RSNA_KNEE_GIT_COMMIT__",

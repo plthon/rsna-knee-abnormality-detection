@@ -52,6 +52,37 @@ def adjacent_triplet_indices(length: int, anchor: int) -> tuple[int, int, int]:
     return max(anchor - 1, 0), anchor, min(anchor + 1, length - 1)
 
 
+def _decode_grayscale(path: Path) -> tuple[np.ndarray, object]:
+    pixels, spacing = decode_pixels_with_spacing(path)
+    if pixels.ndim != 2 or not pixels.size:
+        raise ValueError("Only nonempty single-frame grayscale images are supported")
+    if not np.isfinite(pixels).all():
+        raise ValueError("Decoded pixels contain non-finite values")
+    return pixels, spacing
+
+
+def _normalize_pixels(pixels: np.ndarray, lower: float, upper: float) -> np.ndarray:
+    if lower == upper:
+        return np.zeros_like(pixels, dtype=np.float32)
+    return np.clip((pixels - lower) / (upper - lower), 0, 1).astype(np.float32)
+
+
+def _spatially_resize(
+    image: np.ndarray, spacing: object, config: PreprocessingConfig
+) -> tuple[np.ndarray, tuple[int, int] | None, str | None]:
+    shape, reason = (None, None)
+    if config.spatial_mode == "physical_crop":
+        shape, reason = physical_crop_shape(spacing, config.physical_fov_mm)
+    output = (
+        _bilinear_resize(
+            centered_crop_pad(image, shape), config.image_size, config.image_size
+        )
+        if shape is not None
+        else _resize_and_pad(image, config.image_size)
+    )
+    return output, shape, reason
+
+
 def preprocess_series(
     paths: Sequence[str | Path], config: PreprocessingConfig
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -82,14 +113,8 @@ def preprocess_series_result(
     for slot, source_index in enumerate(indices):
         path = Path(paths[source_index])
         try:
-            pixels, spacing = decode_pixels_with_spacing(path)
+            pixels, spacing = _decode_grayscale(path)
             spacings[slot] = spacing
-            if pixels.ndim != 2 or not pixels.size:
-                raise ValueError(
-                    "Only nonempty single-frame grayscale images are supported"
-                )
-            if not np.isfinite(pixels).all():
-                raise ValueError("Decoded pixels contain non-finite values")
             decoded.append((slot, pixels))
         except Exception as error:  # noqa: BLE001 - DICOM failures are data records
             failures.append(
@@ -118,25 +143,13 @@ def preprocess_series_result(
     lower, upper = np.percentile(
         values, (config.lower_percentile, config.upper_percentile)
     )
-    if lower == upper:
-        normalized = [np.zeros_like(pixels, dtype=np.float32) for _, pixels in decoded]
-    else:
-        normalized = [
-            np.clip((pixels - lower) / (upper - lower), 0, 1).astype(np.float32)
-            for _, pixels in decoded
-        ]
+    normalized = [
+        _normalize_pixels(pixels, float(lower), float(upper)) for _, pixels in decoded
+    ]
 
     evidence: list[SpatialEvidence] = []
     for (slot, _), image in zip(decoded, normalized, strict=True):
-        shape, reason = (None, None)
-        if config.spatial_mode == "physical_crop":
-            shape, reason = physical_crop_shape(spacings[slot], config.physical_fov_mm)
-        if shape is not None:
-            output[slot] = _bilinear_resize(
-                centered_crop_pad(image, shape), config.image_size, config.image_size
-            )
-        else:
-            output[slot] = _resize_and_pad(image, config.image_size)
+        output[slot], shape, reason = _spatially_resize(image, spacings[slot], config)
         evidence.append(
             SpatialEvidence(
                 indices[slot],
@@ -172,14 +185,7 @@ def _preprocess_adjacent_series(
         if cached is None:
             path = Path(paths[source_index])
             try:
-                pixels, spacing = decode_pixels_with_spacing(path)
-                if pixels.ndim != 2 or not pixels.size:
-                    raise ValueError(
-                        "Only nonempty single-frame grayscale images are supported"
-                    )
-                if not np.isfinite(pixels).all():
-                    raise ValueError("Decoded pixels contain non-finite values")
-                cached = (pixels, spacing)
+                cached = _decode_grayscale(path)
             except Exception as error:  # noqa: BLE001 - DICOM failures are records
                 cached = PreprocessingFailure(
                     path=path,
@@ -241,23 +247,8 @@ def _preprocess_adjacent_series(
         if cached is not None:
             return cached
         pixels, spacing = value
-        normalized = (
-            np.zeros_like(pixels, dtype=np.float32)
-            if lower == upper
-            else np.clip((pixels - lower) / (upper - lower), 0, 1).astype(np.float32)
-        )
-        shape, reason = (None, None)
-        if config.spatial_mode == "physical_crop":
-            shape, reason = physical_crop_shape(spacing, config.physical_fov_mm)
-        cached = (
-            _bilinear_resize(
-                centered_crop_pad(normalized, shape),
-                config.image_size,
-                config.image_size,
-            )
-            if shape is not None
-            else _resize_and_pad(normalized, config.image_size)
-        )
+        normalized = _normalize_pixels(pixels, float(lower), float(upper))
+        cached, shape, reason = _spatially_resize(normalized, spacing, config)
         processed[source_index] = cached
         evidence[source_index] = SpatialEvidence(
             source_index,

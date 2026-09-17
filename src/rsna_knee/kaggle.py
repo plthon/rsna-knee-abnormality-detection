@@ -806,7 +806,7 @@ def build_plane_gating_bundle(
     physical_crop: bool = False,
     adjacent_slice: bool = False,
 ) -> KaggleBundle:
-    """Build the private #28 training and paired-validation bundle."""
+    """Build a guarded controlled-training and paired-validation bundle."""
     if physical_crop and adjacent_slice:
         raise ValueError("Choose one controlled representation experiment")
     name = (
@@ -882,7 +882,7 @@ def build_plane_gating_bundle(
         ),
         gpu_approved=gpu_approved,
     )
-    return _record_rendered_notebook_hash(bundle, label="Plane gating")
+    return _record_rendered_notebook_hash(bundle, label=name.replace("-", " ").title())
 
 
 def build_plane_gated_scoring_bundle(
