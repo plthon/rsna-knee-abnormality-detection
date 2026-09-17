@@ -198,6 +198,9 @@ def verify_index_artifact(
         raise TypeError("Index manifest has no preprocessing contract")
     slice_count = manifest_preprocessing.get("slice_count")
     image_size = manifest_preprocessing.get("image_size")
+    input_representation = manifest_preprocessing.get(
+        "input_representation", "same_slice_rgb"
+    )
     if (
         not isinstance(checked, int)
         or isinstance(checked, bool)
@@ -215,7 +218,9 @@ def verify_index_artifact(
     ):
         raise ValueError("Representative preprocessing evidence is incomplete")
     successful_checks = sum(
-        _representative_check_succeeded(check, slice_count, image_size)
+        _representative_check_succeeded(
+            check, slice_count, image_size, input_representation
+        )
         for check in checks
     )
     if succeeded != successful_checks or successful_checks != checked:
@@ -569,6 +574,11 @@ def build_competition_index(
             "image_size": config.image_size,
             "normalization_status": "provisional",
             "resize": "bilinear_aspect_preserving_center_pad",
+            **(
+                {"input_representation": config.input_representation}
+                if config.input_representation == "adjacent_slice_2_5d"
+                else {}
+            ),
         },
         "indexed_splits": list(requested_splits),
         "decoder_dependencies": ["pydicom"],
@@ -927,6 +937,7 @@ def _run_representative_checks(
                 check,
                 config.slice_count,
                 config.image_size,
+                config.input_representation,
             )
             for check in checks
         ),
@@ -935,7 +946,10 @@ def _run_representative_checks(
 
 
 def _representative_check_succeeded(
-    check: object, slice_count: int, image_size: int
+    check: object,
+    slice_count: int,
+    image_size: int,
+    input_representation: object = "same_slice_rgb",
 ) -> bool:
     if not isinstance(check, dict) or check.get("all_finite") is not True:
         return False
@@ -960,7 +974,12 @@ def _representative_check_succeeded(
             for value in mask
         )
         and sum(mask) == decoded_count
-        and output_shape == [slice_count, image_size, image_size]
+        and output_shape
+        == (
+            [slice_count, 3, image_size, image_size]
+            if input_representation == "adjacent_slice_2_5d"
+            else [slice_count, image_size, image_size]
+        )
         and isinstance(normalized_range, list)
         and len(normalized_range) == 2
         and all(_is_finite_number(value) for value in normalized_range)

@@ -89,12 +89,17 @@ _COMBINED_SPLIT_RULE_VERSION = "patient-hash-disjoint-v1"
 _ARTIFACT_DIRECTORY = "rsna-knee-combined-baseline-v1"
 _PLANE_GATED_ARTIFACT_DIRECTORY = "rsna-knee-plane-gating-v1"
 _PHYSICAL_CROP_SCHEMA = "rsna-knee-physical-crop-v1"
+_ADJACENT_SLICE_SCHEMA = "rsna-knee-adjacent-slice-2-5d-v1"
 _DINOV2_ARTIFACT_DIRECTORY = "rsna-knee-dinov2-vits14-v1"
 _SCORING_ARTIFACT_DIRECTORY = "rsna-knee-scoring-v1"
 COMBINED_BASELINE_CHECKPOINT_SHA256 = (
     "1285f9890eb01e6a2383552e2ef1efcccdbc956ce14de049042bc268281240c4"
 )
 COMBINED_BASELINE_COMMIT = "e69f79af9c3de06e17a77e43bb41cb971879aed0"
+PHYSICAL_CROP_CHECKPOINT_SHA256 = (
+    "55e9da7854d284a91c2569e25c799281d09301bae61dc5adcecebbd17209f013"
+)
+PHYSICAL_CROP_COMMIT = "e85e24ebf0b78c6c73e63465d08c6b3dfa098141"
 _BASELINE_TRAINING_SECONDS = 13_102.42
 _BASELINE_PEAK_CUDA_MEMORY_BYTES = 741_710_848
 _DINOV2_29_MACRO_AUC = 0.634180
@@ -480,6 +485,9 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         spacing_fallback=preprocessing_raw.get(
             "spacing_fallback", "whole_image_resize_pad"
         ),
+        input_representation=preprocessing_raw.get(
+            "input_representation", "same_slice_rgb"
+        ),
     )
     config = CombinedBaselineConfig(
         preprocessing=preprocessing,
@@ -568,11 +576,16 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         or config.early_stopping_min_delta != 0.002
     ):
         raise ValueError("DINOv2 configuration differs from the #30 recipe")
-    if (
-        preprocessing.spatial_mode == "physical_crop"
-        and _combined_config_record(config) != _expected_physical_crop_configuration()
-    ):
-        raise ValueError("Physical crop must preserve the fixed #31 recipe")
+    if preprocessing.spatial_mode == "physical_crop":
+        expected = (
+            _expected_adjacent_slice_configuration()
+            if preprocessing.input_representation == "adjacent_slice_2_5d"
+            else _expected_physical_crop_configuration()
+        )
+        if _combined_config_record(config) != expected:
+            raise ValueError(
+                "Physical crop configuration differs from its fixed recipe"
+            )
     return config
 
 
@@ -940,6 +953,7 @@ def load_verified_combined_checkpoint(
     contract_path: Path | None = None,
     expected_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
     physical_crop: bool = False,
+    adjacent_slice: bool = False,
 ) -> tuple[StudyClassifier, dict[str, Any]]:
     """Verify the frozen checkpoint before deserializing it for scoring."""
     if not path.is_file():
@@ -967,18 +981,27 @@ def load_verified_combined_checkpoint(
         "imagenet_std": [0.229, 0.224, 0.225],
     }
     expected_config = (
-        _expected_physical_crop_configuration()
+        _expected_adjacent_slice_configuration()
+        if adjacent_slice
+        else _expected_physical_crop_configuration()
         if physical_crop
         else _expected_baseline_configuration()
     )
-    if physical_crop:
+    if physical_crop or adjacent_slice:
         expected_preprocessing.update(
             cast(dict[str, Any], expected_config["preprocessing"])
         )
-    if checkpoint.get("checkpoint_schema_version") != (
-        _PHYSICAL_CROP_SCHEMA if physical_crop else _COMBINED_CHECKPOINT_SCHEMA_VERSION
-    ):
-        raise ValueError("Checkpoint spatial schema is incompatible")
+    if adjacent_slice:
+        expected_preprocessing["channel_adapter"] = "prestacked_previous_center_next"
+    expected_schema = (
+        _ADJACENT_SLICE_SCHEMA
+        if adjacent_slice
+        else _PHYSICAL_CROP_SCHEMA
+        if physical_crop
+        else _COMBINED_CHECKPOINT_SCHEMA_VERSION
+    )
+    if checkpoint.get("checkpoint_schema_version") != expected_schema:
+        raise ValueError("Checkpoint spatial schema is incompatible with representation")
     if checkpoint.get("preprocessing") != expected_preprocessing:
         raise ValueError("Checkpoint preprocessing metadata is incompatible")
     if checkpoint.get("completed_epochs") != 3:
@@ -1309,6 +1332,7 @@ def run_combined_scoring(
     expected_checkpoint_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
     backbone: Literal["resnet18", "dinov2_vits14"] = "resnet18",
     physical_crop: bool = False,
+    adjacent_slice: bool = False,
 ) -> CombinedScoringOutcome:
     """Run inference-only scoring against the live competition test mount."""
     checkpoint = checkpoint_path or (
@@ -1318,7 +1342,18 @@ def run_combined_scoring(
             input_root, expected_sha256=expected_checkpoint_sha256
         )
     )
-    if physical_crop:
+    if adjacent_slice:
+        if backbone != "resnet18" or aggregation != "mean" or not physical_crop:
+            raise ValueError(
+                "Adjacent-slice scoring requires physical-crop ResNet-18 mean pooling"
+            )
+        model, checkpoint_payload = load_verified_adjacent_slice_checkpoint(
+            checkpoint,
+            device=torch.device("cpu"),
+            expected_sha256=expected_checkpoint_sha256,
+            contract_path=competition_contract_path,
+        )
+    elif physical_crop:
         if backbone != "resnet18" or aggregation != "mean":
             raise ValueError("Physical crop requires ResNet-18 and ordinary mean")
         model, checkpoint_payload = load_verified_physical_crop_checkpoint(
@@ -1375,6 +1410,9 @@ def run_combined_scoring(
         physical_fov_mm=preprocessing_raw.get("physical_fov_mm", 130.0),
         spacing_fallback=preprocessing_raw.get(
             "spacing_fallback", "whole_image_resize_pad"
+        ),
+        input_representation=preprocessing_raw.get(
+            "input_representation", "same_slice_rgb"
         ),
     )
 
@@ -1588,14 +1626,25 @@ def run_combined_baseline(
     control_checkpoint_sha256 = None
     control_parameter_count = None
     control_checkpoint_size_bytes = None
+    is_adjacent_slice = (
+        config.preprocessing.input_representation == "adjacent_slice_2_5d"
+    )
+    control_commit = (
+        PHYSICAL_CROP_COMMIT if is_adjacent_slice else COMBINED_BASELINE_COMMIT
+    )
     controlled_experiment = (
         config.aggregation == "target_plane_gate"
         or config.architecture == "dinov2_vits14"
         or config.preprocessing.spatial_mode == "physical_crop"
     )
     if config.preprocessing.spatial_mode == "physical_crop":
-        if _combined_config_record(config) != _expected_physical_crop_configuration():
-            raise ValueError("Physical crop must preserve the fixed #31 recipe")
+        expected = (
+            _expected_adjacent_slice_configuration()
+            if is_adjacent_slice
+            else _expected_physical_crop_configuration()
+        )
+        if _combined_config_record(config) != expected:
+            raise ValueError("Physical crop must preserve its fixed recipe")
         if run_test_inference:
             raise ValueError(
                 "Physical crop training requires separate inference approval"
@@ -1604,20 +1653,48 @@ def run_combined_baseline(
             _validation_membership_digest(partition.val_studies)
             != "8b1240fc2456779ba64fa115b23956adb131fb387f01c0f0424a933a2096ee88"
         ):
-            raise ValueError("Physical crop validation membership differs from #27")
+            raise ValueError("Physical crop validation membership differs")
     if controlled_experiment:
         if control_checkpoint_path is None:
-            control_checkpoint_path = _discover_control_checkpoint(input_root)
-        control_model, control_checkpoint = load_verified_combined_checkpoint(
-            control_checkpoint_path, device=device
-        )
-        if control_checkpoint["configuration"] != _expected_baseline_configuration():
-            raise ValueError("Control checkpoint configuration differs from #27")
+            control_checkpoint_path = discover_combined_checkpoint(
+                input_root,
+                expected_sha256=(
+                    PHYSICAL_CROP_CHECKPOINT_SHA256
+                    if is_adjacent_slice
+                    else COMBINED_BASELINE_CHECKPOINT_SHA256
+                ),
+            )
+        if is_adjacent_slice:
+            control_model, control_checkpoint = load_verified_physical_crop_checkpoint(
+                control_checkpoint_path,
+                device=device,
+                expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
+            )
+            control_preprocessing = replace(
+                config.preprocessing, input_representation="same_slice_rgb"
+            )
+            if (
+                control_checkpoint["configuration"]
+                != _expected_physical_crop_configuration()
+            ):
+                raise ValueError("Control checkpoint configuration differs from #31")
+        else:
+            control_model, control_checkpoint = load_verified_combined_checkpoint(
+                control_checkpoint_path, device=device
+            )
+            control_preprocessing = replace(
+                config.preprocessing, spatial_mode="whole_image"
+            )
+            if (
+                control_checkpoint["configuration"]
+                != _expected_baseline_configuration()
+            ):
+                raise ValueError("Control checkpoint configuration differs from #27")
         control_val_pred = predict_partition(
             model=control_model,
             indexed=training_index,
             studies=partition.val_studies,
-            preprocessing=replace(config.preprocessing, spatial_mode="whole_image"),
+            preprocessing=control_preprocessing,
             mixed_precision=config.mixed_precision,
             device=device,
         )
@@ -1658,7 +1735,9 @@ def run_combined_baseline(
         seed_everything(config.seed)
 
     artifact_dir = work_root / (
-        "rsna-knee-physical-crop-v1"
+        "rsna-knee-adjacent-slice-2-5d-v1"
+        if is_adjacent_slice
+        else "rsna-knee-physical-crop-v1"
         if config.preprocessing.spatial_mode == "physical_crop"
         else _DINOV2_ARTIFACT_DIRECTORY
         if config.architecture == "dinov2_vits14"
@@ -2064,7 +2143,9 @@ def run_combined_baseline(
 
         checkpoint_payload = {
             "checkpoint_schema_version": (
-                _PHYSICAL_CROP_SCHEMA
+                _ADJACENT_SLICE_SCHEMA
+                if is_adjacent_slice
+                else _PHYSICAL_CROP_SCHEMA
                 if config.preprocessing.spatial_mode == "physical_crop"
                 else _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION
                 if config.aggregation == "target_plane_gate"
@@ -2079,7 +2160,11 @@ def run_combined_baseline(
             "preprocessing": {
                 **config.preprocessing.record(),
                 "shared_contract": "preprocess_series_result",
-                "channel_adapter": "grayscale_repeat_to_rgb",
+                "channel_adapter": (
+                    "prestacked_previous_center_next"
+                    if is_adjacent_slice
+                    else "grayscale_repeat_to_rgb"
+                ),
                 "imagenet_mean": [0.485, 0.456, 0.406],
                 "imagenet_std": [0.229, 0.224, 0.225],
             },
@@ -2232,7 +2317,9 @@ def run_combined_baseline(
                 ),
             }
         decision = (
-            _physical_crop_decision(comparison, config)
+            _adjacent_slice_decision(comparison, config)
+            if is_adjacent_slice
+            else _physical_crop_decision(comparison, config)
             if config.preprocessing.spatial_mode == "physical_crop"
             else _dinov2_decision(comparison, config)
             if config.architecture == "dinov2_vits14"
@@ -2245,7 +2332,9 @@ def run_combined_baseline(
             reloaded_val_pred,
             cohort.target_names,
             candidate_name=(
-                "physical_crop"
+                "adjacent_slice_2_5d"
+                if is_adjacent_slice
+                else "physical_crop"
                 if config.preprocessing.spatial_mode == "physical_crop"
                 else "dinov2_vits14"
                 if config.architecture == "dinov2_vits14"
@@ -2371,7 +2460,7 @@ def run_combined_baseline(
         },
         "controlled_comparison": (
             {
-                "baseline_commit": COMBINED_BASELINE_COMMIT,
+                "baseline_commit": control_commit,
                 "baseline_checkpoint_sha256": control_checkpoint_sha256,
                 "validation_design": (
                     "paired deterministic PatientID-disjoint split; no ready "
@@ -2408,6 +2497,17 @@ def run_combined_baseline(
                 "validation": spatial_summary(reloaded_val_pred.spatial_counts),
             }
             if config.preprocessing.spatial_mode == "physical_crop"
+            else None
+        ),
+        "adjacent_slice_evidence": (
+            {
+                "contract": config.preprocessing.record(),
+                "training_epochs": [
+                    representation_summary(log["spatial_counts"]) for log in epoch_logs
+                ],
+                "validation": representation_summary(reloaded_val_pred.spatial_counts),
+            }
+            if is_adjacent_slice
             else None
         ),
         "partition_summary": partition.summary,
@@ -2664,6 +2764,7 @@ def load_combined_checkpoint(
     if schema_version not in {
         _COMBINED_CHECKPOINT_SCHEMA_VERSION,
         _PHYSICAL_CROP_SCHEMA,
+        _ADJACENT_SLICE_SCHEMA,
         _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION,
         _DINOV2_CHECKPOINT_SCHEMA_VERSION,
     }:
@@ -2679,18 +2780,26 @@ def load_combined_checkpoint(
     is_crop = (
         isinstance(spatial, dict) and spatial.get("spatial_mode") == "physical_crop"
     )
-    if is_crop != (schema_version == _PHYSICAL_CROP_SCHEMA):
+    if is_crop != (schema_version in {_PHYSICAL_CROP_SCHEMA, _ADJACENT_SLICE_SCHEMA}):
         raise ValueError("Checkpoint spatial identity and schema differ")
     if is_crop:
         if targets != list(load_verified_submission_contract().target_names):
             raise ValueError("Physical crop target order differs from competition")
-        expected = _expected_physical_crop_configuration()
+        expected = (
+            _expected_adjacent_slice_configuration()
+            if schema_version == _ADJACENT_SLICE_SCHEMA
+            else _expected_physical_crop_configuration()
+        )
         if checkpoint.get("configuration") != expected:
             raise ValueError("Physical crop checkpoint configuration differs")
         if spatial != {
             **cast(dict[str, object], expected["preprocessing"]),
             "shared_contract": "preprocess_series_result",
-            "channel_adapter": "grayscale_repeat_to_rgb",
+            "channel_adapter": (
+                "prestacked_previous_center_next"
+                if schema_version == _ADJACENT_SLICE_SCHEMA
+                else "grayscale_repeat_to_rgb"
+            ),
             "imagenet_mean": [0.485, 0.456, 0.406],
             "imagenet_std": [0.229, 0.224, 0.225],
         }:
@@ -3744,6 +3853,19 @@ def _expected_physical_crop_configuration() -> dict[str, object]:
     return config
 
 
+def _expected_adjacent_slice_configuration() -> dict[str, object]:
+    config = _expected_physical_crop_configuration()
+    config["preprocessing"] = PreprocessingConfig(
+        8,
+        1,
+        99,
+        224,
+        "physical_crop",
+        input_representation="adjacent_slice_2_5d",
+    ).record()
+    return config
+
+
 def _physical_crop_decision(
     comparison: Mapping[str, Any], config: CombinedBaselineConfig
 ) -> dict[str, object]:
@@ -3755,6 +3877,41 @@ def _physical_crop_decision(
         else "slice_context_or_position"
     )
     return result
+
+
+def _adjacent_slice_decision(
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+) -> dict[str, object]:
+    result = _dinov2_decision(comparison, config)
+    result.pop("generic_backbone_recommendation")
+    result["next_experiment"] = (
+        "plane_or_sequence_aware_series_handling"
+        if result["result"] == "keep"
+        else "different_mri_specific_intervention"
+    )
+    return result
+
+
+def representation_summary(counts: Mapping[str, int]) -> dict[str, object]:
+    values = {
+        key.removeprefix("representation:"): value
+        for key, value in counts.items()
+        if key.startswith("representation:")
+    }
+    anchors = values.get("anchor_triplets", 0)
+    return {
+        "counts": values,
+        "boundary_clamp_fraction": {
+            side: values.get(f"boundary_clamp_{side}", 0) / anchors if anchors else None
+            for side in ("previous", "next")
+        },
+        "neighbor_substitution_fraction": {
+            side: values.get(f"neighbor_substitution_{side}", 0) / anchors
+            if anchors
+            else None
+            for side in ("previous", "next")
+        },
+    }
 
 
 def spatial_summary(counts: Mapping[str, int]) -> dict[str, object]:
@@ -3798,6 +3955,22 @@ def load_verified_physical_crop_checkpoint(
     )
 
 
+def load_verified_adjacent_slice_checkpoint(
+    path: Path,
+    *,
+    device: torch.device,
+    expected_sha256: str,
+    contract_path: Path | None = None,
+) -> tuple[StudyClassifier, dict[str, Any]]:
+    return load_verified_combined_checkpoint(
+        path,
+        device=device,
+        expected_sha256=expected_sha256,
+        contract_path=contract_path,
+        adjacent_slice=True,
+    )
+
+
 def verify_physical_crop_artifact(artifact_dir: Path) -> dict[str, Any]:
     manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
     for record in manifest["artifacts"]:
@@ -3827,6 +4000,42 @@ def verify_physical_crop_artifact(artifact_dir: Path) -> dict[str, Any]:
     )
     if checkpoint["configuration"] != manifest["configuration"]:
         raise ValueError("Physical crop configuration provenance differs")
+    return {
+        "valid": True,
+        "decision": comparison["decision"],
+        "checkpoint_sha256": _sha256(checkpoint_path),
+    }
+
+
+def verify_adjacent_slice_artifact(artifact_dir: Path) -> dict[str, Any]:
+    manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
+    for record in manifest["artifacts"]:
+        path = artifact_dir / record["path"]
+        if (
+            _sha256(path) != record["sha256"]
+            or path.stat().st_size != record["size_bytes"]
+        ):
+            raise ValueError("Adjacent-slice artifact hash mismatch")
+    report = json.loads((artifact_dir / "training-report.json").read_text())
+    comparison = report["controlled_comparison"]
+    if (
+        report["status"] != "complete"
+        or not report["checkpoint"]["reload_reproducible"]
+        or report["configuration"] != _expected_adjacent_slice_configuration()
+        or not report.get("adjacent_slice_evidence")
+        or comparison["validation_membership_digest"]
+        != "8b1240fc2456779ba64fa115b23956adb131fb387f01c0f0424a933a2096ee88"
+        or comparison["decision"]["result"] not in {"keep", "reject"}
+    ):
+        raise ValueError("Adjacent-slice report is incomplete")
+    checkpoint_path = artifact_dir / "checkpoint.pt"
+    _, checkpoint = load_verified_adjacent_slice_checkpoint(
+        checkpoint_path,
+        device=torch.device("cpu"),
+        expected_sha256=_sha256(checkpoint_path),
+    )
+    if checkpoint["configuration"] != manifest["configuration"]:
+        raise ValueError("Adjacent-slice configuration provenance differs")
     return {
         "valid": True,
         "decision": comparison["decision"],

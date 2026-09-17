@@ -21,6 +21,9 @@ class PreprocessingConfig:
     spatial_mode: str = "whole_image"
     physical_fov_mm: float = 130.0
     spacing_fallback: str = "whole_image_resize_pad"
+    input_representation: Literal["same_slice_rgb", "adjacent_slice_2_5d"] = (
+        "same_slice_rgb"
+    )
 
     def __post_init__(self) -> None:
         if self.spatial_mode not in {"whole_image", "physical_crop"}:
@@ -29,6 +32,11 @@ class PreprocessingConfig:
             raise ValueError("Physical FOV must be finite and positive")
         if self.spacing_fallback != "whole_image_resize_pad":
             raise ValueError("Unsupported PixelSpacing fallback policy")
+        if self.input_representation not in {
+            "same_slice_rgb",
+            "adjacent_slice_2_5d",
+        }:
+            raise ValueError("Unsupported input representation")
 
     def record(self) -> dict[str, object]:
         # Preserve the frozen baseline checkpoint identity.
@@ -44,6 +52,14 @@ class PreprocessingConfig:
                 physical_fov_mm=self.physical_fov_mm,
                 spacing_fallback=self.spacing_fallback,
                 crop_contract="center_round_ties_even_extra_bottom_right_zero_v1",
+            )
+        if self.input_representation == "adjacent_slice_2_5d":
+            result.update(
+                input_representation=self.input_representation,
+                channel_order=["previous", "center", "next"],
+                neighbor_policy="adjacent_ordered_position_clamp_v1",
+                neighbor_failure_policy="substitute_processed_center_v1",
+                normalization_population="sampled_center_anchors_only_v1",
             )
         return result
 
@@ -73,6 +89,9 @@ def load_config(path: Path) -> PipelineConfig:
         physical_fov_mm=preprocessing_values.get("physical_fov_mm", 130.0),
         spacing_fallback=preprocessing_values.get(
             "spacing_fallback", "whole_image_resize_pad"
+        ),
+        input_representation=preprocessing_values.get(
+            "input_representation", "same_slice_rgb"
         ),
     )
     if preprocessing.slice_count <= 0:

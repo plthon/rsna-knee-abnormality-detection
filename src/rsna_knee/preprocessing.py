@@ -1,5 +1,6 @@
+from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -33,6 +34,7 @@ class PreprocessedSeries:
     lower_value: float | None
     upper_value: float | None
     spatial_evidence: tuple[SpatialEvidence, ...] = ()
+    preprocessing_counts: dict[str, int] = field(default_factory=dict)
 
 
 def uniform_indices(length: int, count: int) -> tuple[int, ...]:
@@ -41,6 +43,13 @@ def uniform_indices(length: int, count: int) -> tuple[int, ...]:
     if length <= count:
         return tuple(range(length))
     return tuple(np.linspace(0, length - 1, count, dtype=int).tolist())
+
+
+def adjacent_triplet_indices(length: int, anchor: int) -> tuple[int, int, int]:
+    """Return previous/center/next positions in an already ordered series."""
+    if length <= 0 or not 0 <= anchor < length:
+        raise ValueError("Anchor must identify an item in a nonempty series")
+    return max(anchor - 1, 0), anchor, min(anchor + 1, length - 1)
 
 
 def preprocess_series(
@@ -61,6 +70,8 @@ def preprocess_series_result(
     paths: Sequence[str | Path], config: PreprocessingConfig
 ) -> PreprocessedSeries:
     """Apply the shared DICOM-to-tensor contract and retain compact failures."""
+    if config.input_representation == "adjacent_slice_2_5d":
+        return _preprocess_adjacent_series(paths, config)
     indices = uniform_indices(len(paths), config.slice_count)
     if not indices:
         raise ValueError("Cannot preprocess an empty series")
@@ -143,6 +154,151 @@ def preprocess_series_result(
         lower_value=float(lower),
         upper_value=float(upper),
         spatial_evidence=tuple(evidence),
+    )
+
+
+def _preprocess_adjacent_series(
+    paths: Sequence[str | Path], config: PreprocessingConfig
+) -> PreprocessedSeries:
+    indices = uniform_indices(len(paths), config.slice_count)
+    if not indices:
+        raise ValueError("Cannot preprocess an empty series")
+
+    failures: list[PreprocessingFailure] = []
+    decoded: dict[int, tuple[np.ndarray, object] | PreprocessingFailure] = {}
+
+    def decode(source_index: int) -> tuple[np.ndarray, object] | None:
+        cached = decoded.get(source_index)
+        if cached is None:
+            path = Path(paths[source_index])
+            try:
+                pixels, spacing = decode_pixels_with_spacing(path)
+                if pixels.ndim != 2 or not pixels.size:
+                    raise ValueError(
+                        "Only nonempty single-frame grayscale images are supported"
+                    )
+                if not np.isfinite(pixels).all():
+                    raise ValueError("Decoded pixels contain non-finite values")
+                cached = (pixels, spacing)
+            except Exception as error:  # noqa: BLE001 - DICOM failures are records
+                cached = PreprocessingFailure(
+                    path=path,
+                    code="pixel_decode_failed",
+                    exception_type=type(error).__name__,
+                )
+                failures.append(cached)
+            decoded[source_index] = cached
+        return None if isinstance(cached, PreprocessingFailure) else cached
+
+    centers = [
+        (slot, source_index, decode(source_index))
+        for slot, source_index in enumerate(indices)
+    ]
+    output = np.zeros(
+        (config.slice_count, 3, config.image_size, config.image_size), dtype=np.float32
+    )
+    mask = np.zeros(config.slice_count, dtype=np.bool_)
+    counts: Counter[str] = Counter()
+    triplets = [adjacent_triplet_indices(len(paths), anchor) for anchor in indices]
+    counts["anchor_triplets"] = len(triplets)
+    counts["boundary_clamp_previous"] = sum(
+        previous == center for previous, center, _ in triplets
+    )
+    counts["boundary_clamp_next"] = sum(
+        following == center for _, center, following in triplets
+    )
+    counts["unique_source_slices_requested"] = len(
+        {source_index for triplet in triplets for source_index in triplet}
+    )
+    valid_centers = [
+        (slot, source_index, value)
+        for slot, source_index, value in centers
+        if value is not None
+    ]
+    if not valid_centers:
+        counts["unique_source_slices_attempted"] = len(decoded)
+        return PreprocessedSeries(
+            pixels=output,
+            mask=mask,
+            source_indices=indices,
+            failures=tuple(failures),
+            lower_value=None,
+            upper_value=None,
+            preprocessing_counts=dict(counts),
+        )
+
+    center_values = np.concatenate(
+        [value[0].reshape(-1) for _, _, value in valid_centers]
+    )
+    lower, upper = np.percentile(
+        center_values, (config.lower_percentile, config.upper_percentile)
+    )
+    processed: dict[int, np.ndarray] = {}
+    evidence: dict[int, SpatialEvidence] = {}
+
+    def process(source_index: int, value: tuple[np.ndarray, object]) -> np.ndarray:
+        cached = processed.get(source_index)
+        if cached is not None:
+            return cached
+        pixels, spacing = value
+        normalized = (
+            np.zeros_like(pixels, dtype=np.float32)
+            if lower == upper
+            else np.clip((pixels - lower) / (upper - lower), 0, 1).astype(np.float32)
+        )
+        shape, reason = (None, None)
+        if config.spatial_mode == "physical_crop":
+            shape, reason = physical_crop_shape(spacing, config.physical_fov_mm)
+        cached = (
+            _bilinear_resize(
+                centered_crop_pad(normalized, shape),
+                config.image_size,
+                config.image_size,
+            )
+            if shape is not None
+            else _resize_and_pad(normalized, config.image_size)
+        )
+        processed[source_index] = cached
+        evidence[source_index] = SpatialEvidence(
+            source_index,
+            "physical_crop" if shape else "whole_image",
+            reason,
+            shape,
+        )
+        return cached
+
+    for slot, center_index, center_value in valid_centers:
+        center_image = process(center_index, center_value)
+        channels: list[np.ndarray] = []
+        for side, source_index in zip(
+            ("previous", "center", "next"), triplets[slot], strict=True
+        ):
+            value = (
+                center_value if source_index == center_index else decode(source_index)
+            )
+            if value is None:
+                channels.append(center_image)
+                counts[f"neighbor_substitution_{side}"] += 1
+                counts[f"neighbor_substitution_{side}:pixel_decode_failed"] += 1
+            else:
+                channels.append(process(source_index, value))
+        output[slot] = np.stack(channels)
+        mask[slot] = True
+
+    counts["encoder_inputs"] = int(mask.sum())
+    counts["unique_source_slices_attempted"] = len(decoded)
+    counts["unique_source_slices_decoded"] = sum(
+        not isinstance(value, PreprocessingFailure) for value in decoded.values()
+    )
+    return PreprocessedSeries(
+        pixels=output,
+        mask=mask,
+        source_indices=indices,
+        failures=tuple(failures),
+        lower_value=float(lower),
+        upper_value=float(upper),
+        spatial_evidence=tuple(evidence.values()),
+        preprocessing_counts=dict(counts),
     )
 
 

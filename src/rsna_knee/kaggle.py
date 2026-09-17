@@ -187,9 +187,11 @@ def build_kaggle_bundle(
         _validate_public_baseline_source(source)
     elif spec.validator == "combined_baseline":
         _validate_combined_baseline_source(source)
-    elif spec.validator in {"plane_gating", "physical_crop"}:
+    elif spec.validator in {"plane_gating", "physical_crop", "adjacent_slice"}:
         _validate_controlled_training_source(
-            source, physical_crop=spec.validator == "physical_crop"
+            source,
+            physical_crop=spec.validator in {"physical_crop", "adjacent_slice"},
+            adjacent_slice=spec.validator == "adjacent_slice",
         )
     elif spec.validator in {"plane_gated_scoring", "physical_crop_scoring"}:
         _validate_plane_gated_scoring_source(
@@ -802,10 +804,25 @@ def build_plane_gating_bundle(
     kernel_id: str = "plthon/rsna-knee-plane-gating",
     gpu_approved: bool = False,
     physical_crop: bool = False,
+    adjacent_slice: bool = False,
 ) -> KaggleBundle:
     """Build the private #28 training and paired-validation bundle."""
-    name = "physical-crop" if physical_crop else "plane-gating"
-    source_name = "train_physical_crop" if physical_crop else "train_plane_gating"
+    if physical_crop and adjacent_slice:
+        raise ValueError("Choose one controlled representation experiment")
+    name = (
+        "adjacent-slice"
+        if adjacent_slice
+        else "physical-crop"
+        if physical_crop
+        else "plane-gating"
+    )
+    source_name = (
+        "train_adjacent_slice"
+        if adjacent_slice
+        else "train_physical_crop"
+        if physical_crop
+        else "train_plane_gating"
+    )
     config_path = project_root / "configs" / f"{name}.toml"
     source_path = project_root / "notebooks" / f"{source_name}.py"
     contract_names = (
@@ -816,7 +833,7 @@ def build_plane_gating_bundle(
     )
     config_bytes = config_path.read_bytes()
     git_commit, git_dirty = _git_state(project_root)
-    if physical_crop and gpu_approved and git_dirty:
+    if (physical_crop or adjacent_slice) and gpu_approved and git_dirty:
         raise ValueError(
             "Physical crop GPU execution requires a clean committed revision"
         )
@@ -827,15 +844,21 @@ def build_plane_gating_bundle(
             source_name=source_path.name,
             notebook_name=f"{source_name}.ipynb",
             kernel_id=kernel_id,
-            title="RSNA Knee Physical Crop"
+            title="RSNA Knee Adjacent Slice"
+            if adjacent_slice
+            else "RSNA Knee Physical Crop"
             if physical_crop
             else "RSNA Knee Plane Gating",
             competition_sources=("rsna-knee-abnormality-detection",),
             dataset_sources=_PLANE_GATING_DATASET_SOURCES,
-            kernel_sources=_PLANE_GATING_KERNEL_SOURCES,
-            gpu=gpu_approved if physical_crop else True,
+            kernel_sources=(
+                (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop")
+                if adjacent_slice
+                else _PLANE_GATING_KERNEL_SOURCES
+            ),
+            gpu=gpu_approved if physical_crop or adjacent_slice else True,
             machine_shape=_GPU_MACHINE_SHAPE
-            if gpu_approved or not physical_crop
+            if gpu_approved or not (physical_crop or adjacent_slice)
             else "",
             replacements={
                 "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
@@ -849,7 +872,13 @@ def build_plane_gating_bundle(
             },
             embed_package=True,
             package_contracts=contract_names,
-            validator="physical_crop" if physical_crop else "plane_gating",
+            validator=(
+                "adjacent_slice"
+                if adjacent_slice
+                else "physical_crop"
+                if physical_crop
+                else "plane_gating"
+            ),
         ),
         gpu_approved=gpu_approved,
     )
@@ -1285,13 +1314,20 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             )
         if metadata.get("kernel_sources") != []:
             raise ValueError("Combined scoring must not attach the frozen test index")
-    elif validator in {"plane_gating", "physical_crop"}:
+    elif validator in {"plane_gating", "physical_crop", "adjacent_slice"}:
         _validate_controlled_training_source(
-            _notebook_source(source), physical_crop=validator == "physical_crop"
+            _notebook_source(source),
+            physical_crop=validator in {"physical_crop", "adjacent_slice"},
+            adjacent_slice=validator == "adjacent_slice",
         )
         if tuple(metadata.get("dataset_sources", ())) != _PLANE_GATING_DATASET_SOURCES:
             raise ValueError("Plane gating attached unexpected Dataset inputs")
-        if tuple(metadata.get("kernel_sources", ())) != _PLANE_GATING_KERNEL_SOURCES:
+        expected_kernels = (
+            (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop")
+            if validator == "adjacent_slice"
+            else _PLANE_GATING_KERNEL_SOURCES
+        )
+        if tuple(metadata.get("kernel_sources", ())) != expected_kernels:
             raise ValueError("Plane gating must attach the frozen index kernel output")
     elif validator == "physical_crop_scoring":
         _validate_plane_gated_scoring_source(
@@ -1601,10 +1637,12 @@ def _validate_combined_baseline_source(source: str) -> None:
 
 
 def _validate_controlled_training_source(
-    source: str, *, physical_crop: bool = False
+    source: str, *, physical_crop: bool = False, adjacent_slice: bool = False
 ) -> None:
     verifier = (
-        "verify_physical_crop_artifact"
+        "verify_adjacent_slice_artifact"
+        if adjacent_slice
+        else "verify_physical_crop_artifact"
         if physical_crop
         else "verify_plane_gating_artifact"
     )
@@ -1614,6 +1652,12 @@ def _validate_controlled_training_source(
         and 'config.preprocessing.spatial_mode != "physical_crop"' not in source
     ):
         raise ValueError("Physical crop notebook omits spatial safeguard")
+    if adjacent_slice and (
+        'config.preprocessing.input_representation != "adjacent_slice_2_5d"'
+        not in source
+        or "PHYSICAL_CROP_CHECKPOINT_SHA256" not in source
+    ):
+        raise ValueError("Adjacent-slice notebook omits representation safeguard")
     required = (
         "discover_combined_checkpoint",
         "load_combined_baseline_config",

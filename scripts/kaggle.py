@@ -43,6 +43,7 @@ def main() -> None:
             "combined-scoring",
             "physical-crop-scoring",
             "physical-crop",
+            "adjacent-slice",
             "plane-gating",
             "plane-gating-scoring",
             "dinov2-training",
@@ -100,6 +101,7 @@ def main() -> None:
                 "combined-baseline": "gold-public-scoring",
                 "combined-scoring": "gold-public-scoring",
                 "physical-crop": "physical-crop",
+                "adjacent-slice": "adjacent-slice",
                 "physical-crop-scoring": "physical-crop-scoring",
                 "plane-gating": "plane-gating",
                 "plane-gating-scoring": "plane-gated-scoring",
@@ -183,11 +185,17 @@ def main() -> None:
             "combined-baseline",
             "combined-scoring",
             "physical-crop",
+            "adjacent-slice",
             "plane-gating",
         }:
             builder = (
                 build_plane_gating_bundle
-                if arguments.target in {"plane-gating", "physical-crop"}
+                if arguments.target
+                in {
+                    "plane-gating",
+                    "physical-crop",
+                    "adjacent-slice",
+                }
                 else (
                     build_combined_baseline_bundle
                     if arguments.target == "combined-baseline"
@@ -198,13 +206,18 @@ def main() -> None:
                 from functools import partial
 
                 builder = partial(build_plane_gating_bundle, physical_crop=True)
+            elif arguments.target == "adjacent-slice":
+                from functools import partial
+
+                builder = partial(build_plane_gating_bundle, adjacent_slice=True)
             bundle = builder(
                 project_root,
                 arguments.output,
                 kernel_id=arguments.kernel_id
                 or (
                     f"plthon/rsna-knee-{arguments.target}"
-                    if arguments.target in {"plane-gating", "physical-crop"}
+                    if arguments.target
+                    in {"plane-gating", "physical-crop", "adjacent-slice"}
                     else "plthon/rsna-knee-gold-public-scoring"
                 ),
                 gpu_approved=arguments.approve_gpu,

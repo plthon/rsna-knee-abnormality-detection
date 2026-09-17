@@ -41,19 +41,25 @@ class _MeanModel(nn.Module):
         self, pixels: Tensor, slice_mask: Tensor, series_mask: Tensor
     ) -> Tensor:
         del slice_mask, series_mask
-        value = pixels.mean(dim=(1, 2, 3, 4))
+        value = pixels.mean(dim=tuple(range(1, pixels.ndim)))
         return value.unsqueeze(1).repeat(1, len(TARGETS))
 
 
 @pytest.mark.parametrize(
-    "backbone,physical_crop",
-    (("resnet18", False), ("dinov2_vits14", False), ("resnet18", True)),
+    "backbone,physical_crop,adjacent_slice",
+    (
+        ("resnet18", False, False),
+        ("dinov2_vits14", False, False),
+        ("resnet18", True, False),
+        ("resnet18", True, True),
+    ),
 )
 def test_scoring_uses_live_hidden_test_index_and_never_trains(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     backbone: Literal["resnet18", "dinov2_vits14"],
     physical_crop: bool,
+    adjacent_slice: bool,
 ) -> None:
     input_root = tmp_path / "input"
     competition_root = input_root / "competitions" / "rsna-knee-abnormality-detection"
@@ -118,7 +124,14 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
     }
     if physical_crop:
         payload["preprocessing"] = PreprocessingConfig(
-            8, 1, 99, 224, "physical_crop"
+            8,
+            1,
+            99,
+            224,
+            "physical_crop",
+            input_representation=(
+                "adjacent_slice_2_5d" if adjacent_slice else "same_slice_rgb"
+            ),
         ).record()
         for path in competition_root.rglob("*.dcm"):
             from pydicom import dcmread
@@ -128,6 +141,13 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
             dataset.save_as(path, enforce_file_format=True)
     monkeypatch.setattr(
         "rsna_knee.combined_supervision.load_verified_physical_crop_checkpoint",
+        lambda path, *, device, expected_sha256, contract_path=None: (
+            _MeanModel(),
+            payload,
+        ),
+    )
+    monkeypatch.setattr(
+        "rsna_knee.combined_supervision.load_verified_adjacent_slice_checkpoint",
         lambda path, *, device, expected_sha256, contract_path=None: (
             _MeanModel(),
             payload,
@@ -165,6 +185,7 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         competition_contract_path=PROJECT_ROOT / "contracts/competition.json",
         backbone=backbone,
         physical_crop=physical_crop,
+        adjacent_slice=adjacent_slice,
     )
 
     if physical_crop:
@@ -173,6 +194,8 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         assert counts["slices_crop"] == 3
         assert counts["shape:130x130"] == 3
         assert counts["studies_crop"] == 3
+        if adjacent_slice:
+            assert counts["representation:encoder_inputs"] == 3
     indexed_rows = _read_csv(outcome.index_artifact_dir / "studies.csv")
     assert {row["StudyInstanceUID"] for row in indexed_rows} == set(hidden_ids)
     assert not set(frozen_ids) & {row["StudyInstanceUID"] for row in indexed_rows}

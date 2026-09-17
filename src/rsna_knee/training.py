@@ -37,7 +37,7 @@ from .competition_contract import (
 from .config import PreprocessingConfig
 from .dinov2 import DINOV2_VITS14_FEATURE_COUNT, DinoV2ViTS14, dinov2_vits14
 from .indexing import verify_index_artifact
-from .preprocessing import preprocess_series_result
+from .preprocessing import preprocess_series_result, uniform_indices
 from .provenance import create_run_id, write_run_manifest
 from .submission import (
     SubmissionArtifacts,
@@ -308,8 +308,15 @@ class StudyClassifier(nn.Module):
         series_mask: Tensor,
         plane_indices: Tensor | None = None,
     ) -> Tensor:
-        if pixels.ndim != 5:
-            raise ValueError("pixels must have shape [study, series, slice, H, W]")
+        if pixels.ndim not in {5, 6}:
+            raise ValueError(
+                "pixels must have shape [study, series, slice, H, W] or "
+                "[study, series, slice, 3, H, W]"
+            )
+        if pixels.ndim == 6 and pixels.shape[3] != 3:
+            raise ValueError(
+                "pre-stacked slice inputs must have exactly three channels"
+            )
         if slice_mask.shape != pixels.shape[:3]:
             raise ValueError("slice mask does not match study/series/slice axes")
         if series_mask.shape != pixels.shape[:2]:
@@ -321,8 +328,10 @@ class StudyClassifier(nn.Module):
         if not bool(flat_valid.any()):
             raise ValueError("At least one unpadded slice is required per batch")
 
-        flat_pixels = pixels.reshape(-1, pixels.shape[-2], pixels.shape[-1])
-        selected = flat_pixels[flat_valid].unsqueeze(1).repeat(1, 3, 1, 1)
+        flat_pixels = pixels.reshape(-1, *pixels.shape[3:])
+        selected = flat_pixels[flat_valid]
+        if pixels.ndim == 5:
+            selected = selected.unsqueeze(1).repeat(1, 3, 1, 1)
         selected = (selected - self.imagenet_mean) / self.imagenet_std
         selected_features = cast(Tensor, self.backbone(selected))
 
@@ -370,6 +379,9 @@ def load_smoke_training_config(path: Path) -> SmokeTrainingConfig:
         physical_fov_mm=preprocessing_raw.get("physical_fov_mm", 130.0),
         spacing_fallback=preprocessing_raw.get(
             "spacing_fallback", "whole_image_resize_pad"
+        ),
+        input_representation=preprocessing_raw.get(
+            "input_representation", "same_slice_rgb"
         ),
     )
     config = SmokeTrainingConfig(
@@ -760,7 +772,7 @@ def load_indexed_studies(
     *,
     split: Literal["train", "test"],
 ) -> dict[str, IndexedStudy]:
-    """Resolve selected index rows to the shared DICOM preprocessing inputs."""
+    """Resolve ordered series and verify their frozen deterministic anchors."""
     requested = set(study_uids)
     study_rows = _read_csv(index_artifact_dir / "studies.csv", _STUDY_COLUMNS)
     study_indices: dict[int, str] = {}
@@ -799,6 +811,7 @@ def load_indexed_studies(
             selected_by_slice[slice_index] = (series_index, int(row["slot"]))
 
     paths_by_series: dict[int, dict[int, Path]] = defaultdict(dict)
+    selected_positions: dict[int, dict[int, int]] = defaultdict(dict)
     root = competition_root.resolve()
     with (index_artifact_dir / "slices.csv").open(
         newline="", encoding="utf-8-sig"
@@ -807,19 +820,27 @@ def load_indexed_studies(
         if tuple(reader.fieldnames or ()) != _SLICE_COLUMNS:
             raise ValueError("Unexpected CSV columns for slices.csv")
         for row in reader:
-            selected = selected_by_slice.get(int(row["slice_index"]))
-            if selected is None:
+            series_index = int(row["series_index"])
+            if series_index not in series_metadata:
                 continue
-            series_index, slot = selected
+            selected = selected_by_slice.get(int(row["slice_index"]))
             filename = row["filename"]
             if Path(filename).name != filename:
                 raise ValueError("Index slice filename must be a basename")
             relative_series = series_metadata[series_index][1]
             path = (competition_root / relative_series / filename).resolve()
             path.relative_to(root)
-            if slot in paths_by_series[series_index]:
-                raise ValueError("Selected index contains a duplicate series slot")
-            paths_by_series[series_index][slot] = path
+            ordered_position = int(row["ordered_position"])
+            if ordered_position in paths_by_series[series_index]:
+                raise ValueError("Index contains a duplicate ordered series position")
+            paths_by_series[series_index][ordered_position] = path
+            if selected is not None:
+                selected_series_index, slot = selected
+                if selected_series_index != series_index:
+                    raise ValueError("Selected slice references the wrong series")
+                if slot in selected_positions[series_index]:
+                    raise ValueError("Selected index contains a duplicate series slot")
+                selected_positions[series_index][slot] = ordered_position
 
     series_by_study: dict[str, list[IndexedSeries]] = defaultdict(list)
     for series_index, (
@@ -828,18 +849,26 @@ def load_indexed_studies(
         expected_selected,
         plane,
     ) in series_metadata.items():
-        slots = paths_by_series.get(series_index, {})
-        if len(slots) != expected_selected or not slots:
+        positions = paths_by_series.get(series_index, {})
+        slots = selected_positions.get(series_index, {})
+        if len(slots) != expected_selected or not positions:
             raise ValueError(
                 "Selected slice rows do not match the series selection mask"
             )
         ordered_slots = sorted(slots)
         if ordered_slots != list(range(len(slots))):
             raise ValueError("Selected series slots must be contiguous from zero")
+        ordered_positions = sorted(positions)
+        if ordered_positions != list(range(len(positions))):
+            raise ValueError("Series positions must be contiguous from zero")
+        if tuple(slots[slot] for slot in ordered_slots) != uniform_indices(
+            len(positions), 8
+        ):
+            raise ValueError("Selected anchors differ from deterministic sampling")
         series_by_study[study_uid].append(
             IndexedSeries(
                 series_index=series_index,
-                paths=tuple(slots[slot] for slot in ordered_slots),
+                paths=tuple(positions[position] for position in ordered_positions),
                 plane=plane,
             )
         )
@@ -1377,6 +1406,9 @@ def predict_submission_from_checkpoint(
         physical_fov_mm=preprocessing_raw.get("physical_fov_mm", 130.0),
         spacing_fallback=preprocessing_raw.get(
             "spacing_fallback", "whole_image_resize_pad"
+        ),
+        input_representation=preprocessing_raw.get(
+            "input_representation", "same_slice_rgb"
         ),
     )
     training = _mapping(_mapping(checkpoint, "configuration"), "training")
@@ -2091,7 +2123,11 @@ def decode_study(
 ) -> DecodedStudy:
     if not indexed.series:
         return DecodedStudy(
-            pixels=torch.zeros(0, preprocessing.slice_count, 224, 224),
+            pixels=torch.zeros(
+                (0, preprocessing.slice_count, 3, 224, 224)
+                if preprocessing.input_representation == "adjacent_slice_2_5d"
+                else (0, preprocessing.slice_count, 224, 224)
+            ),
             slice_mask=torch.zeros(0, preprocessing.slice_count, dtype=torch.bool),
             series_mask=torch.zeros(0, dtype=torch.bool),
             labels=None,
@@ -2104,11 +2140,13 @@ def decode_study(
     masks: list[Tensor] = []
     errors: Counter[str] = Counter()
     spatial: Counter[str] = Counter()
+    representation: Counter[str] = Counter()
     for series in indexed.series:
         result = preprocess_series_result(series.paths, preprocessing)
         pixels.append(torch.from_numpy(result.pixels))
         masks.append(torch.from_numpy(result.mask))
         errors.update(failure.code for failure in result.failures)
+        representation.update(result.preprocessing_counts)
         if preprocessing.spatial_mode == "physical_crop":
             modes = set()
             for evidence in result.spatial_evidence:
@@ -2128,6 +2166,9 @@ def decode_study(
         spatial["studies_processed"] = 1
         for mode in ("crop", "fallback"):
             spatial[f"studies_{mode}"] = int(spatial[f"slices_{mode}"] > 0)
+    spatial.update(
+        {f"representation:{key}": value for key, value in representation.items()}
+    )
     pixel_tensor = torch.stack(pixels)
     mask_tensor = torch.stack(masks)
     label_tensor: Tensor | None = None
@@ -2165,8 +2206,7 @@ def collate_studies(
         raise ValueError("Training collation requires labeled studies")
     maximum_series = max(item.pixels.shape[0] for item in studies)
     slice_count = studies[0].pixels.shape[1]
-    height, width = studies[0].pixels.shape[-2:]
-    pixels = torch.zeros(len(studies), maximum_series, slice_count, height, width)
+    pixels = torch.zeros(len(studies), maximum_series, *studies[0].pixels.shape[1:])
     slice_mask = torch.zeros(
         len(studies), maximum_series, slice_count, dtype=torch.bool
     )
