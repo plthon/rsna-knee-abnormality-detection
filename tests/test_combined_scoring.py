@@ -46,12 +46,13 @@ class _MeanModel(nn.Module):
 
 
 @pytest.mark.parametrize(
-    "backbone,physical_crop,adjacent_slice",
+    "backbone,physical_crop,adjacent_slice,clipped_window",
     (
-        ("resnet18", False, False),
-        ("dinov2_vits14", False, False),
-        ("resnet18", True, False),
-        ("resnet18", True, True),
+        ("resnet18", False, False, False),
+        ("dinov2_vits14", False, False, False),
+        ("resnet18", True, False, False),
+        ("resnet18", True, True, False),
+        ("resnet18", True, True, True),
     ),
 )
 def test_scoring_uses_live_hidden_test_index_and_never_trains(
@@ -60,6 +61,7 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
     backbone: Literal["resnet18", "dinov2_vits14"],
     physical_crop: bool,
     adjacent_slice: bool,
+    clipped_window: bool,
 ) -> None:
     input_root = tmp_path / "input"
     competition_root = input_root / "competitions" / "rsna-knee-abnormality-detection"
@@ -83,7 +85,20 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         series_rows.append((study_id, series_id, "Yes", "No", "Sagittal"))
         series_root = competition_root / "test_series" / study_id / series_id
         series_root.mkdir(parents=True)
-        _write_dicom(series_root / "slice.dcm")
+        if clipped_window:
+            from pydicom import dcmread
+
+            for position in range(21):
+                path = series_root / f"{21 - position:02}.dcm"
+                _write_dicom(path)
+                dataset = dcmread(path)
+                dataset.ImagePositionPatient = [0, 0, position]
+                dataset.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+                dataset.InstanceNumber = 99 if position < 10 else 500
+                dataset.PixelData = np.full((8, 8), position, dtype=np.uint16).tobytes()
+                dataset.save_as(path, enforce_file_format=True)
+        else:
+            _write_dicom(series_root / "slice.dcm")
     _write_csv(
         competition_root / "test_series.csv",
         (
@@ -124,7 +139,7 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
     }
     if physical_crop:
         payload["preprocessing"] = PreprocessingConfig(
-            8,
+            3 if clipped_window else 8,
             1,
             99,
             224,
@@ -132,6 +147,9 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
             input_representation=(
                 "adjacent_slice_2_5d" if adjacent_slice else "same_slice_rgb"
             ),
+            sampling_layout="central_80_three_anchor"
+            if clipped_window
+            else "full_span",
         ).record()
         for path in competition_root.rglob("*.dcm"):
             from pydicom import dcmread
@@ -148,7 +166,7 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
     )
     monkeypatch.setattr(
         "rsna_knee.combined_supervision.load_verified_adjacent_slice_checkpoint",
-        lambda path, *, device, expected_sha256, contract_path=None: (
+        lambda path, *, device, expected_sha256, contract_path=None, clipped_window=False: (
             _MeanModel(),
             payload,
         ),
@@ -186,16 +204,38 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
         backbone=backbone,
         physical_crop=physical_crop,
         adjacent_slice=adjacent_slice,
+        clipped_window=clipped_window,
     )
 
     if physical_crop:
         report = json.loads(outcome.scoring_report_path.read_text())
         counts = report["inference"]["spatial_evidence"]["counts"]
-        assert counts["slices_crop"] == 3
-        assert counts["shape:130x130"] == 3
+        assert counts["slices_crop"] == (27 if clipped_window else 3)
+        assert counts["shape:130x130"] == (27 if clipped_window else 3)
         assert counts["studies_crop"] == 3
         if adjacent_slice:
-            assert counts["representation:encoder_inputs"] == 3
+            assert counts["representation:encoder_inputs"] == (
+                9 if clipped_window else 3
+            )
+        if clipped_window:
+            assert counts["representation:short_series"] == 0
+            assert counts["representation:anchor_triplets"] == 9
+            assert (
+                counts[
+                    "representation:layout:n=21;window=2:18;centers=2,10,18;triplets=1,2,3;9,10,11;17,18,19"
+                ]
+                == 3
+            )
+            ordered = _read_csv(outcome.index_artifact_dir / "slices.csv")
+            assert [row["filename"] for row in ordered[:21]] == [
+                f"{21 - i:02}.dcm" for i in range(21)
+            ]
+            assert (
+                json.loads(outcome.manifest_path.read_text())["configuration"][
+                    "preprocessing"
+                ]["sampling_layout"]
+                == "central_80_three_anchor"
+            )
     indexed_rows = _read_csv(outcome.index_artifact_dir / "studies.csv")
     assert {row["StudyInstanceUID"] for row in indexed_rows} == set(hidden_ids)
     assert not set(frozen_ids) & {row["StudyInstanceUID"] for row in indexed_rows}

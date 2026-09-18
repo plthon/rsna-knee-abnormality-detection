@@ -25,7 +25,19 @@ class PreprocessingConfig:
         "same_slice_rgb"
     )
 
+    sampling_layout: str = "full_span"
+
     def __post_init__(self) -> None:
+        if self.sampling_layout not in {"full_span", "central_80_three_anchor"}:
+            raise ValueError("Unsupported sampling layout")
+        if self.sampling_layout == "central_80_three_anchor" and (
+            self.slice_count != 3
+            or self.input_representation != "adjacent_slice_2_5d"
+            or self.spatial_mode != "physical_crop"
+            or self.physical_fov_mm != 130
+            or self.image_size != 224
+        ):
+            raise ValueError("Clipped window requires three 130 mm / 224 px triplets")
         if self.spatial_mode not in {"whole_image", "physical_crop"}:
             raise ValueError("Unknown spatial preprocessing mode")
         if not math.isfinite(self.physical_fov_mm) or self.physical_fov_mm <= 0:
@@ -61,6 +73,14 @@ class PreprocessingConfig:
                 neighbor_failure_policy="substitute_processed_center_v1",
                 normalization_population="sampled_center_anchors_only_v1",
             )
+        if self.sampling_layout == "central_80_three_anchor":
+            result.update(
+                sampling_layout=self.sampling_layout,
+                representation_identity="issue_33_clipped_window_2_5d_v1",
+                sampling_window=[0.10, 0.90],
+                anchor_policy="floor_fraction_n_minus_1_clamp_interior_linspace_floor_deduplicate_v1",
+                normalization_population="three_selected_centers_only_v1",
+            )
         return result
 
 
@@ -93,6 +113,7 @@ def load_config(path: Path) -> PipelineConfig:
         input_representation=preprocessing_values.get(
             "input_representation", "same_slice_rgb"
         ),
+        sampling_layout=preprocessing_values.get("sampling_layout", "full_span"),
     )
     if preprocessing.slice_count <= 0:
         raise ValueError("slice_count must be positive")

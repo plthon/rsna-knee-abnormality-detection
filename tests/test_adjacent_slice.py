@@ -306,8 +306,10 @@ def test_training_loader_retains_full_index_order_for_neighbor_lookup(
     assert [path.name for path in loaded["study"].series[0].paths] == ordered_names
 
 
+@pytest.mark.parametrize("clipped_window", [False, True])
 def test_adjacent_checkpoint_reload_and_representation_protection(
     tmp_path: Path,
+    clipped_window: bool,
 ) -> None:
     torch = pytest.importorskip("torch")
     from rsna_knee.combined_supervision import (
@@ -319,12 +321,21 @@ def test_adjacent_checkpoint_reload_and_representation_protection(
     from rsna_knee.training import _new_uninitialized_model
 
     config = load_combined_baseline_config(
-        Path(__file__).parents[1] / "configs/adjacent-slice.toml"
+        Path(__file__).parents[1]
+        / (
+            "configs/clipped-window.toml"
+            if clipped_window
+            else "configs/adjacent-slice.toml"
+        )
     )
     targets = list(load_verified_submission_contract().target_names)
     model = _new_uninitialized_model(len(targets))
     payload = {
-        "checkpoint_schema_version": "rsna-knee-adjacent-slice-2-5d-v1",
+        "checkpoint_schema_version": (
+            "rsna-knee-clipped-window-2-5d-v1"
+            if clipped_window
+            else "rsna-knee-adjacent-slice-2-5d-v1"
+        ),
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": {},
         "scaler_state_dict": {},
@@ -351,8 +362,8 @@ def test_adjacent_checkpoint_reload_and_representation_protection(
     torch.save(payload, checkpoint)
     loaded, metadata = load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
     loaded.eval()
-    pixels = torch.rand(1, 1, 2, 3, 224, 224)
-    mask = torch.ones(1, 1, 2, dtype=torch.bool)
+    pixels = torch.rand(1, 1, 3, 3, 224, 224)
+    mask = torch.ones(1, 1, 3, dtype=torch.bool)
     series = torch.ones(1, 1, dtype=torch.bool)
     model.eval()
     with torch.no_grad():
@@ -361,9 +372,20 @@ def test_adjacent_checkpoint_reload_and_representation_protection(
         )
     assert metadata["preprocessing"]["input_representation"] == ("adjacent_slice_2_5d")
 
-    payload["checkpoint_schema_version"] = "rsna-knee-physical-crop-v1"
+    original_schema = payload["checkpoint_schema_version"]
+    for wrong_schema in {
+        "rsna-knee-physical-crop-v1",
+        "rsna-knee-adjacent-slice-2-5d-v1",
+        "rsna-knee-clipped-window-2-5d-v1",
+    } - {original_schema}:
+        payload["checkpoint_schema_version"] = wrong_schema
+        torch.save(payload, checkpoint)
+        with pytest.raises(ValueError, match="identity|configuration|preprocessing"):
+            load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
+    payload["checkpoint_schema_version"] = original_schema
+    payload["targets"] = list(reversed(targets))
     torch.save(payload, checkpoint)
-    with pytest.raises(ValueError, match="identity|configuration|preprocessing"):
+    with pytest.raises(ValueError, match="target order"):
         load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
 
 

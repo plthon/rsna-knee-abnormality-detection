@@ -35,6 +35,8 @@ class PreprocessedSeries:
     upper_value: float | None
     spatial_evidence: tuple[SpatialEvidence, ...] = ()
     preprocessing_counts: dict[str, int] = field(default_factory=dict)
+    source_triplets: tuple[tuple[int, int, int], ...] = ()
+    clipped_window: tuple[int, int] | None = None
 
 
 def uniform_indices(length: int, count: int) -> tuple[int, ...]:
@@ -43,6 +45,22 @@ def uniform_indices(length: int, count: int) -> tuple[int, ...]:
     if length <= count:
         return tuple(range(length))
     return tuple(np.linspace(0, length - 1, count, dtype=int).tolist())
+
+
+def clipped_window_indices(length: int) -> tuple[int, ...]:
+    """Floor 10%/90% of n-1, clamp to [1,n-2], floor 3-point linspace.
+
+    Deduplicate in order. For n<3 use every available center with clamped
+    neighbors; admission remains the caller's existing series policy.
+    Integer arithmetic avoids floating-point endpoint rounding.
+    """
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    if length < 3:
+        return tuple(range(length))
+    left = max(1, (length - 1) // 10)
+    right = min(length - 2, 9 * (length - 1) // 10)
+    return tuple(dict.fromkeys((left, (left + right) // 2, right)))
 
 
 def adjacent_triplet_indices(length: int, anchor: int) -> tuple[int, int, int]:
@@ -173,7 +191,11 @@ def preprocess_series_result(
 def _preprocess_adjacent_series(
     paths: Sequence[str | Path], config: PreprocessingConfig
 ) -> PreprocessedSeries:
-    indices = uniform_indices(len(paths), config.slice_count)
+    indices = (
+        clipped_window_indices(len(paths))
+        if config.sampling_layout == "central_80_three_anchor"
+        else uniform_indices(len(paths), config.slice_count)
+    )
     if not indices:
         raise ValueError("Cannot preprocess an empty series")
 
@@ -206,6 +228,15 @@ def _preprocess_adjacent_series(
     mask = np.zeros(config.slice_count, dtype=np.bool_)
     counts: Counter[str] = Counter()
     triplets = [adjacent_triplet_indices(len(paths), anchor) for anchor in indices]
+    if config.sampling_layout == "central_80_three_anchor":
+        counts["series_count"] = 1
+        counts["short_series"] = int(len(paths) < 5)
+        counts["duplicate_anchor_series"] = int(len(paths) >= 3 and len(indices) < 3)
+        counts["duplicate_anchors_removed"] = 3 - len(indices) if len(paths) >= 3 else 0
+        # Histogram retains exact geometry without patient/series identifiers.
+        layout = f"n={len(paths)};window={indices[0]}:{indices[-1]};centers={','.join(map(str, indices))}"
+        sources = ";".join(",".join(map(str, triplet)) for triplet in triplets)
+        counts[f"layout:{layout};triplets={sources}"] = 1
     counts["anchor_triplets"] = len(triplets)
     counts["boundary_clamp_previous"] = sum(
         previous == center for previous, center, _ in triplets
@@ -231,6 +262,10 @@ def _preprocess_adjacent_series(
             lower_value=None,
             upper_value=None,
             preprocessing_counts=dict(counts),
+            source_triplets=tuple(triplets),
+            clipped_window=(indices[0], indices[-1])
+            if config.sampling_layout == "central_80_three_anchor"
+            else None,
         )
 
     center_values = np.concatenate(
@@ -290,6 +325,10 @@ def _preprocess_adjacent_series(
         upper_value=float(upper),
         spatial_evidence=tuple(evidence.values()),
         preprocessing_counts=dict(counts),
+        source_triplets=tuple(triplets),
+        clipped_window=(indices[0], indices[-1])
+        if config.sampling_layout == "central_80_three_anchor"
+        else None,
     )
 
 

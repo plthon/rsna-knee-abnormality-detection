@@ -1,0 +1,37 @@
+[preprocessing]
+slice_count = 3
+lower_percentile = 1
+upper_percentile = 99
+image_size = 224
+spatial_mode = "physical_crop"
+physical_fov_mm = 130.0
+spacing_fallback = "whole_image_resize_pad"
+input_representation = "adjacent_slice_2_5d"
+
+sampling_layout = "central_80_three_anchor"
+
+[training]
+epochs = 3
+batch_size = 16
+learning_rate = 0.0001
+weight_decay = 0.0001
+seed = 20260825
+mixed_precision = true
+architecture = "torchvision.models.resnet18"
+weight_identity = "ResNet18_Weights.IMAGENET1K_V1"
+
+[split]
+val_fraction = 0.10
+seed = 20260825
+
+[model]
+aggregation = "mean"
+
+[validation]
+reload_absolute_tolerance = 0.00001
+paired_bootstrap_seed = 20260825
+paired_bootstrap_replicates = 10000
+paired_bootstrap_confidence = 0.95
+minimum_macro_auc_delta = 0.005
+minimum_bootstrap_positive_fraction = 0.95
+large_target_regression = 0.02

@@ -383,6 +383,7 @@ def load_smoke_training_config(path: Path) -> SmokeTrainingConfig:
         input_representation=preprocessing_raw.get(
             "input_representation", "same_slice_rgb"
         ),
+        sampling_layout=preprocessing_raw.get("sampling_layout", "full_span"),
     )
     config = SmokeTrainingConfig(
         preprocessing=preprocessing,
@@ -771,6 +772,7 @@ def load_indexed_studies(
     study_uids: Sequence[str],
     *,
     split: Literal["train", "test"],
+    index_slice_count: int = 8,
 ) -> dict[str, IndexedStudy]:
     """Resolve ordered series and verify their frozen deterministic anchors."""
     requested = set(study_uids)
@@ -862,7 +864,7 @@ def load_indexed_studies(
         if ordered_positions != list(range(len(positions))):
             raise ValueError("Series positions must be contiguous from zero")
         if tuple(slots[slot] for slot in ordered_slots) != uniform_indices(
-            len(positions), 8
+            len(positions), index_slice_count
         ):
             raise ValueError("Selected anchors differ from deterministic sampling")
         series_by_study[study_uid].append(
@@ -1410,6 +1412,7 @@ def predict_submission_from_checkpoint(
         input_representation=preprocessing_raw.get(
             "input_representation", "same_slice_rgb"
         ),
+        sampling_layout=preprocessing_raw.get("sampling_layout", "full_span"),
     )
     training = _mapping(_mapping(checkpoint, "configuration"), "training")
     mixed_precision = _boolean(training, "mixed_precision")

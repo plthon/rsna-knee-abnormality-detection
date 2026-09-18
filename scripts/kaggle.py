@@ -44,6 +44,7 @@ def main() -> None:
             "physical-crop-scoring",
             "physical-crop",
             "adjacent-slice",
+            "clipped-window",
             "plane-gating",
             "plane-gating-scoring",
             "dinov2-training",
@@ -102,6 +103,7 @@ def main() -> None:
                 "combined-scoring": "gold-public-scoring",
                 "physical-crop": "physical-crop",
                 "adjacent-slice": "adjacent-slice",
+                "clipped-window": "clipped-window",
                 "physical-crop-scoring": "physical-crop-scoring",
                 "plane-gating": "plane-gating",
                 "plane-gating-scoring": "plane-gated-scoring",
@@ -186,6 +188,7 @@ def main() -> None:
             "combined-scoring",
             "physical-crop",
             "adjacent-slice",
+            "clipped-window",
             "plane-gating",
         }:
             builder = (
@@ -195,6 +198,7 @@ def main() -> None:
                     "plane-gating",
                     "physical-crop",
                     "adjacent-slice",
+                    "clipped-window",
                 }
                 else (
                     build_combined_baseline_bundle
@@ -206,6 +210,10 @@ def main() -> None:
                 from functools import partial
 
                 builder = partial(build_plane_gating_bundle, physical_crop=True)
+            elif arguments.target == "clipped-window":
+                from functools import partial
+
+                builder = partial(build_plane_gating_bundle, clipped_window=True)
             elif arguments.target == "adjacent-slice":
                 from functools import partial
 
@@ -217,7 +225,12 @@ def main() -> None:
                 or (
                     f"plthon/rsna-knee-{arguments.target}"
                     if arguments.target
-                    in {"plane-gating", "physical-crop", "adjacent-slice"}
+                    in {
+                        "plane-gating",
+                        "physical-crop",
+                        "adjacent-slice",
+                        "clipped-window",
+                    }
                     else "plthon/rsna-knee-gold-public-scoring"
                 ),
                 gpu_approved=arguments.approve_gpu,
