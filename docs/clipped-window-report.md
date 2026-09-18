@@ -1,9 +1,9 @@
 # Clipped-window three-anchor 2.5D — issue #33
 
-Status: implemented locally; awaiting user-run GPU training. No Kaggle remote
-execution, hidden inference, or submission has occurred for #33. Validation
-results and the retain/reject decision remain pending. #31 remains the retained
-control; #32 remains a completed negative isolated-adjacency experiment.
+Status: complete. The user-executed GPU run finished successfully, but #33 was
+**rejected** by the frozen keep rule. Retain #31. #32 remains a completed negative
+isolated-adjacency experiment. No hidden inference or competition submission was
+run for #33.
 
 The retained #31 control is commit
 `e85e24ebf0b78c6c73e63465d08c6b3dfa098141`, checkpoint SHA-256
@@ -75,8 +75,7 @@ The existing paired evaluation emits all 12 AUCs/deltas, macro AUC/delta, masked
 BCE, non-decreasing target count, 10,000-replicate seeded bootstrap interval,
 positive fraction and valid/undefined counts. It also emits training runtime,
 validation decode/forward time, throughput, peak GPU memory, checkpoint size,
-and reload agreement (absolute tolerance `1e-5`). These measured results are
-**pending remote training**, not estimated validation evidence.
+and reload agreement (absolute tolerance `1e-5`). Measured results are recorded below.
 
 Retain only at macro delta `>=0.005`, bootstrap-positive fraction `>=0.95`, and
 no target regression worse than `-0.02`. Eight non-decreasing targets is a
@@ -88,6 +87,90 @@ Expected normal per-series work is three encoder inputs (37.5% of #31/#32's
 eight) and nine requested source positions, with overlapping positions decoded
 once. #31 normally decodes eight sources; #32 can request up to 24. Actual
 runtime and memory must be measured, not inferred from these counts.
+
+## Completed validation result
+
+The run used clean source `6cb50b24a434964ac820b0f044aec3af700c8ab3` and
+completed all three epochs on a Tesla T4. The paired validation cohort was the
+same 450 studies and membership digest specified above.
+
+| Metric | #31 control | #33 candidate | Delta |
+| --- | ---: | ---: | ---: |
+| Macro ROC-AUC | 0.847212 | 0.831454 | -0.015758 |
+| Masked BCE | 0.462097 | 0.490426 | +0.028329 |
+
+| Target | #31 AUC | #33 AUC | Delta |
+| --- | ---: | ---: | ---: |
+| ACL | 0.844484 | 0.844197 | -0.000287 |
+| Baker's | 0.859292 | 0.824607 | -0.034685 |
+| Contusion | 0.806030 | 0.769779 | -0.036251 |
+| Effusion | 0.858636 | 0.838546 | -0.020090 |
+| Fracture | 0.898986 | 0.881843 | -0.017143 |
+| Lateral Meniscus | 0.791687 | 0.780172 | -0.011515 |
+| Lateral OA | 0.869330 | 0.841903 | -0.027427 |
+| MCL | 0.782509 | 0.778317 | -0.004192 |
+| Medial Meniscus | 0.837201 | 0.806294 | -0.030907 |
+| Medial OA | 0.892097 | 0.875264 | -0.016834 |
+| PF OA | 0.857407 | 0.842644 | -0.014762 |
+| Synovitis | 0.868889 | 0.893889 | +0.025000 |
+
+Only 1/12 targets was non-decreasing (Synovitis). Baker's, Contusion, Effusion,
+Lateral OA, and Medial Meniscus regressed by more than 0.02 AUC.
+
+The paired PatientID bootstrap used seed `20260825`, 10,000 valid replicates,
+and zero undefined replicates. The 95% macro-delta interval was
+`[-0.026326, -0.005384]`; only **0.19%** of replicates favored #33.
+
+### Sampling and resources
+
+All three training epochs had the same 21,895 series, 65,685 encoder inputs,
+and 197,055 unique requested/attempted/decoded source slices per epoch.
+Validation had 2,476 series, 7,428 encoder inputs, and 22,284 unique source
+slices. Every series produced exactly three anchors and nine distinct sources.
+The public-safe report retains the full stack-length/window/center/triplet
+frequency histogram; its frequencies sum to the corresponding series counts.
+
+There were no short series, rounded duplicate anchors, boundary clamps,
+failed-neighbor substitutions, or failed centers in the selected #33 inputs.
+All decoded source slices used physical crops; PixelSpacing fallback usage
+was zero in training and validation. The frozen 10%–90% window was not tuned.
+
+Training took **9,818.47 seconds (2.73 hours)**, `0.868×` #31's 11,312.74
+seconds, or 13.2% less time. Throughput was 22.27 valid encoder inputs/second;
+the three epochs processed 197,055 encoder inputs in total. Validation decoding
+took 139.63 seconds versus the freshly evaluated control's 301.50 seconds;
+forward time was 5.72 versus 13.73 seconds. Peak GPU allocation was
+4,807,094,784 bytes (`0.412×` #31). The checkpoint was 134,349,959 bytes.
+The reduction in compute/memory did not compensate for the loss of accuracy.
+
+### Provenance and verification
+
+- Config SHA-256: `d56a6941a1a69c7c928ec00ecee0262d56c729e6fbb4bf271a60f02598b47037`
+- Notebook source SHA-256: `5ede7d0ce44913410efaf9d162eb788e3bfffbd3f798b1479d7e24bc1b84c19e`
+- Rendered notebook SHA-256: `e058ac2d31e4a4dc2b7536b77bb0305c32c721ca7d2bfa52cc7df5ee5444b2c5`
+- Checkpoint SHA-256: `9ebc083c1d57d793554c76842a7ce518a182c730758b8a55ec543ef156811f93`
+- Public-safe report SHA-256: `d12e5aa0462e2cc4007964637a6aa0a93c625e7835ade3c752556e95a1cac8dc`
+- Private validation predictions SHA-256: `b4f1525dee25ff462e73dffd17617bf7ce11a97eac001274befaa6bc987ef334`
+
+The remote full-artifact verifier passed before the notebook published its
+summary files. Local checks verified the downloaded report/checkpoint hashes
+and sizes, clean source and config/notebook provenance, strict #33 checkpoint
+schema/configuration/target order/initialization, validation membership, and
+recomputed keep decision. The reported reload maximum absolute difference was
+`0.0`, within `1e-5`. Private study-level predictions remain on Kaggle, so their
+row-level verification was performed remotely rather than repeated locally.
+
+### Decision
+
+**Reject #33 and retain #31.** Both mandatory improvement/bootstrap thresholds
+failed, with five severe target regressions. This is a negative result for the
+entire clipped-window/three-anchor/triplet bundle; it does not isolate the effect
+of clipping, anchor count, adjacency, or the changed center-percentile population.
+
+Do not tune neighboring clip fractions or anchor counts after this result.
+The next controlled experiment should consider plane/sequence-aware aggregation.
+The conditional 336 px follow-up is not selected because this layout was rejected.
+Hidden inference and submission approval boundaries are not reached.
 
 ## Local verification and execution boundary
 
@@ -108,17 +191,10 @@ uv build
 git diff --check
 ```
 
-The local unapproved bundle uses GPU disabled. After reviewing the exact committed
-SHA and passing gates, the user can execute the following from the repository:
+Implementation gates passed before execution: 381 tests including the training
+extra, locked dependency sync, Ruff lint/format, mypy, package build, and whitespace
+checks. Independent standards and spec reviews found no actionable issues.
 
-```bash
-uv run python scripts/kaggle.py build clipped-window --approve-gpu
-uv run python scripts/kaggle.py push build/kaggle/clipped-window --approve-remote --approve-gpu
-```
-
-The approved build requires a clean committed revision. The notebook trains and
-validates only, using the retained #31 kernel output. It verifies and publishes
-public-safe summary artifacts; paired study-level predictions stay inside the
-artifact directory. Hidden inference requires a passing keep rule and separate
-approval. Competition submission requires another separate approval. Neither is
-included in these commands.
+The user executed the approved training/paired-validation bundle. After completion,
+Codex performed read-only status/output retrieval and local verification only.
+No additional remote execution or submission is warranted by this rejected result.
