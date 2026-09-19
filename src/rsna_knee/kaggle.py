@@ -192,13 +192,15 @@ def build_kaggle_bundle(
         "physical_crop",
         "adjacent_slice",
         "clipped_window",
+        "slot_attention",
     }:
         _validate_controlled_training_source(
             source,
             physical_crop=spec.validator
-            in {"physical_crop", "adjacent_slice", "clipped_window"},
+            in {"physical_crop", "adjacent_slice", "clipped_window", "slot_attention"},
             adjacent_slice=spec.validator in {"adjacent_slice", "clipped_window"},
             clipped_window=spec.validator == "clipped_window",
+            slot_attention=spec.validator == "slot_attention",
         )
     elif spec.validator in {"plane_gated_scoring", "physical_crop_scoring"}:
         _validate_plane_gated_scoring_source(
@@ -810,15 +812,18 @@ def build_plane_gating_bundle(
     *,
     kernel_id: str = "plthon/rsna-knee-plane-gating",
     gpu_approved: bool = False,
+    slot_attention: bool = False,
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
 ) -> KaggleBundle:
     """Build a guarded controlled-training and paired-validation bundle."""
-    if sum((physical_crop, adjacent_slice, clipped_window)) > 1:
+    if sum((physical_crop, adjacent_slice, clipped_window, slot_attention)) > 1:
         raise ValueError("Choose one controlled representation experiment")
     name = (
-        "clipped-window"
+        "slot-attention"
+        if slot_attention
+        else "clipped-window"
         if clipped_window
         else "adjacent-slice"
         if adjacent_slice
@@ -827,7 +832,9 @@ def build_plane_gating_bundle(
         else "plane-gating"
     )
     source_name = (
-        "train_clipped_window"
+        "train_slot_attention"
+        if slot_attention
+        else "train_clipped_window"
         if clipped_window
         else "train_adjacent_slice"
         if adjacent_slice
@@ -846,7 +853,7 @@ def build_plane_gating_bundle(
     config_bytes = config_path.read_bytes()
     git_commit, git_dirty = _git_state(project_root)
     if (
-        (physical_crop or adjacent_slice or clipped_window)
+        (physical_crop or adjacent_slice or clipped_window or slot_attention)
         and gpu_approved
         and git_dirty
     ):
@@ -860,7 +867,9 @@ def build_plane_gating_bundle(
             source_name=source_path.name,
             notebook_name=f"{source_name}.ipynb",
             kernel_id=kernel_id,
-            title="RSNA Knee Clipped Window"
+            title="RSNA Knee Slot Attention"
+            if slot_attention
+            else "RSNA Knee Clipped Window"
             if clipped_window
             else "RSNA Knee Adjacent Slice"
             if adjacent_slice
@@ -871,14 +880,15 @@ def build_plane_gating_bundle(
             dataset_sources=_PLANE_GATING_DATASET_SOURCES,
             kernel_sources=(
                 (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop")
-                if adjacent_slice or clipped_window
+                if adjacent_slice or clipped_window or slot_attention
                 else _PLANE_GATING_KERNEL_SOURCES
             ),
             gpu=gpu_approved
-            if physical_crop or adjacent_slice or clipped_window
+            if physical_crop or adjacent_slice or clipped_window or slot_attention
             else True,
             machine_shape=_GPU_MACHINE_SHAPE
-            if gpu_approved or not (physical_crop or adjacent_slice or clipped_window)
+            if gpu_approved
+            or not (physical_crop or adjacent_slice or clipped_window or slot_attention)
             else "",
             replacements={
                 "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
@@ -893,7 +903,9 @@ def build_plane_gating_bundle(
             embed_package=True,
             package_contracts=contract_names,
             validator=(
-                "clipped_window"
+                "slot_attention"
+                if slot_attention
+                else "clipped_window"
                 if clipped_window
                 else "adjacent_slice"
                 if adjacent_slice
@@ -1341,19 +1353,21 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         "physical_crop",
         "adjacent_slice",
         "clipped_window",
+        "slot_attention",
     }:
         _validate_controlled_training_source(
             _notebook_source(source),
             physical_crop=validator
-            in {"physical_crop", "adjacent_slice", "clipped_window"},
+            in {"physical_crop", "adjacent_slice", "clipped_window", "slot_attention"},
             adjacent_slice=validator in {"adjacent_slice", "clipped_window"},
             clipped_window=validator == "clipped_window",
+            slot_attention=validator == "slot_attention",
         )
         if tuple(metadata.get("dataset_sources", ())) != _PLANE_GATING_DATASET_SOURCES:
             raise ValueError("Plane gating attached unexpected Dataset inputs")
         expected_kernels = (
             (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop")
-            if validator in {"adjacent_slice", "clipped_window"}
+            if validator in {"adjacent_slice", "clipped_window", "slot_attention"}
             else _PLANE_GATING_KERNEL_SOURCES
         )
         if tuple(metadata.get("kernel_sources", ())) != expected_kernels:
@@ -1668,12 +1682,15 @@ def _validate_combined_baseline_source(source: str) -> None:
 def _validate_controlled_training_source(
     source: str,
     *,
+    slot_attention: bool = False,
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
 ) -> None:
     verifier = (
-        "verify_adjacent_slice_artifact"
+        "verify_slot_attention_artifact"
+        if slot_attention
+        else "verify_adjacent_slice_artifact"
         if adjacent_slice
         else "verify_physical_crop_artifact"
         if physical_crop
@@ -1685,12 +1702,23 @@ def _validate_controlled_training_source(
         or "clipped_window=True" not in source
     ):
         raise ValueError("Clipped-window notebook omits layout safeguard")
-    aggregation = "mean" if physical_crop else "target_plane_gate"
+    aggregation = (
+        "target_slot_attention"
+        if slot_attention
+        else "mean"
+        if physical_crop
+        else "target_plane_gate"
+    )
     if (
         physical_crop
         and 'config.preprocessing.spatial_mode != "physical_crop"' not in source
     ):
         raise ValueError("Physical crop notebook omits spatial safeguard")
+    if slot_attention and (
+        'config.preprocessing.input_representation != "same_slice_rgb"' not in source
+        or "PHYSICAL_CROP_CHECKPOINT_SHA256" not in source
+    ):
+        raise ValueError("Slot attention notebook omits representation safeguard")
     if adjacent_slice and (
         'config.preprocessing.input_representation != "adjacent_slice_2_5d"'
         not in source

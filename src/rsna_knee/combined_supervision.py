@@ -36,6 +36,7 @@ from .holdout import (
 from .indexing import build_competition_index, verify_index_artifact
 from .provenance import create_run_id, write_run_manifest
 from .public_label_audit import resolve_dataset_root
+from .sequence_slots import SLOT_ORDER, SLOT_SCHEMA, slot_metadata
 from .submission import (
     SubmissionInputs,
     discover_submission_inputs,
@@ -57,6 +58,7 @@ from .training import (
     build_initialized_model,
     configure_dinov2_finetuning,
     decode_study,
+    has_candidate_slots,
     load_indexed_studies,
     predict_partition,
     require_approved_cuda,
@@ -478,8 +480,8 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
     if not isinstance(model_raw, dict):
         raise TypeError("Configuration field model must be a table")
     aggregation = model_raw.get("aggregation", "mean")
-    if aggregation not in {"mean", "target_plane_gate"}:
-        raise ValueError("model.aggregation must be mean or target_plane_gate")
+    if aggregation not in {"mean", "target_plane_gate", "target_slot_attention"}:
+        raise ValueError("Unsupported model.aggregation")
     preprocessing = PreprocessingConfig(
         slice_count=_positive_int(preprocessing_raw, "slice_count"),
         lower_percentile=_number(preprocessing_raw, "lower_percentile"),
@@ -584,7 +586,9 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         raise ValueError("DINOv2 configuration differs from the #30 recipe")
     if preprocessing.spatial_mode == "physical_crop":
         expected = (
-            _expected_adjacent_slice_configuration(
+            _expected_slot_configuration()
+            if config.aggregation == "target_slot_attention"
+            else _expected_adjacent_slice_configuration(
                 clipped_window=preprocessing.sampling_layout
                 == "central_80_three_anchor"
             )
@@ -595,6 +599,11 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
             raise ValueError(
                 "Physical crop configuration differs from its fixed recipe"
             )
+    if (
+        config.aggregation == "target_slot_attention"
+        and _combined_config_record(config) != _expected_slot_configuration()
+    ):
+        raise ValueError("Slot attention requires the fixed #31 recipe")
     return config
 
 
@@ -962,6 +971,7 @@ def load_verified_combined_checkpoint(
     device: torch.device,
     contract_path: Path | None = None,
     expected_sha256: str = COMBINED_BASELINE_CHECKPOINT_SHA256,
+    slot_attention: bool = False,
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
@@ -992,20 +1002,24 @@ def load_verified_combined_checkpoint(
         "imagenet_std": [0.229, 0.224, 0.225],
     }
     expected_config = (
-        _expected_adjacent_slice_configuration(clipped_window=clipped_window)
+        _expected_slot_configuration()
+        if slot_attention
+        else _expected_adjacent_slice_configuration(clipped_window=clipped_window)
         if adjacent_slice or clipped_window
         else _expected_physical_crop_configuration()
         if physical_crop
         else _expected_baseline_configuration()
     )
-    if physical_crop or adjacent_slice or clipped_window:
+    if physical_crop or adjacent_slice or clipped_window or slot_attention:
         expected_preprocessing.update(
             cast(dict[str, Any], expected_config["preprocessing"])
         )
     if adjacent_slice or clipped_window:
         expected_preprocessing["channel_adapter"] = "prestacked_previous_center_next"
     expected_schema = (
-        _CLIPPED_WINDOW_SCHEMA
+        SLOT_SCHEMA
+        if slot_attention
+        else _CLIPPED_WINDOW_SCHEMA
         if clipped_window
         else _ADJACENT_SLICE_SCHEMA
         if adjacent_slice
@@ -1358,7 +1372,24 @@ def run_combined_scoring(
             input_root, expected_sha256=expected_checkpoint_sha256
         )
     )
-    if adjacent_slice or clipped_window:
+    if aggregation == "target_slot_attention":
+        if (
+            backbone != "resnet18"
+            or not physical_crop
+            or adjacent_slice
+            or clipped_window
+        ):
+            raise ValueError(
+                "Slot attention scoring requires retained #31 representation"
+            )
+        model, checkpoint_payload = load_verified_combined_checkpoint(
+            checkpoint,
+            device=torch.device("cpu"),
+            expected_sha256=expected_checkpoint_sha256,
+            contract_path=competition_contract_path,
+            slot_attention=True,
+        )
+    elif adjacent_slice or clipped_window:
         if backbone != "resnet18" or aggregation != "mean" or not physical_crop:
             raise ValueError(
                 "Adjacent-slice scoring requires physical-crop ResNet-18 mean pooling"
@@ -1642,9 +1673,15 @@ def run_combined_baseline(
     )
 
     control_val_pred = None
+    control_predictions_reused = False
     control_checkpoint_sha256 = None
     control_parameter_count = None
     control_checkpoint_size_bytes = None
+    is_slot_attention = config.aggregation == "target_slot_attention"
+    uses_crop_control = (
+        is_slot_attention
+        or config.preprocessing.input_representation == "adjacent_slice_2_5d"
+    )
     is_adjacent_slice = (
         config.preprocessing.input_representation == "adjacent_slice_2_5d"
     )
@@ -1652,7 +1689,7 @@ def run_combined_baseline(
         config.preprocessing.sampling_layout == "central_80_three_anchor"
     )
     control_commit = (
-        PHYSICAL_CROP_COMMIT if is_adjacent_slice else COMBINED_BASELINE_COMMIT
+        PHYSICAL_CROP_COMMIT if uses_crop_control else COMBINED_BASELINE_COMMIT
     )
     controlled_experiment = (
         config.aggregation == "target_plane_gate"
@@ -1661,7 +1698,11 @@ def run_combined_baseline(
     )
     if config.preprocessing.spatial_mode == "physical_crop":
         expected = (
-            _expected_adjacent_slice_configuration(clipped_window=is_clipped_window)
+            _expected_slot_configuration()
+            if is_slot_attention
+            else _expected_adjacent_slice_configuration(
+                clipped_window=is_clipped_window
+            )
             if is_adjacent_slice
             else _expected_physical_crop_configuration()
         )
@@ -1682,11 +1723,11 @@ def run_combined_baseline(
                 input_root,
                 expected_sha256=(
                     PHYSICAL_CROP_CHECKPOINT_SHA256
-                    if is_adjacent_slice
+                    if uses_crop_control
                     else COMBINED_BASELINE_CHECKPOINT_SHA256
                 ),
             )
-        if is_adjacent_slice:
+        if uses_crop_control:
             control_model, control_checkpoint = load_verified_physical_crop_checkpoint(
                 control_checkpoint_path,
                 device=device,
@@ -1715,14 +1756,23 @@ def run_combined_baseline(
                 != _expected_baseline_configuration()
             ):
                 raise ValueError("Control checkpoint configuration differs from #27")
-        control_val_pred = predict_partition(
-            model=control_model,
-            indexed=training_index,
-            studies=partition.val_studies,
-            preprocessing=control_preprocessing,
-            mixed_precision=config.mixed_precision,
-            device=device,
+        control_val_pred = (
+            load_physical_crop_validation_predictions(
+                input_root, partition.val_studies, cohort.target_names
+            )
+            if is_slot_attention
+            else None
         )
+        control_predictions_reused = control_val_pred is not None
+        if control_val_pred is None:
+            control_val_pred = predict_partition(
+                model=control_model,
+                indexed=training_index,
+                studies=partition.val_studies,
+                preprocessing=control_preprocessing,
+                mixed_precision=config.mixed_precision,
+                device=device,
+            )
         control_checkpoint_sha256 = _sha256(control_checkpoint_path)
         control_parameter_count = sum(
             parameter.numel() for parameter in control_model.parameters()
@@ -1760,7 +1810,9 @@ def run_combined_baseline(
         seed_everything(config.seed)
 
     artifact_dir = work_root / (
-        _CLIPPED_WINDOW_SCHEMA
+        SLOT_SCHEMA
+        if is_slot_attention
+        else _CLIPPED_WINDOW_SCHEMA
         if is_clipped_window
         else _ADJACENT_SLICE_SCHEMA
         if is_adjacent_slice
@@ -2112,6 +2164,10 @@ def run_combined_baseline(
             for target in cohort.target_names
         )
 
+        if is_slot_attention:
+            model.fallback_logits.copy_(
+                torch.logit(torch.tensor(priors, device=device).clamp(1e-7, 1 - 1e-7))
+            )
         epoch_logs = []
         total_training_start = time.perf_counter()
 
@@ -2170,7 +2226,9 @@ def run_combined_baseline(
 
         checkpoint_payload = {
             "checkpoint_schema_version": (
-                _CLIPPED_WINDOW_SCHEMA
+                SLOT_SCHEMA
+                if is_slot_attention
+                else _CLIPPED_WINDOW_SCHEMA
                 if is_clipped_window
                 else _ADJACENT_SLICE_SCHEMA
                 if is_adjacent_slice
@@ -2242,6 +2300,8 @@ def run_combined_baseline(
             checkpoint_payload["aggregation"] = _plane_gate_metadata(
                 cohort.target_names
             )
+        if is_slot_attention:
+            checkpoint_payload["aggregation"] = slot_metadata(cohort.target_names)
         save_checkpoint(checkpoint_path, checkpoint_payload)
 
     pre_reload_val_pred = predict_partition(
@@ -2346,7 +2406,9 @@ def run_combined_baseline(
                 ),
             }
         decision = (
-            _adjacent_slice_decision(comparison, config)
+            _slot_decision(comparison, config)
+            if is_slot_attention
+            else _adjacent_slice_decision(comparison, config)
             if is_adjacent_slice
             else _physical_crop_decision(comparison, config)
             if config.preprocessing.spatial_mode == "physical_crop"
@@ -2361,7 +2423,9 @@ def run_combined_baseline(
             reloaded_val_pred,
             cohort.target_names,
             candidate_name=(
-                "clipped_window_2_5d"
+                "slot_attention"
+                if is_slot_attention
+                else "clipped_window_2_5d"
                 if is_clipped_window
                 else "adjacent_slice_2_5d"
                 if is_adjacent_slice
@@ -2418,15 +2482,15 @@ def run_combined_baseline(
         if training_slice_seconds > 0 and valid_training_slices > 0
         else None
     )
-    resource_control_issue = 31 if is_adjacent_slice else 27
+    resource_control_issue = 31 if uses_crop_control else 27
     resource_training_seconds = (
         _PHYSICAL_CROP_TRAINING_SECONDS
-        if is_adjacent_slice
+        if uses_crop_control
         else _BASELINE_TRAINING_SECONDS
     )
     resource_peak_memory = (
         _PHYSICAL_CROP_PEAK_CUDA_MEMORY_BYTES
-        if is_adjacent_slice
+        if uses_crop_control
         else _BASELINE_PEAK_CUDA_MEMORY_BYTES
     )
     report_data = {
@@ -2461,11 +2525,12 @@ def run_combined_baseline(
         },
         "initialization": initialization_record,
         "baseline_reproducibility": {
+            "control_predictions_reused": control_predictions_reused,
             "control_commit": control_commit,
             "control_checkpoint_sha256": control_checkpoint_sha256,
             "control_configuration": (
                 _expected_physical_crop_configuration()
-                if is_adjacent_slice
+                if uses_crop_control
                 else _expected_baseline_configuration()
                 if controlled_experiment
                 else None
@@ -2515,7 +2580,7 @@ def run_combined_baseline(
                 "validation_design": (
                     "paired deterministic PatientID-disjoint split; retained #31 "
                     "checkpoint predictions"
-                    if is_adjacent_slice
+                    if uses_crop_control
                     else "paired deterministic PatientID-disjoint split; no ready "
                     "combined-supervision OOF artifact exists"
                 ),
@@ -2541,6 +2606,11 @@ def run_combined_baseline(
             if comparison is not None
             else None
         ),
+        "slot_evidence": slot_evidence(
+            epoch_logs, reloaded_val_pred, cohort.target_names
+        )
+        if is_slot_attention
+        else None,
         "physical_crop_evidence": (
             {
                 "contract": config.preprocessing.record(),
@@ -2621,16 +2691,16 @@ def run_combined_baseline(
                 "total_training_seconds": resource_training_seconds,
                 "peak_cuda_memory_bytes": resource_peak_memory,
                 "valid_training_slices": (
-                    _PHYSICAL_CROP_VALID_TRAINING_SLICES if is_adjacent_slice else None
+                    _PHYSICAL_CROP_VALID_TRAINING_SLICES if uses_crop_control else None
                 ),
                 "training_slices_per_second": (
                     _PHYSICAL_CROP_TRAINING_SLICES_PER_SECOND
-                    if is_adjacent_slice
+                    if uses_crop_control
                     else None
                 ),
                 "throughput_evidence": (
                     "recorded retained #31 report"
-                    if is_adjacent_slice
+                    if uses_crop_control
                     else "not recorded for #27"
                 ),
                 "parameter_count": control_parameter_count,
@@ -2810,7 +2880,7 @@ def load_combined_checkpoint(
         "rng_state",
     }
     schema_version = checkpoint.get("checkpoint_schema_version")
-    if schema_version == _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION:
+    if schema_version in {_PLANE_GATED_CHECKPOINT_SCHEMA_VERSION, SLOT_SCHEMA}:
         required.add("aggregation")
     elif schema_version == _DINOV2_CHECKPOINT_SCHEMA_VERSION:
         required.update(
@@ -2826,6 +2896,7 @@ def load_combined_checkpoint(
     if set(checkpoint) != required:
         raise ValueError("Combined checkpoint fields are incomplete or unexpected")
     if schema_version not in {
+        SLOT_SCHEMA,
         _COMBINED_CHECKPOINT_SCHEMA_VERSION,
         _PHYSICAL_CROP_SCHEMA,
         _ADJACENT_SLICE_SCHEMA,
@@ -2847,14 +2918,21 @@ def load_combined_checkpoint(
     )
     if is_crop != (
         schema_version
-        in {_PHYSICAL_CROP_SCHEMA, _ADJACENT_SLICE_SCHEMA, _CLIPPED_WINDOW_SCHEMA}
+        in {
+            _PHYSICAL_CROP_SCHEMA,
+            _ADJACENT_SLICE_SCHEMA,
+            _CLIPPED_WINDOW_SCHEMA,
+            SLOT_SCHEMA,
+        }
     ):
         raise ValueError("Checkpoint spatial identity and schema differ")
     if is_crop:
         if targets != list(load_verified_submission_contract().target_names):
             raise ValueError("Physical crop target order differs from competition")
         expected = (
-            _expected_adjacent_slice_configuration(
+            _expected_slot_configuration()
+            if schema_version == SLOT_SCHEMA
+            else _expected_adjacent_slice_configuration(
                 clipped_window=schema_version == _CLIPPED_WINDOW_SCHEMA
             )
             if schema_version in {_ADJACENT_SLICE_SCHEMA, _CLIPPED_WINDOW_SCHEMA}
@@ -2875,6 +2953,10 @@ def load_combined_checkpoint(
         }:
             raise ValueError("Physical crop checkpoint preprocessing differs")
     aggregation: StudyAggregation = "mean"
+    if schema_version == SLOT_SCHEMA:
+        if checkpoint.get("aggregation") != slot_metadata(targets):
+            raise ValueError("Slot attention checkpoint metadata is incompatible")
+        aggregation = "target_slot_attention"
     if schema_version == _PLANE_GATED_CHECKPOINT_SCHEMA_VERSION:
         aggregation_record = checkpoint.get("aggregation")
         if aggregation_record != _plane_gate_metadata(targets):
@@ -3307,6 +3389,11 @@ def _predict_combined_submission(
             decoded = decode_study(indexed_study, preprocessing, labels=None)
             decode_errors.update(decoded.decode_error_counts)
             spatial_counts.update(decoded.spatial_counts)
+            if getattr(
+                model, "aggregation", "mean"
+            ) == "target_slot_attention" and not has_candidate_slots(decoded):
+                failures[study_uid] = "no_available_candidate_slots"
+                continue
             if decoded.valid_slice_count == 0:
                 failures[study_uid] = "no_decodable_selected_slices"
                 continue
@@ -3325,7 +3412,17 @@ def _predict_combined_submission(
                 enabled=mixed_precision and device.type == "cuda",
             ):
                 probabilities = torch.sigmoid(
-                    model(pixels, slice_mask, series_mask, plane_indices)
+                    model(
+                        pixels,
+                        slice_mask,
+                        series_mask,
+                        plane_indices,
+                        decoded.slot_indices.unsqueeze(0).to(device)
+                        if decoded.slot_indices is not None
+                        else None,
+                    )
+                    if getattr(model, "aggregation", "mean") == "target_slot_attention"
+                    else model(pixels, slice_mask, series_mask, plane_indices)
                     if getattr(model, "aggregation", "mean") == "target_plane_gate"
                     else model(pixels, slice_mask, series_mask)
                 )[0]
@@ -3626,6 +3723,14 @@ def _plane_gate_metadata(targets: Sequence[str]) -> dict[str, object]:
 def _model_report(
     *, model: StudyClassifier, targets: Sequence[str]
 ) -> dict[str, object]:
+    if model.slot_attention is not None:
+        return {
+            "aggregation": model.aggregation,
+            "contract": slot_metadata(targets),
+            "learned_aggregation_scalars": sum(
+                p.numel() for p in model.slot_attention.parameters()
+            ),
+        }
     if model.plane_gate is None:
         return {"aggregation": "mean", "learned_aggregation_scalars": 0}
     gate = model.plane_gate
@@ -4127,3 +4232,159 @@ def verify_adjacent_slice_artifact(
         "decision": comparison["decision"],
         "checkpoint_sha256": _sha256(checkpoint_path),
     }
+
+
+def _expected_slot_configuration() -> dict[str, object]:
+    config = _expected_physical_crop_configuration()
+    config["model"] = {"aggregation": "target_slot_attention"}
+    return config
+
+
+def _slot_decision(
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+) -> dict[str, object]:
+    result = _dinov2_decision(comparison, config)
+    result.pop("generic_backbone_recommendation")
+    result["next_experiment"] = (
+        "fixed_130mm_higher_resolution"
+        if result["result"] == "keep"
+        else "different_encoder_with_retained_31_aggregation"
+    )
+    return result
+
+
+def slot_evidence(
+    epoch_logs: Sequence[Mapping[str, Any]],
+    prediction: PartitionPrediction,
+    targets: Sequence[str],
+) -> dict[str, object]:
+    def coverage(counts: Mapping[str, int]) -> dict[str, object]:
+        total = counts.get("slots:studies", 0)
+        return {
+            "counts": {
+                k.removeprefix("slots:"): v
+                for k, v in counts.items()
+                if k.startswith("slots:")
+            },
+            "availability_rates": {
+                name: counts.get(f"slots:available:{i}", 0) / total if total else None
+                for i, name in enumerate(SLOT_ORDER)
+            },
+        }
+
+    weights = np.asarray(prediction.attention_weights)
+    return {
+        "contract": slot_metadata(targets),
+        "training_epochs": [coverage(log["spatial_counts"]) for log in epoch_logs],
+        "validation": coverage(prediction.spatial_counts),
+        "attention_summary_population": "all validation studies; missing slots and zero-slot fallbacks contribute zero",
+        "attention": {
+            target: {
+                slot: {
+                    "mean": float(weights[:, i, j].mean()),
+                    "median": float(np.median(weights[:, i, j])),
+                }
+                for i, slot in enumerate(SLOT_ORDER)
+            }
+            for j, target in enumerate(targets)
+        },
+    }
+
+
+def verify_slot_attention_artifact(artifact_dir: Path) -> dict[str, Any]:
+    manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
+    for record in manifest["artifacts"]:
+        path = artifact_dir / record["path"]
+        if (
+            _sha256(path) != record["sha256"]
+            or path.stat().st_size != record["size_bytes"]
+        ):
+            raise ValueError("Slot attention artifact hash mismatch")
+    report = json.loads((artifact_dir / "training-report.json").read_text())
+    comparison = report["controlled_comparison"]
+    if (
+        report["status"] != "complete"
+        or not report["checkpoint"]["reload_reproducible"]
+        or report["configuration"] != _expected_slot_configuration()
+        or not report.get("slot_evidence")
+        or comparison["validation_membership_digest"]
+        != "8b1240fc2456779ba64fa115b23956adb131fb387f01c0f0424a933a2096ee88"
+        or comparison["baseline_checkpoint_sha256"] != PHYSICAL_CROP_CHECKPOINT_SHA256
+        or comparison["decision"]["result"] not in {"keep", "reject"}
+    ):
+        raise ValueError("Slot attention report is incomplete")
+    checkpoint_path = artifact_dir / "checkpoint.pt"
+    _, checkpoint = load_verified_combined_checkpoint(
+        checkpoint_path,
+        device=torch.device("cpu"),
+        expected_sha256=_sha256(checkpoint_path),
+        slot_attention=True,
+    )
+    if checkpoint["configuration"] != manifest["configuration"]:
+        raise ValueError("Slot attention configuration provenance differs")
+    return {
+        "valid": True,
+        "decision": comparison["decision"],
+        "checkpoint_sha256": _sha256(checkpoint_path),
+    }
+
+
+def load_physical_crop_validation_predictions(
+    input_root: Path, studies: Sequence[PartitionStudy], targets: Sequence[str]
+) -> PartitionPrediction | None:
+    """Reuse #31 predictions only with matching artifact provenance and exact rows."""
+    for path in sorted(input_root.rglob("validation-predictions.csv")):
+        report_path = path.parent / "training-report.json"
+        if not report_path.is_file():
+            continue
+        report = json.loads(report_path.read_text())
+        if (
+            report.get("checkpoint", {}).get("sha256")
+            != PHYSICAL_CROP_CHECKPOINT_SHA256
+        ):
+            continue
+        comparison = report.get("controlled_comparison", {})
+        if (
+            report.get("implementation", {}).get("git_commit") != PHYSICAL_CROP_COMMIT
+            or report.get("configuration") != _expected_physical_crop_configuration()
+            or comparison.get("validation_predictions_sha256") != _sha256(path)
+            or comparison.get("validation_membership_digest")
+            != _validation_membership_digest(studies)
+        ):
+            raise ValueError("Cached #31 validation prediction provenance differs")
+        columns = ["StudyInstanceUID", "PatientID"]
+        for target in targets:
+            columns.extend(
+                (f"{target}__label", f"{target}__baseline", f"{target}__physical_crop")
+            )
+        with path.open(newline="") as file:
+            reader = csv.DictReader(file)
+            if reader.fieldnames != columns:
+                raise ValueError("Cached #31 prediction target order differs")
+            rows = list(reader)
+        by_uid = {row["StudyInstanceUID"]: row for row in rows}
+        if len(by_uid) != len(rows) or set(by_uid) != {
+            study.study_uid for study in studies
+        }:
+            raise ValueError("Cached #31 prediction membership differs")
+        predictions = []
+        for study in studies:
+            row = by_uid[study.study_uid]
+            if row["PatientID"] != study.patient_id or any(
+                row[f"{target}__label"] != ("" if label is None else str(label))
+                for target, label in zip(targets, study.labels, strict=True)
+            ):
+                raise ValueError("Cached #31 prediction labels or PatientID differ")
+            values = tuple(float(row[f"{target}__physical_crop"]) for target in targets)
+            if any(not _is_probability(value) for value in values):
+                raise ValueError("Cached #31 predictions are invalid")
+            predictions.append(values)
+        return PartitionPrediction(
+            studies=tuple(studies),
+            probabilities=tuple(predictions),
+            decode_seconds=0,
+            forward_seconds=0,
+            valid_slice_count=0,
+            decode_errors={},
+        )
+    return None

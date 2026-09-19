@@ -39,6 +39,7 @@ from .dinov2 import DINOV2_VITS14_FEATURE_COUNT, DinoV2ViTS14, dinov2_vits14
 from .indexing import verify_index_artifact
 from .preprocessing import preprocess_series_result, uniform_indices
 from .provenance import create_run_id, write_run_manifest
+from .sequence_slots import TargetSpecificSlotAttention, resolve_sequence_slot
 from .submission import (
     SubmissionArtifacts,
     SubmissionInputs,
@@ -48,7 +49,7 @@ from .submission import (
 
 type Label = Literal[0, 1] | None
 type AnatomicalPlane = Literal["sagittal", "coronal", "axial"]
-type StudyAggregation = Literal["mean", "target_plane_gate"]
+type StudyAggregation = Literal["mean", "target_plane_gate", "target_slot_attention"]
 
 ANATOMICAL_PLANES: tuple[AnatomicalPlane, ...] = ("sagittal", "coronal", "axial")
 UNKNOWN_PLANE_INDEX = -1
@@ -142,6 +143,7 @@ class IndexedSeries:
     series_index: int
     paths: tuple[Path, ...]
     plane: AnatomicalPlane | None = None
+    slot_index: int = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +215,7 @@ class DecodedStudy:
     valid_slice_count: int
     decode_error_counts: dict[str, int]
     plane_indices: Tensor | None = None
+    slot_indices: Tensor | None = None
     spatial_counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -225,6 +228,7 @@ class PartitionPrediction:
     valid_slice_count: int
     decode_errors: dict[str, int]
     spatial_counts: dict[str, int] = field(default_factory=dict)
+    attention_weights: tuple[tuple[tuple[float, ...], ...], ...] = ()
 
 
 class TargetSpecificPlaneGate(nn.Module):
@@ -281,8 +285,9 @@ class StudyClassifier(nn.Module):
         aggregation: StudyAggregation = "mean",
     ):
         super().__init__()
-        if aggregation not in {"mean", "target_plane_gate"}:
+        if aggregation not in {"mean", "target_plane_gate", "target_slot_attention"}:
             raise ValueError(f"Unsupported study aggregation: {aggregation}")
+        self.fallback_logits: Tensor
         self.imagenet_mean: Tensor
         self.imagenet_std: Tensor
         self.backbone = backbone
@@ -292,6 +297,14 @@ class StudyClassifier(nn.Module):
             if aggregation == "target_plane_gate"
             else None
         )
+        self.slot_attention = (
+            TargetSpecificSlotAttention(feature_count, target_count)
+            if aggregation == "target_slot_attention"
+            else None
+        )
+        if self.slot_attention is not None:
+            self.register_buffer("fallback_logits", torch.zeros(target_count))
+        self.last_attention_weights: Tensor | None = None
         self.register_buffer(
             "imagenet_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
         )
@@ -307,6 +320,7 @@ class StudyClassifier(nn.Module):
         slice_mask: Tensor,
         series_mask: Tensor,
         plane_indices: Tensor | None = None,
+        slot_indices: Tensor | None = None,
     ) -> Tensor:
         if pixels.ndim not in {5, 6}:
             raise ValueError(
@@ -325,7 +339,7 @@ class StudyClassifier(nn.Module):
             dtype=torch.bool
         ).unsqueeze(-1)
         flat_valid = valid.reshape(-1)
-        if not bool(flat_valid.any()):
+        if not bool(flat_valid.any()) and self.slot_attention is None:
             raise ValueError("At least one unpadded slice is required per batch")
 
         flat_pixels = pixels.reshape(-1, *pixels.shape[3:])
@@ -333,7 +347,11 @@ class StudyClassifier(nn.Module):
         if pixels.ndim == 5:
             selected = selected.unsqueeze(1).repeat(1, 3, 1, 1)
         selected = (selected - self.imagenet_mean) / self.imagenet_std
-        selected_features = cast(Tensor, self.backbone(selected))
+        selected_features = (
+            cast(Tensor, self.backbone(selected))
+            if selected.shape[0]
+            else selected.new_zeros((0, self.feature_count))
+        )
 
         flat_features = selected_features.new_zeros(
             (flat_pixels.shape[0], self.feature_count)
@@ -346,6 +364,16 @@ class StudyClassifier(nn.Module):
         series_features = (features * slice_weights).sum(dim=2) / slice_counts
 
         effective_series = valid.any(dim=2) & series_mask.to(dtype=torch.bool)
+        if self.slot_attention is not None:
+            if slot_indices is None:
+                raise ValueError("Slot attention requires slot indices")
+            logits, weights = self.slot_attention(
+                series_features, effective_series, slot_indices, self.head
+            )
+            self.last_attention_weights = weights.detach()
+            return torch.where(
+                weights.sum((1, 2))[:, None] > 0, logits, self.fallback_logits
+            )
         if self.plane_gate is not None:
             if plane_indices is None:
                 raise ValueError("plane-gated aggregation requires plane indices")
@@ -788,7 +816,7 @@ def load_indexed_studies(
             study_indices[int(row["study_index"])] = uid
 
     series_rows = _read_csv(index_artifact_dir / "series.csv", _SERIES_COLUMNS)
-    series_metadata: dict[int, tuple[str, Path, int, AnatomicalPlane | None]] = {}
+    series_metadata: dict[int, tuple[str, Path, int, AnatomicalPlane | None, int]] = {}
     for row in series_rows:
         study_index = int(row["study_index"])
         if study_index not in study_indices or int(row["usable_slice_count"]) <= 0:
@@ -801,6 +829,7 @@ def load_indexed_studies(
             relative_path,
             expected_selected,
             resolve_anatomical_plane(row["Anatomical_Plane"]),
+            resolve_sequence_slot(row["Anatomical_Plane"], row["Fluid_Sensitive"]),
         )
 
     selected_by_slice: dict[int, tuple[int, int]] = {}
@@ -850,6 +879,7 @@ def load_indexed_studies(
         _,
         expected_selected,
         plane,
+        slot_index,
     ) in series_metadata.items():
         positions = paths_by_series.get(series_index, {})
         slots = selected_positions.get(series_index, {})
@@ -872,6 +902,7 @@ def load_indexed_studies(
                 series_index=series_index,
                 paths=tuple(positions[position] for position in ordered_positions),
                 plane=plane,
+                slot_index=slot_index,
             )
         )
     return {
@@ -955,7 +986,9 @@ def train_epoch(
             decode_errors.update(item.decode_error_counts)
             spatial_counts.update(item.spatial_counts)
             valid_slices += item.valid_slice_count
-            if item.valid_slice_count:
+            if item.valid_slice_count and (
+                model.slot_attention is None or has_candidate_slots(item)
+            ):
                 decoded.append(item)
         decode_seconds += time.perf_counter() - decode_start
         if not decoded:
@@ -969,6 +1002,7 @@ def train_epoch(
         slice_mask = slice_mask.to(device)
         series_mask = series_mask.to(device)
         plane_indices = plane_indices.to(device)
+        slot_indices = collate_slot_indices(decoded).to(device)
         labels = labels.to(device)
         known = known.to(device)
         compute_start = time.perf_counter()
@@ -979,7 +1013,7 @@ def train_epoch(
             dtype=torch.float16,
             enabled=mixed_precision and device.type == "cuda",
         ):
-            logits = model(pixels, slice_mask, series_mask, plane_indices)
+            logits = model(pixels, slice_mask, series_mask, plane_indices, slot_indices)
             loss = masked_binary_cross_entropy(logits, labels, known)
         known_count = int(known.sum())
         scaler.scale(loss * known_count).backward()  # type: ignore[no-untyped-call]
@@ -1050,6 +1084,7 @@ def predict_partition(
 ) -> PartitionPrediction:
     """Predict one labeled partition with shared decode and padding semantics."""
     probabilities: list[tuple[float, ...]] = []
+    attention_weights: list[tuple[tuple[float, ...], ...]] = []
     successful: list[PartitionStudy] = []
     decode_errors: Counter[str] = Counter()
     spatial_counts: Counter[str] = Counter()
@@ -1067,7 +1102,7 @@ def predict_partition(
             decode_errors.update(decoded.decode_error_counts)
             spatial_counts.update(decoded.spatial_counts)
             valid_slices += decoded.valid_slice_count
-            if not decoded.valid_slice_count:
+            if not decoded.valid_slice_count and model.slot_attention is None:
                 raise RuntimeError("Prediction study has no decodable selected slices")
             pixels = decoded.pixels.unsqueeze(0).to(device)
             slice_mask = decoded.slice_mask.unsqueeze(0).to(device)
@@ -1087,14 +1122,30 @@ def predict_partition(
                 enabled=mixed_precision and device.type == "cuda",
             ):
                 output = torch.sigmoid(
-                    model(pixels, slice_mask, series_mask, plane_indices)
+                    model(
+                        pixels,
+                        slice_mask,
+                        series_mask,
+                        plane_indices,
+                        decoded.slot_indices.unsqueeze(0).to(device)
+                        if decoded.slot_indices is not None
+                        else None,
+                    )
                 )[0]
             if device.type == "cuda":
                 torch.cuda.synchronize()
             forward_seconds += time.perf_counter() - forward_start
             probabilities.append(tuple(float(value) for value in output.float().cpu()))
+            if model.last_attention_weights is not None:
+                attention_weights.append(
+                    tuple(
+                        tuple(row)
+                        for row in model.last_attention_weights[0].cpu().tolist()
+                    )
+                )
             successful.append(study)
     return PartitionPrediction(
+        attention_weights=tuple(attention_weights),
         studies=tuple(successful),
         probabilities=tuple(probabilities),
         decode_seconds=decode_seconds,
@@ -1498,7 +1549,15 @@ def _predict_submission_with_model(
                 enabled=mixed_precision and device.type == "cuda",
             ):
                 probabilities = torch.sigmoid(
-                    model(pixels, slice_mask, series_mask, plane_indices)
+                    model(
+                        pixels,
+                        slice_mask,
+                        series_mask,
+                        plane_indices,
+                        decoded.slot_indices.unsqueeze(0).to(device)
+                        if decoded.slot_indices is not None
+                        else None,
+                    )
                 )[0]
             predictions[study_uid] = tuple(
                 float(value) for value in probabilities.float().cpu()
@@ -2172,6 +2231,21 @@ def decode_study(
     spatial.update(
         {f"representation:{key}": value for key, value in representation.items()}
     )
+    slot_counts = Counter(
+        series.slot_index
+        for series, mask in zip(indexed.series, masks, strict=True)
+        if bool(mask.any())
+    )
+    spatial["slots:studies"] = 1
+    spatial["slots:unmatched_series"] = sum(
+        series.slot_index == -1 for series in indexed.series
+    )
+    spatial["slots:zero_available"] = int(not any(slot_counts[i] for i in range(4)))
+    pattern = "".join(str(int(slot_counts[i] > 0)) for i in range(4))
+    spatial[f"slots:pattern:{pattern}"] = 1
+    for i in range(4):
+        spatial[f"slots:available:{i}"] = int(slot_counts[i] > 0)
+        spatial[f"slots:multiplicity:{i}:{slot_counts[i]}"] = 1
     pixel_tensor = torch.stack(pixels)
     mask_tensor = torch.stack(masks)
     label_tensor: Tensor | None = None
@@ -2190,6 +2264,9 @@ def decode_study(
         valid_slice_count=int(mask_tensor.sum()),
         decode_error_counts=dict(errors),
         spatial_counts=dict(spatial),
+        slot_indices=torch.tensor(
+            [series.slot_index for series in indexed.series], dtype=torch.long
+        ),
         plane_indices=torch.tensor(
             [
                 UNKNOWN_PLANE_INDEX
@@ -2200,6 +2277,24 @@ def decode_study(
             dtype=torch.long,
         ),
     )
+
+
+def has_candidate_slots(study: DecodedStudy) -> bool:
+    return study.slot_indices is not None and bool(
+        ((study.slot_indices >= 0) & study.series_mask).any()
+    )
+
+
+def collate_slot_indices(studies: Sequence[DecodedStudy]) -> Tensor:
+    indices = torch.full(
+        (len(studies), max(item.pixels.shape[0] for item in studies)),
+        -1,
+        dtype=torch.long,
+    )
+    for index, item in enumerate(studies):
+        if item.slot_indices is not None:
+            indices[index, : len(item.slot_indices)] = item.slot_indices
+    return indices
 
 
 def collate_studies(
