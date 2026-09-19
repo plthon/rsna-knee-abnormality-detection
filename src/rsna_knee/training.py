@@ -950,6 +950,7 @@ def train_epoch(
     epoch: int,
     collect_diagnostics: bool = False,
     gradient_accumulation_steps: int = 1,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Train one partition epoch with the shared decode, mask, and pooling path."""
     if batch_size <= 0:
@@ -975,6 +976,8 @@ def train_epoch(
     start = time.perf_counter()
     model.train()
     for start_index in range(0, len(ordered), batch_size):
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise TimeoutError("Bounded training exceeded its resource-smoke deadline")
         batch = ordered[start_index : start_index + batch_size]
         decoded: list[DecodedStudy] = []
         decode_start = time.perf_counter()
@@ -1081,6 +1084,7 @@ def predict_partition(
     preprocessing: PreprocessingConfig,
     mixed_precision: bool,
     device: torch.device,
+    deadline: float | None = None,
 ) -> PartitionPrediction:
     """Predict one labeled partition with shared decode and padding semantics."""
     probabilities: list[tuple[float, ...]] = []
@@ -1094,6 +1098,10 @@ def predict_partition(
     model.eval()
     with torch.no_grad():
         for study in studies:
+            if deadline is not None and time.perf_counter() >= deadline:
+                raise TimeoutError(
+                    "Bounded validation exceeded its resource-smoke deadline"
+                )
             decode_start = time.perf_counter()
             decoded = decode_study(
                 indexed[study.study_uid], preprocessing, labels=study.labels

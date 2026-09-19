@@ -17,6 +17,7 @@ from rsna_knee.kaggle import (
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
+    build_resolution_bundle,
     load_kaggle_bundle,
     pull_kaggle_output,
     push_kaggle_bundle,
@@ -41,6 +42,7 @@ def main() -> None:
             "report-source-comparison",
             "combined-baseline",
             "combined-scoring",
+            "resolution-336",
             "physical-crop-scoring",
             "physical-crop",
             "adjacent-slice",
@@ -54,7 +56,10 @@ def main() -> None:
         ),
     )
     build.add_argument("--output", type=Path)
-    build.add_argument("--stage", choices=("audit", "smoke", "extract", "compare"))
+    build.add_argument(
+        "--stage", choices=("audit", "smoke", "full", "extract", "compare")
+    )
+    build.add_argument("--resource-smoke", type=Path)
     build.add_argument(
         "--wheel-dataset-id", default="plthon/rsna-knee-gold-baseline-package"
     )
@@ -102,6 +107,7 @@ def main() -> None:
                 "report-source-comparison": "report-source-comparison",
                 "combined-baseline": "gold-public-scoring",
                 "combined-scoring": "gold-public-scoring",
+                "resolution-336": f"resolution-336-{arguments.stage}",
                 "physical-crop": "physical-crop",
                 "adjacent-slice": "adjacent-slice",
                 "clipped-window": "clipped-window",
@@ -125,6 +131,17 @@ def main() -> None:
                 kernel_id=arguments.kernel_id
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
                 gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "resolution-336":
+            if arguments.stage not in {"smoke", "full"}:
+                parser.error("resolution-336 requires --stage smoke|full")
+            bundle = build_resolution_bundle(
+                project_root,
+                arguments.output,
+                stage=arguments.stage,
+                gpu_approved=arguments.approve_gpu,
+                resource_smoke_path=arguments.resource_smoke,
+                kernel_id=arguments.kernel_id,
             )
         elif arguments.target == "physical-crop-scoring":
             bundle = build_physical_crop_scoring_bundle(

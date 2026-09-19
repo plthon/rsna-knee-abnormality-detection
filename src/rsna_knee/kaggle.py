@@ -202,6 +202,8 @@ def build_kaggle_bundle(
             clipped_window=spec.validator == "clipped_window",
             slot_attention=spec.validator == "slot_attention",
         )
+    elif spec.validator in {"resolution_smoke", "resolution_full"}:
+        _validate_resolution_source(source, smoke=spec.validator == "resolution_smoke")
     elif spec.validator in {"plane_gated_scoring", "physical_crop_scoring"}:
         _validate_plane_gated_scoring_source(
             source, physical_crop=spec.validator == "physical_crop_scoring"
@@ -919,6 +921,130 @@ def build_plane_gating_bundle(
     return _record_rendered_notebook_hash(bundle, label=name.replace("-", " ").title())
 
 
+def build_resolution_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    stage: str,
+    gpu_approved: bool = False,
+    resource_smoke_path: Path | None = None,
+    kernel_id: str | None = None,
+) -> KaggleBundle:
+    """Prepare smoke or separately approved full training without remote actions."""
+    from dataclasses import replace
+
+    from .combined_supervision import load_combined_baseline_config
+    from .resolution import require_resolution_smoke
+
+    if stage not in {"smoke", "full"}:
+        raise ValueError("Resolution stage must be smoke or full")
+    if stage == "full" and resource_smoke_path is None:
+        raise ValueError("Full bundle requires successful resource smoke evidence")
+    if stage == "smoke" and resource_smoke_path is not None:
+        raise ValueError("Smoke starts at batch 16 and does not accept prior evidence")
+    config_path = project_root / "configs/resolution-336.toml"
+    config = load_combined_baseline_config(config_path)
+    git_commit, git_dirty = _git_state(project_root)
+    if gpu_approved and git_dirty:
+        raise ValueError("Resolution GPU execution requires a clean committed revision")
+    source_path = (
+        project_root
+        / "notebooks"
+        / ("smoke_resolution.py" if stage == "smoke" else "train_resolution.py")
+    )
+    replacements = {
+        "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+        "__RSNA_KNEE_CONFIG__": base64.b64encode(config_path.read_bytes()).decode(
+            "ascii"
+        ),
+        "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+        "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+        "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": _sha256(source_path),
+        "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+    }
+    if resource_smoke_path is not None:
+        smoke = json.loads(resource_smoke_path.read_text())
+        batch_size = smoke["configuration"]["training"]["batch_size"]
+        if type(batch_size) is not int or batch_size not in {1, 2, 4, 8, 16}:
+            raise ValueError("Invalid resource smoke physical batch")
+        config = replace(
+            config, batch_size=batch_size, gradient_accumulation_steps=16 // batch_size
+        )
+        require_resolution_smoke(
+            resource_smoke_path,
+            config,
+            {"git_commit": git_commit, "git_dirty": git_dirty},
+        )
+        replacements["__RSNA_KNEE_RESOURCE_SMOKE__"] = base64.b64encode(
+            resource_smoke_path.read_bytes()
+        ).decode("ascii")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name=source_path.with_suffix(".ipynb").name,
+            kernel_id=kernel_id or f"plthon/rsna-knee-resolution-336-{stage}",
+            title=f"RSNA Knee Resolution 336 {stage.title()}",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=_PLANE_GATING_DATASET_SOURCES,
+            kernel_sources=(
+                *_PLANE_GATING_KERNEL_SOURCES,
+                "plthon/rsna-knee-physical-crop",
+            ),
+            gpu=gpu_approved,
+            machine_shape=_GPU_MACHINE_SHAPE if gpu_approved else "",
+            replacements=replacements,
+            embed_package=True,
+            package_contracts=(
+                "competition.json",
+                "data-index.json",
+                "public-report-label-dataset-v1.json",
+                "resnet18-imagenet1k-v1.json",
+            ),
+            validator=f"resolution_{stage}",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Resolution 336")
+
+
+def _validate_resolution_source(source: str, *, smoke: bool) -> None:
+    required = [
+        "approved_gpu=GPU_APPROVED",
+        "source_provenance=source_provenance",
+        '"git_dirty"',
+        '"config_sha256"',
+        "load_combined_baseline_config(CONFIG_PATH)",
+    ]
+    if smoke:
+        required.extend(
+            ("run_resolution_smoke(", "full training requires separate approval")
+        )
+    else:
+        required.extend(
+            (
+                "run_combined_baseline(",
+                "resource_smoke_path=SMOKE_PATH",
+                "run_test_inference=False",
+                "verify_resolution_artifact(",
+            )
+        )
+    if (
+        any(text not in source for text in required)
+        or any(
+            text in source
+            for text in (
+                "run_combined_scoring(",
+                "competitions submit",
+                "run_test_inference=True",
+            )
+        )
+        or (smoke and "run_combined_baseline" in source)
+    ):
+        raise ValueError("Resolution notebook omits a required execution safeguard")
+
+
 def build_plane_gated_scoring_bundle(
     project_root: Path,
     output_root: Path,
@@ -1372,6 +1498,16 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         )
         if tuple(metadata.get("kernel_sources", ())) != expected_kernels:
             raise ValueError("Plane gating must attach the frozen index kernel output")
+    elif validator in {"resolution_smoke", "resolution_full"}:
+        _validate_resolution_source(
+            _notebook_source(source), smoke=validator == "resolution_smoke"
+        )
+        if tuple(
+            metadata.get("dataset_sources", ())
+        ) != _PLANE_GATING_DATASET_SOURCES or tuple(
+            metadata.get("kernel_sources", ())
+        ) != (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop"):
+            raise ValueError("Resolution bundles require the frozen #31 inputs")
     elif validator == "physical_crop_scoring":
         _validate_plane_gated_scoring_source(
             _notebook_source(source), physical_crop=True
