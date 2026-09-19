@@ -138,6 +138,7 @@ def test_control_features_preprocessing_fallback_and_reload(tmp_path: Path) -> N
         ("checkpoint_schema_version", "rsna-knee-physical-crop-v1"),
         ("targets", list(reversed(targets))),
         ("aggregation", {}),
+        ("priors", [0.5] * 12),
     ]:
         bad = {**payload, key: value}
         torch.save(bad, checkpoint)
@@ -376,8 +377,8 @@ def test_cached_control_predictions_require_provenance_and_aligned_labels(
     from dataclasses import dataclass
 
     from rsna_knee.combined_supervision import (
+        _PHYSICAL_CROP_TRAINING_COMMIT,
         PHYSICAL_CROP_CHECKPOINT_SHA256,
-        PHYSICAL_CROP_COMMIT,
         _expected_physical_crop_configuration,
         _validation_membership_digest,
         load_physical_crop_validation_predictions,
@@ -407,7 +408,7 @@ def test_cached_control_predictions_require_provenance_and_aligned_labels(
         writer.writerow(["one", "patient", 1, 0.1, 0.8, "", 0.3, 0.4])
     report = {
         "checkpoint": {"sha256": PHYSICAL_CROP_CHECKPOINT_SHA256},
-        "implementation": {"git_commit": PHYSICAL_CROP_COMMIT},
+        "implementation": {"git_commit": _PHYSICAL_CROP_TRAINING_COMMIT},
         "configuration": _expected_physical_crop_configuration(),
         "controlled_comparison": {
             "validation_predictions_sha256": hashlib.sha256(

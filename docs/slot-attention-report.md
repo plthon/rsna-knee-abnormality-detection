@@ -6,7 +6,8 @@ decision are pending the separately authorized experiment.
 
 ## Frozen experiment
 
-Control: #31, source `e85e24ebf0b78c6c73e63465d08c6b3dfa098141`, checkpoint SHA-256
+Control: #31, retained revision `e85e24ebf0b78c6c73e63465d08c6b3dfa098141`,
+training source `5fe133ed01d418b45643f3fe0458be5f0d1f558d`, checkpoint SHA-256
 `55e9da7854d284a91c2569e25c799281d09301bae61dc5adcecebbd17209f013`.
 Validation macro ROC-AUC: 0.847212; public competition score: 0.830.
 The implementation source revision is recorded by the local bundle and its
@@ -95,3 +96,27 @@ uv run --extra training python scripts/kaggle.py push build/kaggle/slot-attentio
 These commands are provided for the user; Codex did not execute the push.
 The notebook performs training and paired validation only. Hidden inference
 and competition submission require separate authorization after a keep result.
+
+## Local verification and review
+
+All required gates passed: locked base and training dependency sync, Ruff lint
+and formatting, 388 tests with the training extra, strict mypy over
+`src tests scripts notebooks`, source/wheel build, and `git diff --check`.
+The local bundle was built and loaded with GPU disabled. Tests exercise raw
+metadata, file-order independence, exact anchor preprocessing, equal feature
+pooling, masking and gradients, single/zero-slot cases, unchanged mean control,
+checkpoint rejection/reload, cached-control provenance, and validation/hidden
+inference agreement. No remote execution occurred.
+
+### Standards
+
+No actionable findings or documented-standard violations. The experiment
+selection branches follow the existing control-path structure; restructuring
+them is outside this narrowly scoped change.
+
+### Spec
+
+One provenance defect was found and resolved: cached #31 reports must match
+training source `5fe133ed...`, rather than the later retention-report commit.
+The fix and prior/fallback consistency validation were independently reviewed.
+No remaining actionable findings; remote measurements remain pending.

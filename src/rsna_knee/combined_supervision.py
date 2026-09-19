@@ -103,6 +103,7 @@ PHYSICAL_CROP_CHECKPOINT_SHA256 = (
     "55e9da7854d284a91c2569e25c799281d09301bae61dc5adcecebbd17209f013"
 )
 PHYSICAL_CROP_COMMIT = "e85e24ebf0b78c6c73e63465d08c6b3dfa098141"
+_PHYSICAL_CROP_TRAINING_COMMIT = "5fe133ed01d418b45643f3fe0458be5f0d1f558d"
 _BASELINE_TRAINING_SECONDS = 13_102.42
 _BASELINE_PEAK_CUDA_MEMORY_BYTES = 741_710_848
 _PHYSICAL_CROP_TRAINING_SECONDS = 11_312.74
@@ -3004,6 +3005,19 @@ def load_combined_checkpoint(
     else:
         model = _new_uninitialized_model(len(targets), aggregation=aggregation)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    if aggregation == "target_slot_attention":
+        priors = checkpoint["priors"]
+        if (
+            not isinstance(priors, list)
+            or len(priors) != len(targets)
+            or any(not _is_probability(value) for value in priors)
+        ):
+            raise ValueError("Slot attention fallback priors are malformed")
+        expected_logits = torch.logit(torch.tensor(priors).clamp(1e-7, 1 - 1e-7))
+        if not torch.allclose(
+            model.fallback_logits.cpu(), expected_logits, atol=1e-6, rtol=0
+        ):
+            raise ValueError("Slot attention fallback priors differ from model state")
     model.to(device)
     return model, checkpoint
 
@@ -4345,7 +4359,8 @@ def load_physical_crop_validation_predictions(
             continue
         comparison = report.get("controlled_comparison", {})
         if (
-            report.get("implementation", {}).get("git_commit") != PHYSICAL_CROP_COMMIT
+            report.get("implementation", {}).get("git_commit")
+            != _PHYSICAL_CROP_TRAINING_COMMIT
             or report.get("configuration") != _expected_physical_crop_configuration()
             or comparison.get("validation_predictions_sha256") != _sha256(path)
             or comparison.get("validation_membership_digest")
