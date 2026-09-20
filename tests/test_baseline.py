@@ -235,3 +235,48 @@ def test_baseline_epoch_and_holdout_prediction_run_on_synthetic_cpu_seam(
     assert record["logits"].shape == (2, 2)
     assert len(predictions.probabilities) == 2
     assert all(0 <= value <= 1 for row in predictions.probabilities for value in row)
+
+    # Both shared loops must retain counters when the next unit hits the deadline.
+    clock = 0.0
+
+    def slow_decode(
+        study: IndexedStudy, preprocessing: object, *, labels: object
+    ) -> DecodedStudy:
+        nonlocal clock
+        clock = 2.0
+        return decode(study, preprocessing, labels=labels)
+
+    monkeypatch.setattr(training_module, "decode_study", slow_decode)
+    monkeypatch.setattr("rsna_knee.training.time.perf_counter", lambda: clock)
+    with pytest.raises(training_module.ResourceSmokeTimeout) as training_timeout:
+        train_epoch(
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            indexed=indexed,
+            studies=studies,
+            preprocessing=config.preprocessing,
+            batch_size=1,
+            seed=config.seed,
+            mixed_precision=False,
+            device=torch.device("cpu"),
+            epoch=0,
+            deadline=1.0,
+        )
+    partial = training_timeout.value.progress
+    assert partial["attempted_study_count"] == 1
+    assert partial["optimizer_step_count"] == 1
+    assert partial["decode_seconds"] == 2.0
+    clock = 0.0
+    with pytest.raises(training_module.ResourceSmokeTimeout) as validation_timeout:
+        predict_partition(
+            model=model,
+            indexed=indexed,
+            studies=studies,
+            preprocessing=config.preprocessing,
+            mixed_precision=False,
+            device=torch.device("cpu"),
+            deadline=1.0,
+        )
+    assert validation_timeout.value.progress["completed_study_count"] == 1
+    assert validation_timeout.value.progress["valid_slice_count"] == 1

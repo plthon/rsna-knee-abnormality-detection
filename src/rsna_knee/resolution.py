@@ -5,7 +5,7 @@ import json
 import math
 import random
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +28,7 @@ from .combined_supervision import (
 from .training import (
     IndexedStudy,
     PartitionStudy,
+    ResourceSmokeTimeout,
     build_initialized_model,
     load_indexed_studies,
     predict_partition,
@@ -155,7 +156,11 @@ def _attempt(
     stress: Sequence[PartitionStudy],
     validation: Sequence[PartitionStudy],
     deadline: float,
+    attempt: dict[str, Any],
+    save_progress: Callable[[], None],
 ) -> dict[str, Any]:
+    attempt["phase"] = "initialization"
+    save_progress()
     seed_everything(config.seed)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
@@ -163,25 +168,26 @@ def _attempt(
     model.to(torch.device("cuda"))
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.0001)
     scaler = torch.GradScaler("cuda", enabled=config.mixed_precision)
-    records = []
-    for studies in (stress, train):
-        records.append(
-            train_epoch(
-                model=model,
-                optimizer=optimizer,
-                scaler=scaler,
-                indexed=indexed,
-                studies=studies,
-                preprocessing=config.preprocessing,
-                batch_size=config.batch_size,
-                seed=config.seed,
-                mixed_precision=config.mixed_precision,
-                device=torch.device("cuda"),
-                epoch=0,
-                gradient_accumulation_steps=config.gradient_accumulation_steps,
-                deadline=deadline,
-            )
+    for phase, studies in (("stress", stress), ("training", train)):
+        attempt["phase"] = phase
+        save_progress()
+        attempt[phase] = train_epoch(
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            indexed=indexed,
+            studies=studies,
+            preprocessing=config.preprocessing,
+            batch_size=config.batch_size,
+            seed=config.seed,
+            mixed_precision=config.mixed_precision,
+            device=torch.device("cuda"),
+            epoch=0,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            deadline=deadline,
         )
+    attempt["phase"] = "validation"
+    save_progress()
     prediction = predict_partition(
         model=model,
         indexed=indexed,
@@ -191,7 +197,7 @@ def _attempt(
         device=torch.device("cuda"),
         deadline=deadline,
     )
-    training = records[1]
+    training = attempt["training"]
     return {
         "physical_batch_size": config.batch_size,
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
@@ -199,7 +205,7 @@ def _attempt(
         "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
         "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
         "training": training,
-        "stress": records[0],
+        "stress": attempt["stress"],
         "training_seconds_per_optimizer_step": training["training_seconds"]
         / training["optimizer_step_count"],
         "training_anchor_inputs_per_second": training["valid_slice_count"]
@@ -236,58 +242,9 @@ def run_resolution_smoke(
     started = time.perf_counter()
     deadline = started + 3600
     cuda = require_approved_cuda(approved=approved_gpu)
-    inputs = discover_combined_training_inputs(input_root)
-    cohort = derive_combined_cohort(
-        inputs.competition_root,
-        inputs.public_dataset_root,
-        inputs.index_artifact_dir,
-        allow_verified_rebuilt_index=inputs.index_verification
-        == "rebuilt_verified_artifact",
-    )
-    partition = derive_patient_split(
-        cohort, split_seed=config.split_seed, val_fraction=config.val_fraction
-    )
-    if (
-        len(partition.train_studies) != 3957
-        or len(partition.val_studies) != 450
-        or _validation_membership_digest(partition.val_studies) != VALIDATION_DIGEST
-    ):
-        raise ValueError("Resource smoke partition differs from #31")
-    control_path = discover_combined_checkpoint(
-        input_root,
-        expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
-        allow_identical_copies=True,
-    )
-    control, _ = load_verified_physical_crop_checkpoint(
-        control_path,
-        device=torch.device("cpu"),
-        expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
-    )
-    del control
-    if (
-        load_physical_crop_validation_predictions(
-            input_root, partition.val_studies, cohort.target_names
-        )
-        is None
-    ):
-        raise ValueError("Resource smoke requires verified cached #31 predictions")
-    indexed = load_indexed_studies(
-        inputs.competition_root,
-        inputs.index_artifact_dir,
-        [s.study_uid for s in cohort.studies],
-        split="train",
-    )
-    train = list(partition.train_studies)
-    validation = list(partition.val_studies)
-    random.Random(config.seed).shuffle(train)
-    random.Random(config.seed).shuffle(validation)
-    stress = sorted(
-        train, key=lambda s: (-_anchor_count(indexed[s.study_uid]), s.study_uid)
-    )[:16]
-    setup_seconds = time.perf_counter() - started
     report: dict[str, Any] = {
         "schema": SMOKE_SCHEMA,
-        "status": "resource_infeasible",
+        "status": "running",
         "source": dict(source_provenance),
         "configuration": _combined_config_record(config),
         "control_checkpoint_sha256": PHYSICAL_CROP_CHECKPOINT_SHA256,
@@ -305,33 +262,138 @@ def run_resolution_smoke(
         "hidden_inference": False,
         "competition_submission": False,
     }
+    work_root.mkdir(parents=True, exist_ok=True)
+    path = work_root / "resolution-resource-smoke.json"
+
+    def save_progress() -> None:
+        report["elapsed_seconds"] = time.perf_counter() - started
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+        temporary.replace(path)
+        phase = (
+            report["attempts"][-1]["phase"] if report["attempts"] else report["phase"]
+        )
+        print(
+            f"Resource smoke: {phase} ({report['elapsed_seconds']:.1f}s elapsed)",
+            flush=True,
+        )
+
+    phase_started = started
+
+    def setup_phase(phase: str) -> None:
+        nonlocal phase_started
+        now = time.perf_counter()
+        if "phase" in report:
+            report.setdefault("setup_phase_seconds", {})[report["phase"]] = (
+                now - phase_started
+            )
+        report["phase"] = phase
+        phase_started = now
+        save_progress()
+
+    setup_phase("input_discovery")
+    inputs = discover_combined_training_inputs(input_root)
+    setup_phase("cohort")
+    cohort = derive_combined_cohort(
+        inputs.competition_root,
+        inputs.public_dataset_root,
+        inputs.index_artifact_dir,
+        allow_verified_rebuilt_index=inputs.index_verification
+        == "rebuilt_verified_artifact",
+    )
+    setup_phase("partition")
+    partition = derive_patient_split(
+        cohort, split_seed=config.split_seed, val_fraction=config.val_fraction
+    )
+    if (
+        len(partition.train_studies) != 3957
+        or len(partition.val_studies) != 450
+        or _validation_membership_digest(partition.val_studies) != VALIDATION_DIGEST
+    ):
+        raise ValueError("Resource smoke partition differs from #31")
+    setup_phase("control_checkpoint")
+    control_path = discover_combined_checkpoint(
+        input_root,
+        expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
+        allow_identical_copies=True,
+    )
+    control, _ = load_verified_physical_crop_checkpoint(
+        control_path,
+        device=torch.device("cpu"),
+        expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
+    )
+    del control
+    setup_phase("control_predictions")
+    if (
+        load_physical_crop_validation_predictions(
+            input_root, partition.val_studies, cohort.target_names
+        )
+        is None
+    ):
+        raise ValueError("Resource smoke requires verified cached #31 predictions")
+    setup_phase("index_loading")
+    indexed = load_indexed_studies(
+        inputs.competition_root,
+        inputs.index_artifact_dir,
+        [s.study_uid for s in cohort.studies],
+        split="train",
+    )
+    train = list(partition.train_studies)
+    validation = list(partition.val_studies)
+    random.Random(config.seed).shuffle(train)
+    random.Random(config.seed).shuffle(validation)
+    stress = sorted(
+        train, key=lambda s: (-_anchor_count(indexed[s.study_uid]), s.study_uid)
+    )[:16]
+    setup_phase("measurements")
+    setup_seconds = time.perf_counter() - started
+    report["setup_seconds"] = setup_seconds
     for batch_size in (16, 8, 4, 2, 1):
         candidate = replace(
             config, batch_size=batch_size, gradient_accumulation_steps=16 // batch_size
         )
-        attempt: dict[str, Any]
+        attempt: dict[str, Any] = {
+            "physical_batch_size": batch_size,
+            "gradient_accumulation_steps": 16 // batch_size,
+            "effective_batch_size": 16,
+            "phase": "initialization",
+            "status": "running",
+        }
+        report["attempts"].append(attempt)
+        save_progress()
         try:
-            attempt = _attempt(
-                config=candidate,
-                weight_path=inputs.weight_path,
-                targets=cohort.target_names,
-                indexed=indexed,
-                train=train[:64],
-                stress=stress,
-                validation=validation[:16],
-                deadline=deadline,
+            if time.perf_counter() >= deadline:
+                attempt["phase"] = "setup"
+                raise TimeoutError("Setup exhausted the resource-smoke deadline")
+            attempt.update(
+                _attempt(
+                    config=candidate,
+                    weight_path=inputs.weight_path,
+                    targets=cohort.target_names,
+                    indexed=indexed,
+                    train=train[:64],
+                    stress=stress,
+                    validation=validation[:16],
+                    deadline=deadline,
+                    attempt=attempt,
+                    save_progress=save_progress,
+                )
             )
+            if time.perf_counter() >= deadline:
+                raise TimeoutError("Measurements exceeded the resource-smoke deadline")
         except torch.cuda.OutOfMemoryError:
-            attempt = {
-                "physical_batch_size": batch_size,
-                "status": "cuda_oom",
-                "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-                "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
-            }
-        except TimeoutError:
+            attempt["status"] = "cuda_oom"
+        except TimeoutError as error:
+            attempt["status"] = "timeout"
+            attempt["reason"] = str(error)
+            if isinstance(error, ResourceSmokeTimeout):
+                attempt["partial_measurements"] = error.progress
             report["status"] = "smoke_time_limit"
             break
         finally:
+            attempt["peak_allocated_bytes"] = torch.cuda.max_memory_allocated()
+            attempt["peak_reserved_bytes"] = torch.cuda.max_memory_reserved()
+            save_progress()
             gc.collect()
             torch.cuda.empty_cache()
         if attempt.get("status") != "cuda_oom":
@@ -341,7 +403,7 @@ def run_resolution_smoke(
                 < 0.9 * cast(int, cuda["device_total_memory_bytes"])
                 else "memory_unsafe"
             )
-        report["attempts"].append(attempt)
+        save_progress()
         if attempt["status"] != "safe":
             continue
         training = attempt["training"]
@@ -362,6 +424,7 @@ def run_resolution_smoke(
             "setup_seconds": setup_seconds,
         }
         report.update(
+            status="resource_infeasible",
             configuration=_combined_config_record(candidate),
             measurements=measurements,
             projection=project_resolution_runtime(**measurements),
@@ -369,8 +432,7 @@ def run_resolution_smoke(
         if report["projection"]["within_limit"]:
             report["status"] = "safe_for_separate_full_approval"
         break
-    report["elapsed_seconds"] = time.perf_counter() - started
-    work_root.mkdir(parents=True, exist_ok=True)
-    path = work_root / "resolution-resource-smoke.json"
-    path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    if report["status"] == "running":
+        report["status"] = "resource_infeasible"
+    save_progress()
     return path

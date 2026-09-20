@@ -935,6 +935,14 @@ def masked_binary_cross_entropy(
     return losses[known].mean()
 
 
+class ResourceSmokeTimeout(TimeoutError):
+    """A bounded smoke stopped with public-safe partial measurements."""
+
+    def __init__(self, message: str, progress: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.progress = progress
+
+
 def train_epoch(
     *,
     model: StudyClassifier,
@@ -977,7 +985,20 @@ def train_epoch(
     model.train()
     for start_index in range(0, len(ordered), batch_size):
         if deadline is not None and time.perf_counter() >= deadline:
-            raise TimeoutError("Bounded training exceeded its resource-smoke deadline")
+            raise ResourceSmokeTimeout(
+                "Bounded training exceeded its resource-smoke deadline",
+                {
+                    "training_seconds": time.perf_counter() - start,
+                    "attempted_study_count": attempted,
+                    "optimized_study_count": optimized,
+                    "optimizer_step_count": optimizer_steps,
+                    "valid_slice_count": valid_slices,
+                    "decode_seconds": decode_seconds,
+                    "forward_backward_seconds": forward_backward_seconds,
+                    "spatial_counts": dict(spatial_counts),
+                    "decode_errors": dict(decode_errors),
+                },
+            )
         batch = ordered[start_index : start_index + batch_size]
         decoded: list[DecodedStudy] = []
         decode_start = time.perf_counter()
@@ -1099,8 +1120,16 @@ def predict_partition(
     with torch.no_grad():
         for study in studies:
             if deadline is not None and time.perf_counter() >= deadline:
-                raise TimeoutError(
-                    "Bounded validation exceeded its resource-smoke deadline"
+                raise ResourceSmokeTimeout(
+                    "Bounded validation exceeded its resource-smoke deadline",
+                    {
+                        "completed_study_count": len(successful),
+                        "valid_slice_count": valid_slices,
+                        "decode_seconds": decode_seconds,
+                        "forward_seconds": forward_seconds,
+                        "spatial_counts": dict(spatial_counts),
+                        "decode_errors": dict(decode_errors),
+                    },
                 )
             decode_start = time.perf_counter()
             decoded = decode_study(

@@ -1,8 +1,12 @@
 # Resolution-only experiment — issue #35
 
-Status: resource-smoke version 1 failed during control-checkpoint discovery, before resource measurements. **#31 at 224 px remains retained.** No candidate validation, GPU feasibility, hidden-test inference, or competition score is claimed.
+Status: the latest resource smoke completed its notebook but returned `smoke_time_limit`; the resource gate has **not** passed. **#31 at 224 px remains retained.** No candidate validation, GPU feasibility, hidden-test inference, or competition score is claimed.
 
-Version 1 ended after 818.3 seconds with `Expected exactly one attached checkpoint.pt`: multiple attached copies matched the exact retained #31 SHA-256. The #35 smoke and full-training paths now use the existing hash-verified identical-copy option; other experiments retain their strict default. The corrected smoke has not been launched.
+- Version 1 ended after 818.3 seconds with `Expected exactly one attached checkpoint.pt`. The smoke and full-training paths now permit hash-verified identical copies of the retained #31 checkpoint.
+- Version 2 failed before data discovery with `PermissionError: GPU execution requires explicit approval`. The bundle had been built without `--approve-gpu`; push approval does not alter an already-built bundle.
+- The subsequent smoke on clean source `93c4efeea4a59ac54e669e79d8f3d301fbc247f9` passed CUDA readiness on a Tesla T4 (15,636,037,632 bytes, CUDA 12.8) but reached the one-hour deadline. Kaggle reported 3,850.3 seconds; the report recorded 3,809.16 seconds, `smoke_time_limit`, and an empty attempts list. No memory/throughput projection was saved, so this does not establish resource infeasibility.
+
+The diagnostics fix records setup phase timings and progress before expensive phases, preserves completed phases and partial counters on timeout, and records peak allocation/reservation for every attempted batch size. Reports are saved atomically during execution. The fixed workload and one-hour deadline remain unchanged until measurements justify an adjustment. Timeout evidence cannot unlock full training.
 
 ## Frozen identities
 
