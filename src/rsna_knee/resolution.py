@@ -254,7 +254,9 @@ def run_resolution_smoke(
     ):
         raise ValueError("Resource smoke partition differs from #31")
     control_path = discover_combined_checkpoint(
-        input_root, expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256
+        input_root,
+        expected_sha256=PHYSICAL_CROP_CHECKPOINT_SHA256,
+        allow_identical_copies=True,
     )
     control, _ = load_verified_physical_crop_checkpoint(
         control_path,

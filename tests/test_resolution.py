@@ -6,6 +6,94 @@ from typing import Any
 import pytest
 
 
+@pytest.mark.parametrize("matching_copies", [True, False])
+def test_resolution_smoke_discovers_duplicate_control_attachments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, matching_copies: bool
+) -> None:
+    import hashlib
+    from types import SimpleNamespace
+
+    torch = pytest.importorskip("torch")
+    from rsna_knee import resolution
+    from rsna_knee.combined_supervision import load_combined_baseline_config
+
+    # Keep discovery, hashing, and checkpoint loading real. A deliberately
+    # incomplete payload stops the smoke before any training can start.
+    control = tmp_path / "control.pt"
+    torch.save({}, control)
+    control_bytes = control.read_bytes()
+    monkeypatch.setattr(
+        resolution,
+        "PHYSICAL_CROP_CHECKPOINT_SHA256",
+        hashlib.sha256(control_bytes).hexdigest(),
+    )
+    for attachment in ("retained", "smoke-output"):
+        path = tmp_path / attachment / "checkpoint.pt"
+        path.parent.mkdir()
+        path.write_bytes(control_bytes if matching_copies else b"wrong checkpoint")
+    unrelated = tmp_path / "other" / "checkpoint.pt"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"unrelated checkpoint")
+
+    # Only bypass the unavailable CUDA and competition-cohort prerequisites;
+    # the regression exercises run_resolution_smoke's own discovery call.
+    monkeypatch.setattr(resolution, "require_approved_cuda", lambda **_: {})
+    monkeypatch.setattr(
+        resolution,
+        "discover_combined_training_inputs",
+        lambda _: SimpleNamespace(
+            competition_root=tmp_path,
+            public_dataset_root=tmp_path,
+            index_artifact_dir=tmp_path,
+            index_verification="verified_artifact",
+        ),
+    )
+    monkeypatch.setattr(resolution, "derive_combined_cohort", lambda *_, **__: None)
+    monkeypatch.setattr(
+        resolution,
+        "derive_patient_split",
+        lambda *_, **__: SimpleNamespace(
+            train_studies=[None] * 3957, val_studies=[None] * 450
+        ),
+    )
+    monkeypatch.setattr(
+        resolution,
+        "_validation_membership_digest",
+        lambda _: resolution.VALIDATION_DIGEST,
+    )
+    config = load_combined_baseline_config(
+        Path(__file__).parents[1] / "configs/resolution-336.toml"
+    )
+    expected = (
+        "Combined checkpoint fields are incomplete or unexpected"
+        if matching_copies
+        else "Attached checkpoint SHA-256 mismatch"
+    )
+    with pytest.raises(ValueError, match=expected):
+        resolution.run_resolution_smoke(
+            input_root=tmp_path,
+            work_root=tmp_path / "working",
+            config=config,
+            source_provenance={"git_dirty": False, "git_commit": "test-commit"},
+        )
+
+
+def test_control_checkpoint_discovery_remains_strict_by_default(tmp_path: Path) -> None:
+    import hashlib
+
+    pytest.importorskip("torch")
+    from rsna_knee.combined_supervision import discover_combined_checkpoint
+
+    for attachment in ("retained", "smoke-output"):
+        path = tmp_path / attachment / "checkpoint.pt"
+        path.parent.mkdir()
+        path.write_bytes(b"identical control")
+    with pytest.raises(ValueError, match="Expected exactly one attached checkpoint"):
+        discover_combined_checkpoint(
+            tmp_path, expected_sha256=hashlib.sha256(b"identical control").hexdigest()
+        )
+
+
 def test_resolution_config_changes_only_final_resize() -> None:
     pytest.importorskip("torch")
     from rsna_knee.combined_supervision import load_combined_baseline_config

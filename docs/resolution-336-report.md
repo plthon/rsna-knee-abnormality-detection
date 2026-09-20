@@ -1,6 +1,8 @@
 # Resolution-only experiment — issue #35
 
-Status: implemented locally; stopped before the resource smoke. **#31 at 224 px remains retained.** No candidate validation, GPU feasibility, hidden-test inference, or competition score is claimed.
+Status: resource-smoke version 1 failed during control-checkpoint discovery, before resource measurements. **#31 at 224 px remains retained.** No candidate validation, GPU feasibility, hidden-test inference, or competition score is claimed.
+
+Version 1 ended after 818.3 seconds with `Expected exactly one attached checkpoint.pt`: multiple attached copies matched the exact retained #31 SHA-256. The #35 smoke and full-training paths now use the existing hash-verified identical-copy option; other experiments retain their strict default. The corrected smoke has not been launched.
 
 ## Frozen identities
 

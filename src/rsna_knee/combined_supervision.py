@@ -1797,6 +1797,7 @@ def run_combined_baseline(
                     if uses_crop_control
                     else COMBINED_BASELINE_CHECKPOINT_SHA256
                 ),
+                allow_identical_copies=is_resolution,
             )
         if uses_crop_control:
             control_model, control_checkpoint = load_verified_physical_crop_checkpoint(
