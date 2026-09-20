@@ -51,19 +51,25 @@ def test_resource_projection_covers_all_five_validation_passes() -> None:
 
 
 def test_resolution_bundle_separates_smoke_from_full_approval(tmp_path: Path) -> None:
-    from rsna_knee.kaggle import build_resolution_bundle, load_kaggle_bundle
+    from rsna_knee.kaggle import (
+        _notebook_source,
+        build_plane_gating_bundle,
+        load_kaggle_bundle,
+    )
 
     root = Path(__file__).parents[1]
-    bundle = build_resolution_bundle(root, tmp_path / "smoke", stage="smoke")
+    bundle = build_plane_gating_bundle(
+        root, tmp_path / "smoke", resolution_stage="smoke"
+    )
     load_kaggle_bundle(bundle.root)
     metadata = json.loads(bundle.kernel_metadata_path.read_text())
     assert metadata["enable_gpu"] == "false"
     assert "plthon/rsna-knee-physical-crop" in metadata["kernel_sources"]
-    source = bundle.notebook_path.read_text()
+    source = _notebook_source(bundle.notebook_path.read_text())
     assert "run_resolution_smoke" in source
-    assert "run_combined_baseline" not in source
+    assert 'STAGE = "smoke"' in source
     with pytest.raises(ValueError, match="resource smoke"):
-        build_resolution_bundle(root, tmp_path / "full", stage="full")
+        build_plane_gating_bundle(root, tmp_path / "full", resolution_stage="full")
 
 
 def _smoke_report(batch_size: int = 16) -> dict[str, Any]:
@@ -128,25 +134,30 @@ def _smoke_report(batch_size: int = 16) -> dict[str, Any]:
 def test_full_bundle_embeds_verified_smoke_without_enabling_gpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from rsna_knee.kaggle import build_resolution_bundle, load_kaggle_bundle
+    from rsna_knee.kaggle import (
+        _notebook_source,
+        build_plane_gating_bundle,
+        load_kaggle_bundle,
+    )
 
     report = _smoke_report(8)
     path = tmp_path / "smoke.json"
     path.write_text(json.dumps(report))
     monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda root: ("a" * 40, False))
-    bundle = build_resolution_bundle(
+    bundle = build_plane_gating_bundle(
         Path(__file__).parents[1],
         tmp_path / "full",
-        stage="full",
+        resolution_stage="full",
         resource_smoke_path=path,
     )
     load_kaggle_bundle(bundle.root)
     metadata = json.loads(bundle.kernel_metadata_path.read_text())
     assert metadata["enable_gpu"] == "false"
-    source = bundle.notebook_path.read_text()
+    source = _notebook_source(bundle.notebook_path.read_text())
+    assert 'STAGE = "full"' in source
     assert "resource_smoke_path=SMOKE_PATH" in source
     assert "run_test_inference=False" in source
-    assert "verify_resolution_artifact" in source
+    assert "verify_physical_crop_artifact" in source
 
 
 @pytest.mark.parametrize("batch_size", [16, 8, 4, 2, 1])
@@ -223,10 +234,11 @@ def test_smoke_gate_rejects_incompatible_or_unsafe_evidence(
         (0.0049, 0.99, 0.0, "reject"),
         (0.01, 0.9499, 0.0, "reject"),
         (0.01, 0.99, -0.0201, "reject"),
+        (0.01, 0.99, None, "reject"),
     ],
 )
 def test_resolution_keep_rule_is_precommitted(
-    delta: float, positive: float, regression: float, expected: str
+    delta: float, positive: float, regression: float | None, expected: str
 ) -> None:
     from rsna_knee.combined_supervision import (
         _resolution_decision,
@@ -315,3 +327,18 @@ def test_full_resolution_run_requires_smoke_before_cuda(tmp_path: Path) -> None:
             config=config,
             run_test_inference=False,
         )
+
+
+def test_resolution_training_cannot_run_hidden_inference_by_default(
+    tmp_path: Path,
+) -> None:
+    from rsna_knee.combined_supervision import (
+        load_combined_baseline_config,
+        run_combined_baseline,
+    )
+
+    config = load_combined_baseline_config(
+        Path(__file__).parents[1] / "configs/resolution-336.toml"
+    )
+    with pytest.raises(ValueError, match="hidden inference requires separate approval"):
+        run_combined_baseline(input_root=tmp_path, work_root=tmp_path, config=config)

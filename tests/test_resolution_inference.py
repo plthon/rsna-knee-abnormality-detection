@@ -23,7 +23,7 @@ def test_real_336_checkpoint_drives_live_hidden_inference(
         load_verified_combined_checkpoint,
         load_verified_physical_crop_checkpoint,
         run_combined_scoring,
-        verify_resolution_artifact,
+        verify_physical_crop_artifact,
     )
     from rsna_knee.competition_contract import load_verified_submission_contract
     from rsna_knee.training import _new_uninitialized_model
@@ -127,7 +127,12 @@ def test_real_336_checkpoint_drives_live_hidden_inference(
         ],
     }
     (artifact / "run-manifest.json").write_text(json.dumps(manifest))
-    assert verify_resolution_artifact(artifact)["decision"]["result"] == "keep"
+    assert (
+        verify_physical_crop_artifact(artifact, resolution_336=True)["decision"][
+            "result"
+        ]
+        == "keep"
+    )
 
     competition = tmp_path / "input/competitions/rsna-knee-abnormality-detection"
     competition.mkdir(parents=True)

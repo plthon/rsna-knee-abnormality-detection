@@ -18,7 +18,7 @@ The candidate requires cached #31 predictions, checked against the retained chec
 
 ## Resource smoke and batch policy
 
-`notebooks/smoke_resolution.py` calls the existing `train_epoch` and `predict_partition` interfaces. It measures:
+The smoke stage of `notebooks/train_resolution.py` calls the existing `train_epoch` and `predict_partition` interfaces. It measures:
 
 - a fixed 16-study stress set with the largest indexed anchor counts;
 - 64 deterministically shuffled training studies;
@@ -34,6 +34,8 @@ The projection takes the slower of study-scaled and anchor-scaled measurements, 
 A safe memory configuration that misses the runtime limit is reported as resource-infeasible; it does not trigger further batch or resolution tuning. Full training checks smoke provenance, configuration, minimal batch-reduction history, recomputed runtime, and the actual accelerator identity/memory/CUDA version. Smoke and full training must use the same committed Git SHA.
 
 ## Local commands and approval boundaries
+
+The existing controlled-experiment builder renders one shared notebook with an explicit `smoke` or `full` stage. The stages retain separate bundle paths, kernel identities, and approvals; smoke cannot fall through into full training. No separate resolution builder or smoke bootstrap is maintained.
 
 Build an execution-disabled smoke bundle locally:
 
@@ -57,7 +59,7 @@ uv run --extra training python scripts/kaggle.py build resolution-336 --stage fu
 uv run --extra training python scripts/kaggle.py push build/kaggle/resolution-336-full --approve-remote --approve-gpu
 ```
 
-Full bundles cannot be built without successful, matching smoke evidence. Full training uses `run_test_inference=False`. Hidden scoring requires a verified validation-kept artifact, the exact candidate checkpoint hash, `physical_crop=True`, and `resolution_336=True`; it restores resolution from checkpoint metadata, rebuilds the live hidden index, and uses existing strict submission validation. No separate inference bundle or competition submission is prepared before a keep result.
+Full bundles cannot be built without successful, matching smoke evidence. Full training requires `run_test_inference=False`, including direct API calls; it cannot cross the hidden-inference approval boundary. Hidden scoring requires a verified validation-kept artifact, the exact candidate checkpoint hash, `physical_crop=True`, and `resolution_336=True`; it restores resolution from checkpoint metadata, rebuilds the live hidden index, and uses existing strict submission validation. No separate inference bundle or competition submission is prepared before a keep result.
 
 ## Precommitted decision and pending results
 

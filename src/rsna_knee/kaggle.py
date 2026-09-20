@@ -812,18 +812,36 @@ def build_plane_gating_bundle(
     project_root: Path,
     output_root: Path,
     *,
-    kernel_id: str = "plthon/rsna-knee-plane-gating",
+    kernel_id: str | None = None,
     gpu_approved: bool = False,
     slot_attention: bool = False,
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
+    resolution_stage: str | None = None,
+    resource_smoke_path: Path | None = None,
 ) -> KaggleBundle:
     """Build a guarded controlled-training and paired-validation bundle."""
-    if sum((physical_crop, adjacent_slice, clipped_window, slot_attention)) > 1:
+    is_resolution = resolution_stage is not None
+    if is_resolution and resolution_stage not in {"smoke", "full"}:
+        raise ValueError("Resolution stage must be smoke or full")
+    if (
+        sum(
+            (
+                physical_crop,
+                adjacent_slice,
+                clipped_window,
+                slot_attention,
+                is_resolution,
+            )
+        )
+        > 1
+    ):
         raise ValueError("Choose one controlled representation experiment")
     name = (
-        "slot-attention"
+        "resolution-336"
+        if is_resolution
+        else "slot-attention"
         if slot_attention
         else "clipped-window"
         if clipped_window
@@ -834,15 +852,7 @@ def build_plane_gating_bundle(
         else "plane-gating"
     )
     source_name = (
-        "train_slot_attention"
-        if slot_attention
-        else "train_clipped_window"
-        if clipped_window
-        else "train_adjacent_slice"
-        if adjacent_slice
-        else "train_physical_crop"
-        if physical_crop
-        else "train_plane_gating"
+        "train_resolution" if is_resolution else f"train_{name.replace('-', '_')}"
     )
     config_path = project_root / "configs" / f"{name}.toml"
     source_path = project_root / "notebooks" / f"{source_name}.py"
@@ -854,193 +864,117 @@ def build_plane_gating_bundle(
     )
     config_bytes = config_path.read_bytes()
     git_commit, git_dirty = _git_state(project_root)
-    if (
-        (physical_crop or adjacent_slice or clipped_window or slot_attention)
-        and gpu_approved
-        and git_dirty
-    ):
+    guarded = name != "plane-gating"
+    if guarded and gpu_approved and git_dirty:
         raise ValueError(
-            "Physical crop GPU execution requires a clean committed revision"
+            "Controlled experiment GPU execution requires a clean committed revision"
         )
+    replacements = {
+        "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+        "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
+        "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+        "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+        "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": _sha256(source_path),
+        "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+    }
+    if is_resolution:
+        from dataclasses import replace
+
+        from .combined_supervision import (
+            _expected_resolution_configuration,
+            load_combined_baseline_config,
+        )
+        from .resolution import require_resolution_smoke
+
+        if resolution_stage == "full" and resource_smoke_path is None:
+            raise ValueError("Full bundle requires successful resource smoke evidence")
+        if resolution_stage == "smoke" and resource_smoke_path is not None:
+            raise ValueError(
+                "Smoke starts at batch 16 and does not accept prior evidence"
+            )
+        replacements["__RSNA_KNEE_RESOLUTION_STAGE__"] = str(resolution_stage)
+        replacements["__RSNA_KNEE_RESOURCE_SMOKE__"] = ""
+        if resource_smoke_path is not None:
+            smoke_bytes = resource_smoke_path.read_bytes()
+            batch_size = json.loads(smoke_bytes)["configuration"]["training"][
+                "batch_size"
+            ]
+            _expected_resolution_configuration(batch_size)
+            config = replace(
+                load_combined_baseline_config(config_path),
+                batch_size=batch_size,
+                gradient_accumulation_steps=16 // batch_size,
+            )
+            require_resolution_smoke(
+                resource_smoke_path,
+                config,
+                {"git_commit": git_commit, "git_dirty": git_dirty},
+            )
+            replacements["__RSNA_KNEE_RESOURCE_SMOKE__"] = base64.b64encode(
+                smoke_bytes
+            ).decode("ascii")
+    elif resource_smoke_path is not None:
+        raise ValueError("Resource smoke applies only to the resolution experiment")
     bundle = build_kaggle_bundle(
         project_root,
         output_root,
         KaggleSpec(
             source_name=source_path.name,
             notebook_name=f"{source_name}.ipynb",
-            kernel_id=kernel_id,
-            title="RSNA Knee Slot Attention"
-            if slot_attention
-            else "RSNA Knee Clipped Window"
-            if clipped_window
-            else "RSNA Knee Adjacent Slice"
-            if adjacent_slice
-            else "RSNA Knee Physical Crop"
-            if physical_crop
-            else "RSNA Knee Plane Gating",
+            kernel_id=kernel_id
+            or (
+                f"plthon/rsna-knee-resolution-336-{resolution_stage}"
+                if is_resolution
+                else "plthon/rsna-knee-plane-gating"
+            ),
+            title=f"RSNA Knee Resolution 336 {str(resolution_stage).title()}"
+            if is_resolution
+            else f"RSNA Knee {name.replace('-', ' ').title()}",
             competition_sources=("rsna-knee-abnormality-detection",),
             dataset_sources=_PLANE_GATING_DATASET_SOURCES,
             kernel_sources=(
                 (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop")
-                if adjacent_slice or clipped_window or slot_attention
+                if adjacent_slice or clipped_window or slot_attention or is_resolution
                 else _PLANE_GATING_KERNEL_SOURCES
             ),
-            gpu=gpu_approved
-            if physical_crop or adjacent_slice or clipped_window or slot_attention
-            else True,
-            machine_shape=_GPU_MACHINE_SHAPE
-            if gpu_approved
-            or not (physical_crop or adjacent_slice or clipped_window or slot_attention)
-            else "",
-            replacements={
-                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
-                "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
-                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
-                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
-                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
-                    source_path.read_bytes()
-                ).hexdigest(),
-                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
-            },
+            gpu=gpu_approved if guarded else True,
+            machine_shape=_GPU_MACHINE_SHAPE if gpu_approved or not guarded else "",
+            replacements=replacements,
             embed_package=True,
             package_contracts=contract_names,
-            validator=(
-                "slot_attention"
-                if slot_attention
-                else "clipped_window"
-                if clipped_window
-                else "adjacent_slice"
-                if adjacent_slice
-                else "physical_crop"
-                if physical_crop
-                else "plane_gating"
-            ),
+            validator=f"resolution_{resolution_stage}"
+            if is_resolution
+            else name.replace("-", "_"),
         ),
         gpu_approved=gpu_approved,
     )
     return _record_rendered_notebook_hash(bundle, label=name.replace("-", " ").title())
 
 
-def build_resolution_bundle(
-    project_root: Path,
-    output_root: Path,
-    *,
-    stage: str,
-    gpu_approved: bool = False,
-    resource_smoke_path: Path | None = None,
-    kernel_id: str | None = None,
-) -> KaggleBundle:
-    """Prepare smoke or separately approved full training without remote actions."""
-    from dataclasses import replace
-
-    from .combined_supervision import load_combined_baseline_config
-    from .resolution import require_resolution_smoke
-
-    if stage not in {"smoke", "full"}:
-        raise ValueError("Resolution stage must be smoke or full")
-    if stage == "full" and resource_smoke_path is None:
-        raise ValueError("Full bundle requires successful resource smoke evidence")
-    if stage == "smoke" and resource_smoke_path is not None:
-        raise ValueError("Smoke starts at batch 16 and does not accept prior evidence")
-    config_path = project_root / "configs/resolution-336.toml"
-    config = load_combined_baseline_config(config_path)
-    git_commit, git_dirty = _git_state(project_root)
-    if gpu_approved and git_dirty:
-        raise ValueError("Resolution GPU execution requires a clean committed revision")
-    source_path = (
-        project_root
-        / "notebooks"
-        / ("smoke_resolution.py" if stage == "smoke" else "train_resolution.py")
-    )
-    replacements = {
-        "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
-        "__RSNA_KNEE_CONFIG__": base64.b64encode(config_path.read_bytes()).decode(
-            "ascii"
-        ),
-        "__RSNA_KNEE_GIT_COMMIT__": git_commit,
-        "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
-        "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": _sha256(source_path),
-        "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
-    }
-    if resource_smoke_path is not None:
-        smoke = json.loads(resource_smoke_path.read_text())
-        batch_size = smoke["configuration"]["training"]["batch_size"]
-        if type(batch_size) is not int or batch_size not in {1, 2, 4, 8, 16}:
-            raise ValueError("Invalid resource smoke physical batch")
-        config = replace(
-            config, batch_size=batch_size, gradient_accumulation_steps=16 // batch_size
-        )
-        require_resolution_smoke(
-            resource_smoke_path,
-            config,
-            {"git_commit": git_commit, "git_dirty": git_dirty},
-        )
-        replacements["__RSNA_KNEE_RESOURCE_SMOKE__"] = base64.b64encode(
-            resource_smoke_path.read_bytes()
-        ).decode("ascii")
-    bundle = build_kaggle_bundle(
-        project_root,
-        output_root,
-        KaggleSpec(
-            source_name=source_path.name,
-            notebook_name=source_path.with_suffix(".ipynb").name,
-            kernel_id=kernel_id or f"plthon/rsna-knee-resolution-336-{stage}",
-            title=f"RSNA Knee Resolution 336 {stage.title()}",
-            competition_sources=("rsna-knee-abnormality-detection",),
-            dataset_sources=_PLANE_GATING_DATASET_SOURCES,
-            kernel_sources=(
-                *_PLANE_GATING_KERNEL_SOURCES,
-                "plthon/rsna-knee-physical-crop",
-            ),
-            gpu=gpu_approved,
-            machine_shape=_GPU_MACHINE_SHAPE if gpu_approved else "",
-            replacements=replacements,
-            embed_package=True,
-            package_contracts=(
-                "competition.json",
-                "data-index.json",
-                "public-report-label-dataset-v1.json",
-                "resnet18-imagenet1k-v1.json",
-            ),
-            validator=f"resolution_{stage}",
-        ),
-        gpu_approved=gpu_approved,
-    )
-    return _record_rendered_notebook_hash(bundle, label="Resolution 336")
-
-
 def _validate_resolution_source(source: str, *, smoke: bool) -> None:
-    required = [
+    required = (
+        f'STAGE = "{"smoke" if smoke else "full"}"',
+        'if STAGE == "smoke":',
+        'elif STAGE == "full":',
+        "run_resolution_smoke(",
+        "run_combined_baseline(",
         "approved_gpu=GPU_APPROVED",
         "source_provenance=source_provenance",
         '"git_dirty"',
         '"config_sha256"',
         "load_combined_baseline_config(CONFIG_PATH)",
-    ]
-    if smoke:
-        required.extend(
-            ("run_resolution_smoke(", "full training requires separate approval")
+        "resource_smoke_path=SMOKE_PATH",
+        "run_test_inference=False",
+        "verify_physical_crop_artifact(",
+        "resolution_336=True",
+    )
+    if any(text not in source for text in required) or any(
+        text in source
+        for text in (
+            "run_combined_scoring(",
+            "competitions submit",
+            "run_test_inference=True",
         )
-    else:
-        required.extend(
-            (
-                "run_combined_baseline(",
-                "resource_smoke_path=SMOKE_PATH",
-                "run_test_inference=False",
-                "verify_resolution_artifact(",
-            )
-        )
-    if (
-        any(text not in source for text in required)
-        or any(
-            text in source
-            for text in (
-                "run_combined_scoring(",
-                "competitions submit",
-                "run_test_inference=True",
-            )
-        )
-        or (smoke and "run_combined_baseline" in source)
     ):
         raise ValueError("Resolution notebook omits a required execution safeguard")
 

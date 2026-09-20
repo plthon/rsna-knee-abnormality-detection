@@ -1391,7 +1391,9 @@ def run_combined_scoring(
             raise ValueError(
                 "Resolution inference requires a validation-retained artifact"
             )
-        verification = verify_resolution_artifact(retained_artifact_dir)
+        verification = verify_physical_crop_artifact(
+            retained_artifact_dir, resolution_336=True
+        )
         if (
             verification["decision"]["result"] != "keep"
             or verification["checkpoint_sha256"] != expected_checkpoint_sha256
@@ -1678,6 +1680,10 @@ def run_combined_baseline(
     is_resolution = config.preprocessing.image_size == 336
     resource_smoke = None
     if is_resolution:
+        if run_test_inference:
+            raise ValueError(
+                "Resolution hidden inference requires separate approval after validation"
+            )
         from .resolution import require_resolution_smoke, require_smoke_hardware
 
         resource_smoke = require_resolution_smoke(
@@ -3737,8 +3743,14 @@ def _plane_gate_decision(
 
 
 def _dinov2_decision(
-    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig | Mapping[str, Any]
 ) -> dict[str, object]:
+    validation = (
+        _combined_config_record(config)["validation"]
+        if isinstance(config, CombinedBaselineConfig)
+        else config["validation"]
+    )
+    validation = cast(Mapping[str, Any], validation)
     delta = comparison["delta"]["official_macro_auc"]
     uncertainty = comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"]
     positive_fraction = uncertainty["fraction_positive"]
@@ -3752,24 +3764,24 @@ def _dinov2_decision(
     large_regressions = sorted(
         target
         for target, value in target_deltas.items()
-        if value is not None and value < -config.large_target_regression
+        if value is not None and value < -validation["large_target_regression"]
     )
     keep = (
         delta is not None
-        and delta >= config.minimum_macro_auc_delta
+        and delta >= validation["minimum_macro_auc_delta"]
         and positive_fraction is not None
-        and positive_fraction >= config.minimum_bootstrap_positive_fraction
+        and positive_fraction >= validation["minimum_bootstrap_positive_fraction"]
         and not large_regressions
     )
     return {
         "result": "keep" if keep else "reject",
-        "minimum_macro_auc_delta": config.minimum_macro_auc_delta,
+        "minimum_macro_auc_delta": validation["minimum_macro_auc_delta"],
         "minimum_bootstrap_positive_fraction": (
-            config.minimum_bootstrap_positive_fraction
+            validation["minimum_bootstrap_positive_fraction"]
         ),
         "targets_non_decreasing": non_decreasing,
         "ideal_targets_non_decreasing": 8,
-        "large_regression_threshold": config.large_target_regression,
+        "large_regression_threshold": validation["large_target_regression"],
         "large_regression_targets": large_regressions,
         "generic_backbone_recommendation": "continue" if keep else "stop",
     }
@@ -4160,10 +4172,15 @@ def _expected_adjacent_slice_configuration(
 
 
 def _resolution_decision(
-    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig | Mapping[str, Any]
 ) -> dict[str, object]:
     result = _dinov2_decision(comparison, config)
     result.pop("generic_backbone_recommendation")
+    if any(
+        record["delta_roc_auc"] is None
+        for record in comparison["delta"]["per_target"].values()
+    ):
+        result["result"] = "reject"
     result["retained_resolution"] = 336 if result["result"] == "keep" else 224
     result["next_experiment"] = "separately_scoped_encoder_comparison"
     return result
@@ -4283,7 +4300,9 @@ def load_verified_adjacent_slice_checkpoint(
     )
 
 
-def verify_physical_crop_artifact(artifact_dir: Path) -> dict[str, Any]:
+def verify_physical_crop_artifact(
+    artifact_dir: Path, *, resolution_336: bool = False
+) -> dict[str, Any]:
     manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
     for record in manifest["artifacts"]:
         path = artifact_dir / record["path"]
@@ -4294,88 +4313,47 @@ def verify_physical_crop_artifact(artifact_dir: Path) -> dict[str, Any]:
             raise ValueError("Physical crop artifact hash mismatch")
     report = json.loads((artifact_dir / "training-report.json").read_text())
     comparison = report["controlled_comparison"]
+    batch_size = report["configuration"]["training"]["batch_size"]
+    expected_config = (
+        _expected_resolution_configuration(batch_size)
+        if resolution_336
+        else _expected_physical_crop_configuration()
+    )
     if (
         report["status"] != "complete"
         or not report["checkpoint"]["reload_reproducible"]
-        or report["configuration"] != _expected_physical_crop_configuration()
+        or report["configuration"] != expected_config
         or not report.get("physical_crop_evidence")
         or comparison["validation_membership_digest"]
         != "8b1240fc2456779ba64fa115b23956adb131fb387f01c0f0424a933a2096ee88"
         or comparison["decision"]["result"] not in {"keep", "reject"}
     ):
         raise ValueError("Physical crop report is incomplete")
-    checkpoint_path = artifact_dir / "checkpoint.pt"
-    _, checkpoint = load_verified_physical_crop_checkpoint(
-        checkpoint_path,
-        device=torch.device("cpu"),
-        expected_sha256=_sha256(checkpoint_path),
-    )
-    if checkpoint["configuration"] != manifest["configuration"]:
-        raise ValueError("Physical crop configuration provenance differs")
-    return {
-        "valid": True,
-        "decision": comparison["decision"],
-        "checkpoint_sha256": _sha256(checkpoint_path),
-    }
-
-
-def verify_resolution_artifact(artifact_dir: Path) -> dict[str, Any]:
-    manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
-    for record in manifest["artifacts"]:
-        path = artifact_dir / record["path"]
+    if resolution_336:
+        metrics = comparison["metrics"]
+        targets = load_verified_submission_contract().target_names
         if (
-            _sha256(path) != record["sha256"]
-            or path.stat().st_size != record["size_bytes"]
+            comparison["baseline_checkpoint_sha256"] != PHYSICAL_CROP_CHECKPOINT_SHA256
+            or not report["baseline_reproducibility"]["control_predictions_reused"]
+            or report["resource_smoke"]["status"] != "safe_for_separate_full_approval"
+            or set(metrics["delta"]["per_target"]) != set(targets)
+            or comparison["decision"]["result"]
+            != _resolution_decision(metrics, report["configuration"])["result"]
         ):
-            raise ValueError("Resolution artifact hash mismatch")
-    report = json.loads((artifact_dir / "training-report.json").read_text())
-    batch_size = report["configuration"]["training"]["batch_size"]
-    comparison = report["controlled_comparison"]
-    if (
-        report["status"] != "complete"
-        or not report["checkpoint"]["reload_reproducible"]
-        or report["configuration"] != _expected_resolution_configuration(batch_size)
-        or not report.get("physical_crop_evidence")
-        or comparison["validation_membership_digest"]
-        != "8b1240fc2456779ba64fa115b23956adb131fb387f01c0f0424a933a2096ee88"
-        or comparison["baseline_checkpoint_sha256"] != PHYSICAL_CROP_CHECKPOINT_SHA256
-        or not report["baseline_reproducibility"]["control_predictions_reused"]
-        or comparison["decision"]["result"] not in {"keep", "reject"}
-        or report["resource_smoke"]["status"] != "safe_for_separate_full_approval"
-    ):
-        raise ValueError("Resolution report is incomplete")
+            raise ValueError(
+                "Resolution control, smoke, targets, or keep decision differs"
+            )
     checkpoint_path = artifact_dir / "checkpoint.pt"
-    metrics = comparison["metrics"]
-    delta = metrics["delta"]["official_macro_auc"]
-    positive = metrics["bootstrap"]["uncertainty"]["official_macro_auc_delta"][
-        "fraction_positive"
-    ]
-    target_deltas = metrics["delta"]["per_target"]
-    targets = load_verified_submission_contract().target_names
-    if set(target_deltas) != set(targets):
-        raise ValueError("Resolution comparison target order/membership differs")
-    keep = (
-        delta is not None
-        and delta >= 0.005
-        and positive is not None
-        and positive >= 0.95
-        and all(
-            target_deltas[target]["delta_roc_auc"] is not None
-            and target_deltas[target]["delta_roc_auc"] >= -0.02
-            for target in targets
-        )
-    )
-    if comparison["decision"]["result"] != ("keep" if keep else "reject"):
-        raise ValueError("Resolution decision differs from precommitted thresholds")
     _, checkpoint = load_verified_combined_checkpoint(
         checkpoint_path,
         device=torch.device("cpu"),
         expected_sha256=_sha256(checkpoint_path),
-        resolution_336=True,
+        physical_crop=True,
+        resolution_336=resolution_336,
         physical_batch_size=batch_size,
     )
     if checkpoint["configuration"] != manifest["configuration"]:
-        raise ValueError("Resolution configuration provenance differs")
+        raise ValueError("Physical crop configuration provenance differs")
     return {
         "valid": True,
         "decision": comparison["decision"],
