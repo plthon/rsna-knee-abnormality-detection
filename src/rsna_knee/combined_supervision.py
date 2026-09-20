@@ -35,7 +35,7 @@ from .holdout import (
 )
 from .indexing import build_competition_index, verify_index_artifact
 from .provenance import create_run_id, write_run_manifest
-from .public_label_audit import resolve_dataset_root
+from .public_label_audit import find_input_files, resolve_dataset_root
 from .sequence_slots import SLOT_ORDER, SLOT_SCHEMA, slot_metadata
 from .submission import (
     SubmissionInputs,
@@ -633,7 +633,7 @@ def discover_combined_training_inputs(
         expected_manifest_hash = _text(outputs, "manifest_sha256")
         candidates = [
             path.parent
-            for path in sorted(input_root.rglob("studies.csv"))
+            for path in sorted(find_input_files(input_root, "studies.csv"))
             if path.stat().st_size == expected_size
             and _sha256(path) == expected_hash
             and (path.parent / "index-manifest.json").is_file()
@@ -665,7 +665,7 @@ def discover_combined_training_inputs(
         expected_hash = _text(artifact, "sha256")
         weight_candidates = [
             path
-            for path in sorted(input_root.rglob(expected_name))
+            for path in sorted(find_input_files(input_root, expected_name))
             if path.is_file()
             and path.stat().st_size == expected_size
             and _sha256(path) == expected_hash
@@ -955,7 +955,7 @@ def discover_combined_checkpoint(
 ) -> Path:
     """Find exactly one attached checkpoint with the required digest."""
     candidates = sorted(
-        path for path in input_root.rglob("checkpoint.pt") if path.is_file()
+        path for path in find_input_files(input_root, "checkpoint.pt") if path.is_file()
     )
     matching = [path for path in candidates if _sha256(path) == expected_sha256]
     if len(matching) == 1 or (allow_identical_copies and matching):
@@ -1942,7 +1942,7 @@ def run_combined_baseline(
         else:
             candidates = [
                 path
-                for path in sorted(input_root.rglob("checkpoint.pt"))
+                for path in sorted(find_input_files(input_root, "checkpoint.pt"))
                 if path.is_file() and path != control_checkpoint_path
             ]
             for candidate in candidates:
@@ -4501,7 +4501,7 @@ def load_physical_crop_validation_predictions(
     input_root: Path, studies: Sequence[PartitionStudy], targets: Sequence[str]
 ) -> PartitionPrediction | None:
     """Reuse #31 predictions only with matching artifact provenance and exact rows."""
-    for path in sorted(input_root.rglob("validation-predictions.csv")):
+    for path in sorted(find_input_files(input_root, "validation-predictions.csv")):
         report_path = path.parent / "training-report.json"
         if not report_path.is_file():
             continue

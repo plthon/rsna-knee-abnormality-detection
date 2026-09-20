@@ -6,7 +6,11 @@ Status: the latest resource smoke completed its notebook but returned `smoke_tim
 - Version 2 failed before data discovery with `PermissionError: GPU execution requires explicit approval`. The bundle had been built without `--approve-gpu`; push approval does not alter an already-built bundle.
 - The subsequent smoke on clean source `93c4efeea4a59ac54e669e79d8f3d301fbc247f9` passed CUDA readiness on a Tesla T4 (15,636,037,632 bytes, CUDA 12.8) but reached the one-hour deadline. Kaggle reported 3,850.3 seconds; the report recorded 3,809.16 seconds, `smoke_time_limit`, and an empty attempts list. No memory/throughput projection was saved, so this does not establish resource infeasibility.
 
+- Version 4 (`11284140d74b2fc1ee46b58f013064622f35b9e6`) identified setup as the blocker: input discovery 1,449.60 s, index loading 2,071.25 s, control checkpoint 275.80 s, cached predictions 270.67 s; total setup 4,070.10 s. It timed out before model initialization or training. Its 1,024-byte peak CUDA allocation is readiness overhead, not a model memory measurement.
+
 The diagnostics fix records setup phase timings and progress before expensive phases, preserves completed phases and partial counters on timeout, and records peak allocation/reservation for every attempted batch size. Reports are saved atomically during execution. The fixed workload and one-hour deadline remain unchanged until measurements justify an adjustment. Timeout evidence cannot unlock full training.
+
+The setup fix prunes `train_series` and `test_series` from metadata/artifact discovery in the shared input paths, including submission-root discovery, initialization weights, control checkpoints, and cached predictions. Index loading resolves each series directory once and resolves individual slice symlinks only when present. Hash/uniqueness checks, path containment, full-cohort indexing, ordered slices, anchor checks, and the fixed smoke workload remain intact. Synthetic regression checks verify image trees are not visited and common-parent checks do not scale with slice count; actual Kaggle speedup remains to be measured.
 
 ## Frozen identities
 

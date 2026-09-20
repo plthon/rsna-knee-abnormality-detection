@@ -609,3 +609,33 @@ def test_smoke_orchestration_preserves_evidence(
         return
     with pytest.raises(ValueError, match="resource smoke"):
         resolution.require_resolution_smoke(path, config, report["source"])
+
+
+def test_control_discovery_does_not_walk_dicom_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import os
+
+    from rsna_knee.combined_supervision import discover_combined_checkpoint
+
+    images = tmp_path / "competitions/rsna-knee-abnormality-detection/train_series"
+    images.mkdir(parents=True)
+    attachment = tmp_path / "kernels/owner/control/checkpoint.pt"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"control")
+    visited = []
+    scandir = os.scandir
+
+    def scan(path: Any) -> Any:
+        visited.append(Path(path))
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scan)
+    assert (
+        discover_combined_checkpoint(
+            tmp_path, expected_sha256=hashlib.sha256(b"control").hexdigest()
+        )
+        == attachment
+    )
+    assert not any(path.is_relative_to(images) for path in visited)

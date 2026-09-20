@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -67,6 +67,16 @@ class LabelAudit:
         }
 
 
+def find_input_files(input_root: Path, filename: str) -> Iterator[Path]:
+    """Find metadata/artifacts without walking the competition's image trees."""
+    for directory, children, files in input_root.walk():
+        children[:] = [
+            name for name in children if name not in {"train_series", "test_series"}
+        ]
+        if filename in files:
+            yield directory / filename
+
+
 def resolve_dataset_root(
     candidates: Sequence[Path], marker: str, *, search_roots: Sequence[Path] = ()
 ) -> Path:
@@ -76,7 +86,7 @@ def resolve_dataset_root(
         path.parent.resolve()
         for root in search_roots
         if root.is_dir()
-        for path in root.rglob(marker)
+        for path in find_input_files(root, marker)
         if path.is_file()
     )
     if len(matches) != 1:

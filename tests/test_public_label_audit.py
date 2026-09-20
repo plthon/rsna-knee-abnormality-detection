@@ -447,3 +447,24 @@ def test_public_label_audit_boundary_rejects_wrong_stage_and_private_pull(
             filenames=("public-label-row-validation.csv",),
             runner=lambda command: CompletedProcess(command, 0),
         )
+
+
+def test_input_search_preserves_nested_artifacts_and_ambiguity(tmp_path: Path) -> None:
+    from rsna_knee.public_label_audit import find_input_files, resolve_dataset_root
+
+    marker = "report_labels_v2.csv"
+    paths = [
+        tmp_path / "flat" / marker,
+        tmp_path / "datasets/owner/labels/1" / marker,
+        tmp_path / "kernels/owner/output/nested" / marker,
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True)
+        path.touch()
+    for name in ("train_series", "test_series"):
+        image_path = tmp_path / "competitions/knee" / name / "study" / marker
+        image_path.parent.mkdir(parents=True)
+        image_path.touch()
+    assert sorted(find_input_files(tmp_path, marker)) == sorted(paths)
+    with pytest.raises(FileNotFoundError, match="found 3"):
+        resolve_dataset_root((paths[0].parent,), marker, search_roots=(tmp_path,))
