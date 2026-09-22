@@ -112,7 +112,9 @@ It writes a validated prediction CSV, fallback record, run report, and provenanc
 
 ## Approved remote Phase 1A evidence
 
-Private Kaggle kernel version 1 (`plthon/rsna-knee-raptor-reference-parity`) ran from clean commit `d8869b37fe0cec90460ce36cf8eb5b15a8dd468b`. It was offline on a Tesla T4 and emitted only aggregate evidence. Retrieved artifact integrity, the clean source commit, rendered notebook digest, exact checkpoint identity, exact target order, and canonical cohort digest were verified locally. The retrieved `raptor-parity-report.json` SHA-256 is `50812b0113c7afa1e6b2fc6d234f6e8343cbbe0d3d3120ce6b5b9f02e35cdd26`; the retrieved `run-manifest.json` SHA-256 is `2414c7e09f5c7f654071b0c25ef9802cc957111c9d239798f2fa95c897ded314`.
+The authoritative evidence is private Kaggle kernel version 2 (`plthon/rsna-knee-raptor-reference-parity`) from clean commit `8ff2dd77066d1204ba304c527845bcc271f10783`. It was offline on a Tesla T4 and emitted only aggregate evidence. Version 2 restored the public notebook's `cudnn.benchmark = True` and `matmul.allow_tf32 = True` settings, both recorded as enabled in the output. Version 1 omitted those settings and is superseded; its per-target and macro ROC AUC values were nevertheless identical to version 2, so the omission did not explain the gold-metric difference.
+
+Retrieved artifact integrity, the clean source commit, rendered notebook digest, exact checkpoint identity, exact target order, canonical cohort digest, and CUDA backend settings were verified locally. The version 2 `raptor-parity-report.json` SHA-256 is `f31eca95f4080a8ae0983668db4aaafbacfc3322997868f6f6d35ae675bbba53`; the version 2 `run-manifest.json` SHA-256 is `dfb21f53946247f828e163cc9f3614edc991238a7f01bda31c7bbc05406dd02b`.
 
 Boundary flags in both retrieved artifacts record:
 
@@ -122,8 +124,8 @@ Boundary flags in both retrieved artifacts record:
 
 The CPU float32 and T4 public-autocast paths were compared on the first study in canonical cohort order. Across 12 sigmoid outputs:
 
-- maximum absolute probability difference: `0.0005415081977844238`;
-- mean absolute probability difference: `0.00017755602311808616`.
+- maximum absolute probability difference: `0.000521928071975708`;
+- mean absolute probability difference: `0.00018805514264386147`.
 
 The organizer-gold diagnostic used all 58 studies under `organizer-gold-all-eligible-v1`, with cohort digest `ea739a412709b0ac65429ca47f29161614ba384e2e92643301f817712cd6b7bc`. Every target had 58 known labels and both classes represented.
 
@@ -145,7 +147,7 @@ The organizer-gold diagnostic used all 58 studies under `organizer-gold-all-elig
 
 The largest target-level difference was `0.042236024845` for Lateral Meniscus. Therefore the run does **not** reproduce the checkpoint's stored per-target or macro metrics exactly. The 58-study number remains a leakage-prone sanity diagnostic, not an unbiased model-selection estimate, and this difference is recorded rather than treated as a pass or used for tuning.
 
-The recorded gold-loop elapsed time was `155.16285358200003` seconds and peak allocated GPU memory was `4,086,915,584` bytes. The remote environment used Python `3.12.13`, PyTorch `2.10.0+cu128`, timm `1.0.26`, and OpenCV `4.13.0`.
+The recorded gold-loop elapsed time was `174.7550272410001` seconds and peak allocated GPU memory was `8,173,242,368` bytes. The remote environment used Python `3.12.13`, PyTorch `2.10.0+cu128`, timm `1.0.26`, and OpenCV `4.13.0`.
 
 ## Pending approval-gated evidence
 
