@@ -212,6 +212,8 @@ def build_kaggle_bundle(
         _validate_dinov2_training_source(source)
     elif spec.validator == "dinov2_scoring":
         _validate_dinov2_scoring_source(source)
+    elif spec.validator == "raptor_parity":
+        _validate_raptor_parity_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -1199,6 +1201,61 @@ def build_dinov2_scoring_bundle(
     return _record_rendered_notebook_hash(bundle, label="DINOv2 scoring")
 
 
+def build_raptor_parity_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-raptor-reference-parity",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build approved CPU/T4 parity and organizer-gold diagnostics for Raptor."""
+    contract_names = (
+        "competition.json",
+        "data-index.json",
+        "gold-supervision.json",
+        "raptor-reference-v1.json",
+    )
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor parity requires contracts/{name}")
+    source_path = project_root / "notebooks" / "raptor_reference_parity.py"
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Missing notebook source: {source_path}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("Raptor parity requires a clean committed Git revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="raptor_reference_parity.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Raptor Reference Parity",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=("dreaddevelopment/raptor-knee-widedense",),
+            kernel_sources=("plthon/rsna-knee-data-index",),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_parity",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor parity")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -1898,6 +1955,32 @@ def _validate_dinov2_scoring_source(source: str) -> None:
     forbidden = ("run_combined_baseline", "train_epoch", "derive_combined_cohort")
     if any(value in source for value in forbidden):
         raise ValueError("DINOv2 scoring notebook contains training work")
+
+
+def _validate_raptor_parity_source(source: str) -> None:
+    required = (
+        "derive_gold_training_cohort",
+        "evaluate_point_predictions",
+        "load_raptor_model",
+        'COMPETITION_ROOT / "train_series"',
+        '"hidden_test_inference": False',
+        '"competition_submission": False',
+        '"training": False',
+        "Hidden-test inference: not run",
+        "Competition submission: not run",
+        "Training: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Raptor parity notebook omits a phase-boundary safeguard")
+    forbidden = (
+        'COMPETITION_ROOT / "test_series"',
+        "run_raptor_reference",
+        "write_submission",
+        "kaggle competitions submit",
+        "train_epoch",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor parity notebook crosses an unapproved boundary")
 
 
 def _validate_reports_source(source: str) -> None:

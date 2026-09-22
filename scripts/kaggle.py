@@ -14,6 +14,7 @@ from rsna_knee.kaggle import (
     build_public_baseline_bundle,
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
+    build_raptor_parity_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
@@ -52,6 +53,7 @@ def main() -> None:
             "dinov2-training",
             "dinov2-scoring",
             "dinov2-resume-dataset",
+            "raptor-parity",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -117,6 +119,7 @@ def main() -> None:
                 "dinov2-training": "dinov2-training",
                 "dinov2-scoring": "dinov2-scoring",
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
+                "raptor-parity": "raptor-parity",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -129,6 +132,14 @@ def main() -> None:
                 weight_dataset_id=arguments.weight_dataset_id,
                 kernel_id=arguments.kernel_id
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-parity":
+            bundle = build_raptor_parity_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-raptor-reference-parity",
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "resolution-336":

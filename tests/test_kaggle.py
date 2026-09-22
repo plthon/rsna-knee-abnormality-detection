@@ -24,6 +24,7 @@ from rsna_knee.kaggle import (
     build_plane_gated_scoring_bundle,
     build_plane_gating_bundle,
     build_public_baseline_bundle,
+    build_raptor_parity_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
@@ -1097,3 +1098,36 @@ def test_dinov2_scoring_bundle_requires_retained_validation_checkpoint(
     source = json.dumps(json.loads(bundle.notebook_path.read_text()))
     assert 'backbone=\\"dinov2_vits14\\"' in source
     assert "Competition submission: not run" in source
+
+
+def test_raptor_parity_bundle_is_clean_offline_and_gold_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "raptor-parity"
+
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, True))
+    with pytest.raises(ValueError, match="clean committed Git revision"):
+        build_raptor_parity_bundle(project, output, gpu_approved=True)
+
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("a" * 40, False))
+    with pytest.raises(PermissionError, match="GPU approval"):
+        build_raptor_parity_bundle(project, output)
+
+    bundle = build_raptor_parity_bundle(project, output, gpu_approved=True)
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["competition_sources"] == ["rsna-knee-abnormality-detection"]
+    assert metadata["dataset_sources"] == ["dreaddevelopment/raptor-knee-widedense"]
+    assert metadata["kernel_sources"] == ["plthon/rsna-knee-data-index"]
+    assert metadata["enable_gpu"] == "true"
+    assert metadata["enable_internet"] == "false"
+    assert metadata["is_private"] == "true"
+
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert "derive_gold_training_cohort" in source
+    assert 'COMPETITION_ROOT / "train_series"' in source
+    assert 'COMPETITION_ROOT / "test_series"' not in source
+    assert "write_submission" not in source
+    assert "Competition submission: not run" in source
+    assert "Training: not run" in source
