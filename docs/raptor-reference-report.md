@@ -70,6 +70,7 @@ The executable source controls where comments and prose disagree:
 - The `K_EVAL` comment says every window position, while code samples exactly 42 rounded positions and can omit or duplicate centers.
 - Stale comments mention three arms, 24 windows, and older scores. Executable configuration contains one arm and 42 windows.
 - Submission code applies percentile ranking even though prose commonly refers to model probabilities.
+- Notebook prose and checkpoint metadata report approximately `0.9167` macro ROC AUC on 58 gold studies, while executable-source comments report `0.9054` for this model on a 58-study gate. The public source does not reconcile these values.
 
 ## Local evidence
 

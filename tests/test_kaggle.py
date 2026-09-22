@@ -1126,6 +1126,8 @@ def test_raptor_parity_bundle_is_clean_offline_and_gold_only(
     notebook = json.loads(bundle.notebook_path.read_text())
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
     assert "derive_gold_training_cohort" in source
+    assert "torch.backends.cudnn.benchmark = True" in source
+    assert "torch.backends.cuda.matmul.allow_tf32 = True" in source
     assert 'COMPETITION_ROOT / "train_series"' in source
     assert 'COMPETITION_ROOT / "test_series"' not in source
     assert "write_submission" not in source

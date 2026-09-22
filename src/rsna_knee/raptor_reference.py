@@ -433,6 +433,8 @@ def infer_probabilities(
 ) -> np.ndarray:
     inputs = windows.unsqueeze(0).to(device)
     if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
         try:
             with torch.autocast("cuda", dtype=torch.float16):
                 output = torch.sigmoid(model(inputs).float())

@@ -27,6 +27,8 @@ if not GPU_APPROVED:
     raise PermissionError("Raptor parity requires explicit GPU approval")
 if not torch.cuda.is_available():
     raise RuntimeError("Raptor parity requires a CUDA device")
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
 
 WORK_ROOT = Path("/kaggle/working")
 INPUT_ROOT = Path("/kaggle/input")
@@ -201,6 +203,10 @@ report = {
         "output_count": int(parity_absolute_difference.size),
     },
     "execution": {
+        "cuda_backend": {
+            "cudnn_benchmark": torch.backends.cudnn.benchmark,
+            "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+        },
         "cuda_device": torch.cuda.get_device_name(gpu_device),
         "inference_seconds": inference_seconds,
         "opencv_version": cv2.__version__,

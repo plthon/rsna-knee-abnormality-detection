@@ -34,6 +34,10 @@ def test_reference_contract_freezes_public_source_and_exact_layout() -> None:
     assert contract["checkpoint"]["sha256"] == raptor.CHECKPOINT_SHA256
     assert contract["checkpoint"]["metadata"]["arch"] == raptor.ARCHITECTURE
     assert tuple(contract["checkpoint"]["metadata"]["lab"]) == raptor.TARGET_NAMES
+    assert contract["model"]["cuda_backend"] == {
+        "cudnn_benchmark": True,
+        "matmul_allow_tf32": True,
+    }
     assert (
         tuple(
             (

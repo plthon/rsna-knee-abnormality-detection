@@ -1962,6 +1962,8 @@ def _validate_raptor_parity_source(source: str) -> None:
         "derive_gold_training_cohort",
         "evaluate_point_predictions",
         "load_raptor_model",
+        "torch.backends.cudnn.benchmark = True",
+        "torch.backends.cuda.matmul.allow_tf32 = True",
         'COMPETITION_ROOT / "train_series"',
         '"hidden_test_inference": False',
         '"competition_submission": False',

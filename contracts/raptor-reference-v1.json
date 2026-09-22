@@ -160,6 +160,10 @@
     "attention_mask": "No mask is passed to attention. Every constructed window participates.",
     "activation": "sigmoid logits",
     "cuda_precision": "First attempt uses float16 autocast; any RuntimeError retries the study in float32 after emptying the CUDA cache. CPU uses float32.",
+    "cuda_backend": {
+      "cudnn_benchmark": true,
+      "matmul_allow_tf32": true
+    },
     "determinism": "Model is placed in eval mode; no test-time augmentation is used."
   },
   "output": {
@@ -193,7 +197,8 @@
     "The prose describes a 140 mm PixelSpacing crop generally, but executable code uses PixelSpacing[0] for both square dimensions, clamps to the source image, and never pads.",
     "The K_EVAL comment says every window position, but executable code samples exactly 42 rounded positions from all candidates and may omit or duplicate candidate centers.",
     "Comments still mention three arms, K_EVAL=24, 0.914/0.915 live scores and an old 0.8893 result; executable ARMS contains one checkpoint and K_EVAL is 42.",
-    "The executable submission uses percentile ranks rather than the model's sigmoid probabilities directly."
+    "The executable submission uses percentile ranks rather than the model's sigmoid probabilities directly.",
+    "Notebook prose and checkpoint metadata report approximately 0.9167 macro ROC-AUC on 58 gold studies, while executable-source comments report 0.9054 for this model on a 58-study gate; the source does not reconcile these values."
   ],
   "unresolved_nonbehavioral_metadata": [
     "The notebook source does not print timm or OpenCV package versions. The Kaggle docker image digest is pinned instead."
