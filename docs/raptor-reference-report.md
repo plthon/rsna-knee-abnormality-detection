@@ -2,11 +2,11 @@
 
 ## Status
 
-The repository now contains a local reproduction of the public Dread Development Raptor inference pipeline. It is intentionally separate from the retained issue #31 ResNet-18 baseline.
+The repository contains a local reproduction of the public Dread Development Raptor inference pipeline. It is intentionally separate from the retained issue #31 ResNet-18 baseline.
 
-Only public asset retrieval and local synthetic verification have occurred. No Kaggle CPU or GPU execution, organizer-gold inference, hidden-test inference, competition submission, training, or later leaderboard experiment has been run. Those actions remain behind the approval boundaries in issue #36.
+An approved private, offline Kaggle T4 run completed CPU/T4 prediction comparison and organizer-gold inference over all 58 eligible studies. Checkpoint, cohort, notebook, and artifact identities were verified after retrieval. The observed organizer-gold macro ROC AUC was `0.9126943301855063`, an absolute difference of `0.004054918131541352` from the checkpoint value `0.9167492483170476`. This is close as a sanity result but is not exact metric parity.
 
-No final A/B/C reproduction outcome is assigned because public-leaderboard parity has not been attempted.
+No hidden-test inference, submission creation, competition submission, training, or later leaderboard experiment has occurred. No final A/B/C reproduction outcome is assigned because the required public-leaderboard reproduction has not been attempted.
 
 ## Frozen public identities
 
@@ -109,16 +109,53 @@ uv run --extra training python scripts/run_raptor_reference.py \
 
 It writes a validated prediction CSV, fallback record, run report, and provenance manifest. It contains no remote execution, upload, competition submission, or training operation.
 
+## Approved remote Phase 1A evidence
+
+Private Kaggle kernel version 1 (`plthon/rsna-knee-raptor-reference-parity`) ran from clean commit `d8869b37fe0cec90460ce36cf8eb5b15a8dd468b`. It was offline on a Tesla T4 and emitted only aggregate evidence. Retrieved artifact integrity, the clean source commit, rendered notebook digest, exact checkpoint identity, exact target order, and canonical cohort digest were verified locally. The retrieved `raptor-parity-report.json` SHA-256 is `50812b0113c7afa1e6b2fc6d234f6e8343cbbe0d3d3120ce6b5b9f02e35cdd26`; the retrieved `run-manifest.json` SHA-256 is `2414c7e09f5c7f654071b0c25ef9802cc957111c9d239798f2fa95c897ded314`.
+
+Boundary flags in both retrieved artifacts record:
+
+- hidden-test inference: `false`;
+- competition submission: `false`; and
+- training: `false`.
+
+The CPU float32 and T4 public-autocast paths were compared on the first study in canonical cohort order. Across 12 sigmoid outputs:
+
+- maximum absolute probability difference: `0.0005415081977844238`;
+- mean absolute probability difference: `0.00017755602311808616`.
+
+The organizer-gold diagnostic used all 58 studies under `organizer-gold-all-eligible-v1`, with cohort digest `ea739a412709b0ac65429ca47f29161614ba384e2e92643301f817712cd6b7bc`. Every target had 58 known labels and both classes represented.
+
+| Target | Observed ROC AUC | Checkpoint ROC AUC | Absolute difference |
+|---|---:|---:|---:|
+| ACL | 0.979166666667 | 0.966911764706 | 0.012254901961 |
+| MCL | 0.972789115646 | 0.970521541950 | 0.002267573696 |
+| Medial Meniscus | 0.960336538462 | 0.948317307692 | 0.012019230769 |
+| Lateral Meniscus | 0.838509316770 | 0.880745341615 | 0.042236024845 |
+| Medial OA | 0.981395348837 | 0.986046511628 | 0.004651162791 |
+| Lateral OA | 0.843326885880 | 0.868471953578 | 0.025145067698 |
+| PF OA | 0.819819819820 | 0.828828828829 | 0.009009009009 |
+| Effusion | 0.983850931677 | 0.978881987578 | 0.004968944099 |
+| Synovitis | 0.776583034648 | 0.757467144564 | 0.019115890084 |
+| Baker's | 0.971014492754 | 0.987318840580 | 0.016304347826 |
+| Contusion | 0.933873144399 | 0.914979757085 | 0.018893387314 |
+| Fracture | 0.891666666667 | 0.912500000000 | 0.020833333333 |
+| **Macro** | **0.912694330186** | **0.916749248317** | **0.004054918132** |
+
+The largest target-level difference was `0.042236024845` for Lateral Meniscus. Therefore the run does **not** reproduce the checkpoint's stored per-target or macro metrics exactly. The 58-study number remains a leakage-prone sanity diagnostic, not an unbiased model-selection estimate, and this difference is recorded rather than treated as a pass or used for tuning.
+
+The recorded gold-loop elapsed time was `155.16285358200003` seconds and peak allocated GPU memory was `4,086,915,584` bytes. The remote environment used Python `3.12.13`, PyTorch `2.10.0+cu128`, timm `1.0.26`, and OpenCV `4.13.0`.
+
 ## Pending approval-gated evidence
 
 The following fields remain deliberately unfilled:
 
-- Kaggle CPU parity result: not run.
-- Kaggle T4 parity result: not run.
-- Organizer-gold cohort result: not run.
 - Hidden-test inference result: not run.
+- Hidden submission validation: not run.
+- Kaggle submission ID: none.
 - Public leaderboard result: not submitted.
+- Difference from published `0.924`: unknown.
 - Training result: not run.
 - Final issue #36 outcome classification: pending.
 
-The next boundary is Stop point 1 in issue #36, before any remote Kaggle parity or organizer-gold execution.
+The next boundary is Stop point 2 in issue #36. Hidden-test inference requires separate explicit approval. Inference approval would not authorize competition submission, which remains Stop point 3.
