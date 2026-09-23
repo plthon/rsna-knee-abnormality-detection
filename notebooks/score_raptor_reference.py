@@ -73,19 +73,29 @@ outcome = run_raptor_reference(
     },
 )
 
-expected_outputs = {
-    "raptor-reference-run.json",
-    "run-manifest.json",
-    "submission-fallbacks.csv",
-    "submission-validation.json",
-    "submission.csv",
-}
-actual_outputs = {path.name for path in WORK_ROOT.iterdir() if path.is_file()}
-if actual_outputs != expected_outputs:
-    raise ValueError(
-        f"Raptor hidden inference emitted unexpected outputs: "
-        f"{sorted(actual_outputs ^ expected_outputs)}"
-    )
+
+def validate_raptor_scoring_outputs(work_root: Path) -> None:
+    expected_outputs = {
+        "raptor-reference-run.json",
+        "run-manifest.json",
+        "submission-fallbacks.csv",
+        "submission-validation.json",
+        "submission.csv",
+    }
+    kaggle_managed_outputs = {"__notebook__.ipynb"}
+    actual_outputs = {
+        path.name
+        for path in work_root.iterdir()
+        if path.is_file() and path.name not in kaggle_managed_outputs
+    }
+    if actual_outputs != expected_outputs:
+        raise ValueError(
+            f"Raptor hidden inference emitted unexpected outputs: "
+            f"{sorted(actual_outputs ^ expected_outputs)}"
+        )
+
+
+validate_raptor_scoring_outputs(WORK_ROOT)
 
 report = json.loads(outcome.report_path.read_text())
 validation = json.loads(outcome.submission.validation_report_path.read_text())

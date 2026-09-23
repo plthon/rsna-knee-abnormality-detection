@@ -1,3 +1,4 @@
+import ast
 import base64
 import hashlib
 import json
@@ -1190,3 +1191,41 @@ def test_raptor_scoring_bundle_is_clean_private_and_inference_only(
             gpu_approved=True,
             runner=lambda command: CompletedProcess(command, 0),
         )
+
+
+def test_raptor_scoring_output_check_allows_kaggle_managed_notebook(
+    tmp_path: Path,
+) -> None:
+    source_path = Path(__file__).parents[1] / "notebooks" / "score_raptor_reference.py"
+    source_module = ast.parse(source_path.read_text())
+    validator_node = next(
+        node
+        for node in source_module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "validate_raptor_scoring_outputs"
+    )
+    validator_module = ast.fix_missing_locations(
+        ast.Module(body=[validator_node], type_ignores=[])
+    )
+    namespace: dict[str, object] = {"Path": Path}
+    exec(  # noqa: S102 - executes a function from the repository source
+        compile(validator_module, str(source_path), "exec"), namespace
+    )
+    validator = namespace["validate_raptor_scoring_outputs"]
+    assert callable(validator)
+
+    expected_outputs = {
+        "raptor-reference-run.json",
+        "run-manifest.json",
+        "submission-fallbacks.csv",
+        "submission-validation.json",
+        "submission.csv",
+    }
+    for name in expected_outputs | {"__notebook__.ipynb"}:
+        (tmp_path / name).touch()
+
+    validator(tmp_path)
+
+    (tmp_path / "unapproved-output.txt").touch()
+    with pytest.raises(ValueError, match="unapproved-output.txt"):
+        validator(tmp_path)
