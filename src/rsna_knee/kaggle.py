@@ -214,6 +214,8 @@ def build_kaggle_bundle(
         _validate_dinov2_scoring_source(source)
     elif spec.validator == "raptor_parity":
         _validate_raptor_parity_source(source)
+    elif spec.validator == "raptor_scoring":
+        _validate_raptor_scoring_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -1256,6 +1258,55 @@ def build_raptor_parity_bundle(
     return _record_rendered_notebook_hash(bundle, label="Raptor parity")
 
 
+def build_raptor_scoring_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-raptor-reference-scoring",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build approved hidden inference for the exact public Raptor checkpoint."""
+    contract_names = ("competition.json", "raptor-reference-v1.json")
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor scoring requires contracts/{name}")
+    source_path = project_root / "notebooks" / "score_raptor_reference.py"
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Missing notebook source: {source_path}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("Raptor scoring requires a clean committed Git revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="score_raptor_reference.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Raptor Reference Scoring",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=("dreaddevelopment/raptor-knee-widedense",),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_scoring",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor scoring")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -1538,6 +1589,22 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         dataset_sources = metadata.get("dataset_sources")
         if not isinstance(dataset_sources, list) or len(dataset_sources) != 1:
             raise ValueError("DINOv2 scoring requires one retained checkpoint input")
+    elif validator in {"raptor_parity", "raptor_scoring"}:
+        notebook_source = _notebook_source(source)
+        if validator == "raptor_parity":
+            _validate_raptor_parity_source(notebook_source)
+            raptor_expected_kernels: list[str] = ["plthon/rsna-knee-data-index"]
+        else:
+            _validate_raptor_scoring_source(notebook_source)
+            raptor_expected_kernels = []
+        if (
+            metadata.get("competition_sources") != ["rsna-knee-abnormality-detection"]
+            or metadata.get("dataset_sources")
+            != ["dreaddevelopment/raptor-knee-widedense"]
+            or metadata.get("kernel_sources") != raptor_expected_kernels
+            or metadata.get("model_sources") != []
+        ):
+            raise ValueError("Raptor bundle attached unexpected inputs")
     elif validator == "reports":
         _validate_reports_source(_notebook_source(source))
     elif validator == "report_llm":
@@ -1983,6 +2050,43 @@ def _validate_raptor_parity_source(source: str) -> None:
     )
     if any(value in source for value in forbidden):
         raise ValueError("Raptor parity notebook crosses an unapproved boundary")
+
+
+def _validate_raptor_scoring_source(source: str) -> None:
+    required = (
+        "CHECKPOINT_FILENAME",
+        "CHECKPOINT_SHA256",
+        "CHECKPOINT_SIZE_BYTES",
+        "run_raptor_reference",
+        "torch.backends.cudnn.benchmark = True",
+        "torch.backends.cuda.matmul.allow_tf32 = True",
+        '"hidden_test_inference": True',
+        '"competition_submission": False',
+        '"training": False',
+        '"submission.csv"',
+        '"submission-fallbacks.csv"',
+        '"submission-validation.json"',
+        '"raptor-reference-run.json"',
+        '"run-manifest.json"',
+        "Hidden-test inference: completed",
+        "Competition submission: not run",
+        "Training: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Raptor scoring notebook omits an inference safeguard")
+    forbidden = (
+        "derive_gold_training_cohort",
+        "evaluate_point_predictions",
+        'COMPETITION_ROOT / "train_series"',
+        "write_submission",
+        "run_combined_baseline",
+        "run_combined_scoring",
+        "train_epoch",
+        "kaggle competitions submit",
+        "competitions.submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor scoring notebook crosses an unapproved boundary")
 
 
 def _validate_reports_source(source: str) -> None:

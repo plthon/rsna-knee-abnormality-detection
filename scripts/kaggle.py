@@ -15,6 +15,7 @@ from rsna_knee.kaggle import (
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
     build_raptor_parity_bundle,
+    build_raptor_scoring_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
@@ -54,6 +55,7 @@ def main() -> None:
             "dinov2-scoring",
             "dinov2-resume-dataset",
             "raptor-parity",
+            "raptor-scoring",
         ),
     )
     build.add_argument("--output", type=Path)
@@ -120,6 +122,7 @@ def main() -> None:
                 "dinov2-scoring": "dinov2-scoring",
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
                 "raptor-parity": "raptor-parity",
+                "raptor-scoring": "raptor-reference-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -140,6 +143,14 @@ def main() -> None:
                 arguments.output,
                 kernel_id=arguments.kernel_id
                 or "plthon/rsna-knee-raptor-reference-parity",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-scoring":
+            bundle = build_raptor_scoring_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-raptor-reference-scoring",
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "resolution-336":

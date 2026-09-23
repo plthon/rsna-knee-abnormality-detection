@@ -32,6 +32,7 @@ MODEL_INPUT_SIZE = 384
 WINDOW_COUNT = 42
 ARCHITECTURE = "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k"
 CHECKPOINT_FILENAME = "raptor_ft_coatnet_v4_full.pt"
+CHECKPOINT_SIZE_BYTES = 292829402
 CHECKPOINT_SHA256 = "89606f05849838529e1b4658d28fb049623205d9853371548403bca460361ded"
 TARGET_NAMES = (
     "ACL",
@@ -520,6 +521,10 @@ def run_raptor_reference(
             "targets": list(checkpoint.targets),
         },
         "inference": {
+            "cuda_backend": {
+                "cudnn_benchmark": torch.backends.cudnn.benchmark,
+                "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+            },
             "device": str(resolved_device),
             "peak_gpu_memory_bytes": peak_gpu_bytes,
             "raw_failure_count": sum(failures.values()),
@@ -593,6 +598,218 @@ def run_raptor_reference(
         submission=submission,
         report_path=report_path,
         raw_failure_count=sum(failures.values()),
+    )
+
+
+_SCORING_EVIDENCE_FILENAMES = (
+    "submission.csv",
+    "submission-fallbacks.csv",
+    "submission-validation.json",
+    "raptor-reference-run.json",
+    "run-manifest.json",
+)
+
+
+def verify_raptor_reference_scoring_artifact(
+    artifact_dir: Path,
+) -> dict[str, object]:
+    """Verify hidden-inference evidence without exposing prediction rows."""
+    evidence = {name: artifact_dir / name for name in _SCORING_EVIDENCE_FILENAMES}
+    for path in evidence.values():
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing Raptor scoring artifact: {path}")
+
+    manifest = _json_object(evidence["run-manifest.json"], "run manifest")
+    if manifest.get("schema_version") != 1:
+        raise ValueError("Unsupported Raptor scoring manifest schema")
+    records = manifest.get("artifacts")
+    if not isinstance(records, list):
+        raise TypeError("Raptor scoring artifact inventory is malformed")
+    expected_inventory = set(_SCORING_EVIDENCE_FILENAMES[:-1])
+    actual_inventory: set[str] = set()
+    for raw_record in records:
+        if not isinstance(raw_record, dict):
+            raise TypeError("Raptor scoring artifact record is malformed")
+        relative = raw_record.get("path")
+        if not isinstance(relative, str) or relative in actual_inventory:
+            raise ValueError("Raptor scoring artifact paths are malformed or duplicate")
+        actual_inventory.add(relative)
+        if relative not in expected_inventory or Path(relative).name != relative:
+            raise ValueError("Raptor scoring manifest contains an unexpected artifact")
+        path = evidence[relative]
+        if raw_record.get("size_bytes") != path.stat().st_size or raw_record.get(
+            "sha256"
+        ) != _file_sha256(path):
+            raise ValueError(f"Raptor scoring artifact hash differs: {relative}")
+    if actual_inventory != expected_inventory:
+        raise ValueError("Raptor scoring manifest artifact inventory is incomplete")
+
+    reference, reference_sha256 = load_reference_contract()
+    competition = load_verified_submission_contract()
+    report = _json_object(evidence["raptor-reference-run.json"], "run report")
+    validation = _json_object(
+        evidence["submission-validation.json"], "submission validation"
+    )
+    if report.get("schema_version") != 1:
+        raise ValueError("Unsupported Raptor scoring report schema")
+    if validation.get("schema_version") != 1 or validation.get("valid") is not True:
+        raise ValueError("Raptor submission validation evidence is invalid")
+
+    submission_sha256 = _file_sha256(evidence["submission.csv"])
+    if (
+        validation.get("competition_contract_sha256") != competition.sha256
+        or validation.get("submission_sha256") != submission_sha256
+        or validation.get("columns") != list(competition.ordered_columns)
+        or validation.get("target_count") != len(TARGET_NAMES)
+    ):
+        raise ValueError("Raptor submission validation identity differs")
+    row_count = validation.get("row_count")
+    probabilities = validation.get("probabilities")
+    fallbacks = validation.get("fallbacks")
+    if (
+        type(row_count) is not int
+        or row_count <= 0
+        or not isinstance(probabilities, dict)
+        or not isinstance(fallbacks, dict)
+        or fallbacks.get("count") != 0
+        or fallbacks.get("path") != "submission-fallbacks.csv"
+    ):
+        raise ValueError("Raptor submission validation summary is malformed")
+    minimum = probabilities.get("minimum")
+    maximum = probabilities.get("maximum")
+    if (
+        not isinstance(minimum, (int, float))
+        or not isinstance(maximum, (int, float))
+        or not 0.0 <= float(minimum) <= float(maximum) <= 1.0
+    ):
+        raise ValueError("Raptor submission probability summary is invalid")
+
+    metadata = reference["checkpoint"]["metadata"]
+    expected_checkpoint = {
+        "architecture": metadata["arch"],
+        "epoch": metadata["epoch"],
+        "gold_auc": metadata["gold_auc"],
+        "resolution": metadata["res"],
+        "sha256": CHECKPOINT_SHA256,
+        "source": metadata["src"],
+        "targets": list(TARGET_NAMES),
+    }
+    if (
+        report.get("checkpoint") != expected_checkpoint
+        or report.get("reference_contract_sha256") != reference_sha256
+        or report.get("reference_notebook") != reference["public_notebook"]
+        or report.get("output")
+        != {
+            "activation": "sigmoid",
+            "submission_transform": "per-target percentile rank",
+            "validation_report": "submission-validation.json",
+        }
+    ):
+        raise ValueError("Raptor scoring report differs from the frozen reference")
+
+    inference = report.get("inference")
+    if not isinstance(inference, dict):
+        raise TypeError("Raptor scoring inference summary is malformed")
+    failure_types = inference.get("raw_failure_types")
+    raw_failure_count = inference.get("raw_failure_count")
+    if (
+        inference.get("device") != "cuda"
+        or inference.get("cuda_backend")
+        != {"cudnn_benchmark": True, "matmul_allow_tf32": True}
+        or inference.get("study_count") != row_count
+        or inference.get("window_count_per_study") != WINDOW_COUNT
+        or type(raw_failure_count) is not int
+        or raw_failure_count < 0
+        or not isinstance(failure_types, dict)
+        or any(type(count) is not int or count < 0 for count in failure_types.values())
+        or sum(failure_types.values()) != raw_failure_count
+        or not isinstance(inference.get("seconds"), (int, float))
+        or float(inference["seconds"]) <= 0
+        or type(inference.get("peak_gpu_memory_bytes")) is not int
+        or inference["peak_gpu_memory_bytes"] <= 0
+    ):
+        raise ValueError("Raptor scoring execution evidence is invalid")
+
+    source = manifest.get("source")
+    notebook = manifest.get("notebook")
+    configuration = manifest.get("configuration")
+    if not isinstance(source, dict) or not isinstance(notebook, dict):
+        raise TypeError("Raptor scoring provenance is malformed")
+    expected_reference_source = {
+        "checkpoint": {
+            "filename": reference["checkpoint"]["filename"],
+            "sha256": reference["checkpoint"]["sha256"],
+            "size_bytes": reference["checkpoint"]["size_bytes"],
+        },
+        "model_dataset": reference["model_dataset"],
+        "public_notebook": reference["public_notebook"],
+    }
+    if (
+        source.get("checkpoint")
+        != {"filename": CHECKPOINT_FILENAME, "sha256": CHECKPOINT_SHA256}
+        or source.get("competition_contract_sha256") != competition.sha256
+        or source.get("raptor_reference") != expected_reference_source
+        or source.get("raptor_reference_contract_sha256") != reference_sha256
+        or source.get("git_dirty") is not False
+        or not _is_hex_digest(source.get("git_commit"), 40)
+        or not _is_hex_digest(source.get("jupytext_source_sha256"), 64)
+        or not _is_hex_digest(source.get("rendered_notebook_sha256"), 64)
+        or source.get("kernel_id") != notebook.get("kernel_id")
+    ):
+        raise ValueError("Raptor scoring source provenance differs")
+    if notebook != {
+        "competition_submission": False,
+        "hidden_test_inference": True,
+        "kernel_id": notebook.get("kernel_id"),
+        "kind": "approved_kaggle_raptor_reference_hidden_scoring",
+        "training": False,
+    } or not isinstance(notebook.get("kernel_id"), str):
+        raise ValueError("Raptor scoring boundary flags are invalid")
+    if configuration != {
+        "architecture": ARCHITECTURE,
+        "checkpoint_filename": CHECKPOINT_FILENAME,
+        "intermediate_size": INTERMEDIATE_SIZE,
+        "model_input_size": MODEL_INPUT_SIZE,
+        "physical_crop_mm": PHYSICAL_CROP_MM,
+        "slot_layout": [list(slot) for slot in SLOTS],
+        "target_order": list(TARGET_NAMES),
+        "window_count": WINDOW_COUNT,
+    }:
+        raise ValueError("Raptor scoring configuration differs")
+
+    return {
+        "artifact_sha256": {
+            name: _file_sha256(path) for name, path in evidence.items()
+        },
+        "git_commit": source["git_commit"],
+        "kernel_id": notebook["kernel_id"],
+        "maximum_probability": float(maximum),
+        "minimum_probability": float(minimum),
+        "peak_gpu_memory_bytes": inference["peak_gpu_memory_bytes"],
+        "raw_failure_count": raw_failure_count,
+        "row_count": row_count,
+        "seconds": float(inference["seconds"]),
+        "submission_sha256": submission_sha256,
+        "valid": True,
+    }
+
+
+def _json_object(path: Path, label: str) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError(f"Raptor {label} is not a JSON object")
+    return cast(dict[str, Any], value)
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _is_hex_digest(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import gc
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -359,10 +360,24 @@ def test_reference_run_routes_ranked_predictions_through_strict_submission_valid
     outcome = raptor.run_raptor_reference(
         input_root=tmp_path / "input",
         work_root=tmp_path / "work",
-        checkpoint_path=tmp_path / "checkpoint.pt",
+        checkpoint_path=tmp_path / raptor.CHECKPOINT_FILENAME,
         device=torch.device("cpu"),
         contract_path=PROJECT_ROOT / "contracts" / "competition.json",
         run_id="raptor-reference-test",
+        source_provenance={
+            "git_commit": "c" * 40,
+            "git_dirty": False,
+            "jupytext_source_sha256": "d" * 64,
+            "kernel_id": "plthon/raptor-scoring-test",
+            "rendered_notebook_sha256": "e" * 64,
+        },
+        notebook={
+            "competition_submission": False,
+            "hidden_test_inference": True,
+            "kernel_id": "plthon/raptor-scoring-test",
+            "kind": "approved_kaggle_raptor_reference_hidden_scoring",
+            "training": False,
+        },
     )
 
     validation = json.loads(outcome.submission.validation_report_path.read_text())
@@ -386,6 +401,60 @@ def test_reference_run_routes_ranked_predictions_through_strict_submission_valid
     }
     assert manifest["source"]["raptor_reference_contract_sha256"] == reference_digest
     assert outcome.raw_failure_count == 0
+
+    report["inference"].update(
+        {
+            "cuda_backend": {
+                "cudnn_benchmark": True,
+                "matmul_allow_tf32": True,
+            },
+            "device": "cuda",
+            "peak_gpu_memory_bytes": 123,
+        }
+    )
+    outcome.report_path.write_text(json.dumps(report))
+    for record in manifest["artifacts"]:
+        if record["path"] == outcome.report_path.name:
+            record["sha256"] = hashlib.sha256(
+                outcome.report_path.read_bytes()
+            ).hexdigest()
+            record["size_bytes"] = outcome.report_path.stat().st_size
+    outcome.submission.manifest_path.write_text(json.dumps(manifest))
+
+    verified = raptor.verify_raptor_reference_scoring_artifact(tmp_path / "work")
+    assert verified["valid"] is True
+    assert verified["row_count"] == 2
+    assert verified["raw_failure_count"] == 0
+    assert verified["submission_sha256"] == validation["submission_sha256"]
+
+    submission_bytes = outcome.submission.submission_path.read_bytes()
+    outcome.submission.submission_path.write_bytes(submission_bytes + b"tampered")
+    with pytest.raises(ValueError, match="artifact hash differs"):
+        raptor.verify_raptor_reference_scoring_artifact(tmp_path / "work")
+    outcome.submission.submission_path.write_bytes(submission_bytes)
+
+    manifest_bytes = outcome.submission.manifest_path.read_bytes()
+    changed_manifest = json.loads(manifest_bytes)
+    changed_manifest["notebook"]["competition_submission"] = True
+    outcome.submission.manifest_path.write_text(json.dumps(changed_manifest))
+    with pytest.raises(ValueError, match="boundary flags"):
+        raptor.verify_raptor_reference_scoring_artifact(tmp_path / "work")
+    outcome.submission.manifest_path.write_bytes(manifest_bytes)
+
+    validation["valid"] = False
+    outcome.submission.validation_report_path.write_text(json.dumps(validation))
+    changed_manifest = json.loads(manifest_bytes)
+    for record in changed_manifest["artifacts"]:
+        if record["path"] == outcome.submission.validation_report_path.name:
+            record["sha256"] = hashlib.sha256(
+                outcome.submission.validation_report_path.read_bytes()
+            ).hexdigest()
+            record["size_bytes"] = (
+                outcome.submission.validation_report_path.stat().st_size
+            )
+    outcome.submission.manifest_path.write_text(json.dumps(changed_manifest))
+    with pytest.raises(ValueError, match="validation evidence is invalid"):
+        raptor.verify_raptor_reference_scoring_artifact(tmp_path / "work")
 
 
 def test_classifier_checkpoint_reload_preserves_predictions(tmp_path: Path) -> None:
