@@ -4,9 +4,9 @@
 
 The repository contains a local reproduction of the public Dread Development Raptor inference pipeline. It is intentionally separate from the retained issue #31 ResNet-18 baseline.
 
-An approved private, offline Kaggle T4 run completed CPU/T4 prediction comparison and organizer-gold inference over all 58 eligible studies. Checkpoint, cohort, notebook, and artifact identities were verified after retrieval. The observed organizer-gold macro ROC AUC was `0.9126943301855063`, an absolute difference of `0.004054918131541352` from the checkpoint value `0.9167492483170476`. This is close as a sanity result but is not exact metric parity.
+Approved private, offline Kaggle T4 runs completed CPU/T4 prediction comparison, organizer-gold inference over all 58 eligible studies, and hidden-test inference. Checkpoint, cohort, notebook, submission, and artifact identities were verified after retrieval. The observed organizer-gold macro ROC AUC was `0.9126943301855063`, an absolute difference of `0.004054918131541352` from the checkpoint value `0.9167492483170476`. This is close as a sanity result but is not exact metric parity. The hidden submission artifact passed strict local verification with no raw study failures or fallback rows.
 
-No hidden-test inference, submission creation, competition submission, training, or later leaderboard experiment has occurred. No final A/B/C reproduction outcome is assigned because the required public-leaderboard reproduction has not been attempted.
+No competition submission, training, or later leaderboard experiment has occurred. No final A/B/C reproduction outcome is assigned because the required public-leaderboard reproduction has not been attempted. The work is stopped at issue #36 Stop point 3.
 
 ## Frozen public identities
 
@@ -149,16 +149,51 @@ The largest target-level difference was `0.042236024845` for Lateral Meniscus. T
 
 The recorded gold-loop elapsed time was `174.7550272410001` seconds and peak allocated GPU memory was `8,173,242,368` bytes. The remote environment used Python `3.12.13`, PyTorch `2.10.0+cu128`, timm `1.0.26`, and OpenCV `4.13.0`.
 
+## Approved remote Stop point 2 hidden-inference evidence
+
+Private Kaggle kernel version 2 (`plthon/rsna-knee-raptor-reference-scoring`) completed from clean commit `93987f5b103ca71fa9009018ab25bc3fcde6b9dd`. It was offline on a Tesla T4, used the exact frozen public checkpoint, and called the shared Raptor reference runner once. Version 1 completed inference but failed its final output-set assertion because Kaggle creates `__notebook__.ipynb` in `/kaggle/working`; version 2 explicitly allowed only that Kaggle-managed file while retaining rejection of all other unexpected outputs.
+
+The corrected bundle recorded:
+
+- Jupytext source SHA-256: `3c20ec79f79e9d682de711abc4a778a709329c1257ed6ed9c90e1b59f97d4176`;
+- rendered notebook canonical SHA-256: `2e71672f8a39c7f59182a32ca0576416b1775503c892a486eb7af8ec8d9f1a51`;
+- rendered notebook file SHA-256: `5d07bf7ac1577936d300c03a19ff1c7949ab699746b8be703d67c298c75e77bf`; and
+- kernel metadata SHA-256: `c4d37d52a9e6a185b6322180b599dbc9842ad67c786cad0f2833b5faa15fc0df`.
+
+Only the five approved evidence artifacts were retrieved. Local aggregate verification checked their manifest-recorded byte sizes and SHA-256 digests, exact checkpoint and public-source identities, clean source provenance, strict submission validation, CUDA execution and backend flags, frozen configuration, and boundary flags. Verification returned:
+
+- submission rows: `3`;
+- minimum/maximum ranked probability: `0.0` / `1.0`;
+- raw study failures: `0`;
+- fallback rows: `0`;
+- inference time: `33.87474749399996` seconds;
+- peak allocated GPU memory: `8,173,242,368` bytes; and
+- strict submission validation: `true`.
+
+Artifact SHA-256 identities are:
+
+| Artifact | SHA-256 |
+|---|---|
+| `submission.csv` | `4d6789a4449d7327382a55e1b2b06efb4adbd991b0f5aa01e4f00e57c8a894aa` |
+| `submission-fallbacks.csv` | `536bf73e9e4aeb34109a55856e1ce649e57546ef2997f1fa2c36fe4e6861043a` |
+| `submission-validation.json` | `b249e66a2c4f8b7d61f7dae33ecb0d0cf9c069fc7e4d7c7ee0f1540cd5715bae` |
+| `raptor-reference-run.json` | `a10a70af8c6ee9df4ca69f99f8419f9f2ca5db7179cf1a2780c72377721794d6` |
+| `run-manifest.json` | `06fd09d04a49fd9836257f53562099d286d7710f8a9515eaa48848d28401e6eb` |
+
+The submission remained only in ignored local artifact storage. No hidden study identifiers or prediction rows were printed or added to the repository. Retrieved boundary evidence records:
+
+- hidden-test inference: `true`;
+- competition submission: `false`; and
+- training: `false`.
+
 ## Pending approval-gated evidence
 
 The following fields remain deliberately unfilled:
 
-- Hidden-test inference result: not run.
-- Hidden submission validation: not run.
 - Kaggle submission ID: none.
 - Public leaderboard result: not submitted.
 - Difference from published `0.924`: unknown.
 - Training result: not run.
 - Final issue #36 outcome classification: pending.
 
-The next boundary is Stop point 2 in issue #36. Hidden-test inference requires separate explicit approval. Inference approval would not authorize competition submission, which remains Stop point 3.
+The next boundary is Stop point 3 in issue #36. Competition submission requires separate explicit approval. Hidden-inference approval did not authorize submission, and no training is authorized.
