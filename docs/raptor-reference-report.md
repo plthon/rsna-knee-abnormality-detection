@@ -6,7 +6,7 @@ The repository contains a local reproduction of the public Dread Development Rap
 
 Approved private, offline Kaggle T4 runs completed CPU/T4 prediction comparison, organizer-gold inference over all 58 eligible studies, and hidden-test inference. Checkpoint, cohort, notebook, submission, and artifact identities were verified after retrieval. The observed organizer-gold macro ROC AUC was `0.9126943301855063`, an absolute difference of `0.004054918131541352` from the checkpoint value `0.9167492483170476`. This is close as a sanity result but is not exact metric parity. The hidden submission artifact passed strict local verification with no raw study failures or fallback rows.
 
-No competition submission, training, or later leaderboard experiment has occurred. No final A/B/C reproduction outcome is assigned because the required public-leaderboard reproduction has not been attempted. The work is stopped at issue #36 Stop point 3.
+The one approved reproduction submission scored `0.924` on the public leaderboard, exactly matching the published score at Kaggle's displayed precision. Phase 1 therefore succeeded, and the Raptor inference implementation is a verified competitive external reference. Issue #31 remains unchanged as the retained internally trained model. No training or later leaderboard experiment has occurred, so the final A/B/C outcome remains pending Phase 2.
 
 ## Frozen public identities
 
@@ -186,14 +186,17 @@ The submission remained only in ignored local artifact storage. No hidden study 
 - competition submission: `false`; and
 - training: `false`.
 
+## Approved Phase 1 reproduction submission
+
+After separate Stop point 3 approval, the exact locally verified artifact was submitted once through private scoring kernel version 2. Kaggle submission `56485634` completed on 2026-09-23 with public score `0.924` and no reported private score. The difference from the published `0.924` at displayed precision is `0.000`.
+
+This establishes Phase 1 success without tuning, alternate checkpoints, geometry changes, TTA, ensembles, or variant submissions. The Raptor checkpoint inference path is therefore a verified competitive external reference; it does not replace issue #31 as the retained internally trained model.
+
 ## Pending approval-gated evidence
 
 The following fields remain deliberately unfilled:
 
-- Kaggle submission ID: none.
-- Public leaderboard result: not submitted.
-- Difference from published `0.924`: unknown.
 - Training result: not run.
-- Final issue #36 outcome classification: pending.
+- Final issue #36 outcome classification: pending Phase 2.
 
-The next boundary is Stop point 3 in issue #36. Competition submission requires separate explicit approval. Hidden-inference approval did not authorize submission, and no training is authorized.
+Phase 2 must begin by freezing the exact public training notebook and preprocessed dataset identities under the public-reference retrieval boundary. Any remote training smoke or full run then requires separate Stop point 4 approval. No training is currently authorized.
