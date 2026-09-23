@@ -192,11 +192,35 @@ After separate Stop point 3 approval, the exact locally verified artifact was su
 
 This establishes Phase 1 success without tuning, alternate checkpoints, geometry changes, TTA, ensembles, or variant submissions. The Raptor checkpoint inference path is therefore a verified competitive external reference; it does not replace issue #31 as the retained internally trained model.
 
+## Phase 2 training-source capture
+
+The public training source and attached-input metadata are frozen in `contracts/raptor-training-reference-v1.json`. The contract status is `blocked_pending_authoritative_training_provenance`; it is a source-evidence record, not a runnable training recipe.
+
+The captured source is public notebook version 8, `dreaddevelopment/knee-mri-training-the-twelve-finding-model`, Kaggle kernel ID `131724100`. The current source response is 35,181 UTF-8 bytes over 670 lines with SHA-256 `6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699`. Kaggle metadata identified a Tesla T4 and Docker image `gcr.io/kaggle-images/python@sha256:dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9`, with GPU and internet enabled. An explicit version-8 source request returned HTTP 403, so the hash is tied to the current public source response whose metadata reported version 8 rather than a separately successful version-pinned download.
+
+The notebook attaches two CC0 preprocessed corpora in this order:
+
+1. `dreaddevelopment/knee-raptor-corpus`, dataset ID `11703975`, version 2: 3,200 studies and 15,897,501,120 bytes.
+2. `dreaddevelopment/knee-raptor-corpus-ext`, dataset ID `11735963`, version 1: 1,207 studies and 5,996,043,337 bytes.
+
+Together they describe a `(4407, 44, 336, 336)` uint8 volume array plus masks. Exact observed file names, byte sizes, and Kaggle/GCS ETag-MD5 identities are recorded in the contract. Those ETags are storage identities and are not presented as SHA-256 hashes. The approximately 21.89 GB volume payload was not downloaded because it cannot resolve the missing label, run-argument, environment, pretrained-weight, or checkpoint identities.
+
+Established executable behavior includes three adjacent slices as channels; random training centers and evenly spaced evaluation centers; uint8 scaling by 255; bilinear model resize; only ±10% multiplicative intensity augmentation; no flips; default normalization and ROI disabled; 58 all-known organizer rows used only for gold validation; continuous soft targets for non-gold studies; prevalence-derived positive weights; target-specific attention pooling; AdamW backbone/head parameter groups; OneCycleLR stepped every batch; bfloat16 CUDA autocast without a gradient scaler; no gradient accumulation; gradient clipping at 3.0; and equal averaging of the top three epoch state dictionaries.
+
+The source does not establish one exact executed configuration. Its executable defaults specify `vit_small_patch16_224`, resolution 224, 12 epochs, batch size 8, 12/24 train/evaluation windows, no gradient checkpointing, and timm pretrained initialization. A separately documented typical command specifies `coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k`, resolution 384, 16 epochs, batch size 8, 12/24 windows, and gradient checkpointing. The contract preserves these as distinct source facts and does not synthesize either into a claimed public run.
+
+The required `labels_llm_soft.parquet` is explicitly not provided and no label dataset is attached or pinned by the notebook. Public dataset `dreaddevelopment/rsna-knee-labels`, ID `11640568`, version 3, contains a matching basename and describes 4,349-study coverage, but it is recorded only as a non-authoritative candidate and is not adopted. The notebook also exposes no completed training output, checkpoint, actual command, timm/PyTorch package versions, or pretrained-weight URL/digest. Public logs contain notebook conversion messages only and the kernel exposes no retained output files.
+
+Source comments claim approximately three hours and 23.7 GB for the documented CoAtNet arm on an RTX 4090, with approximately 293 MB per in-memory CoAtNet top-k copy. These are contextual comments, not measured Kaggle T4 evidence, so Phase 2 is not classified as resource-infeasible.
+
 ## Pending approval-gated evidence
 
 The following fields remain deliberately unfilled:
 
+- Authoritative soft-label dataset identity: unresolved.
+- Actual public training configuration and environment: unresolved.
+- Public training checkpoint/output identity: unresolved.
 - Training result: not run.
 - Final issue #36 outcome classification: pending Phase 2.
 
-Phase 2 must begin by freezing the exact public training notebook and preprocessed dataset identities under the public-reference retrieval boundary. Any remote training smoke or full run then requires separate Stop point 4 approval. No training is currently authorized.
+The current decision is: **Phase 1 succeeded; Phase 2 is blocked pending authoritative training provenance.** No candidate labels were substituted, no training bundle was created, and no corpus payload, smoke run, or training run was started. Any future remote smoke or full training requires separate Stop point 4 approval.

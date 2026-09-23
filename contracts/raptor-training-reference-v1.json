@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-23",
+  "status": "blocked_pending_authoritative_training_provenance",
+  "public_notebook": {
+    "url": "https://www.kaggle.com/code/dreaddevelopment/knee-mri-training-the-twelve-finding-model",
+    "kaggle_id": 131724100,
+    "current_version": 8,
+    "source_capture": "Current public source response whose metadata reported currentVersionNumber=8; an explicit version-8 GetKernel request returned HTTP 403.",
+    "source_sha256": "6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699",
+    "source_size_bytes": 35181,
+    "source_line_count": 670,
+    "language": "python",
+    "kernel_type": "script",
+    "is_private": false,
+    "gpu_enabled": true,
+    "internet_enabled": true,
+    "machine_shape": "NvidiaTeslaT4",
+    "docker_image": "gcr.io/kaggle-images/python@sha256:dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9",
+    "dataset_sources": [
+      "dreaddevelopment/knee-raptor-corpus",
+      "dreaddevelopment/knee-raptor-corpus-ext"
+    ],
+    "competition_sources": [
+      "rsna-knee-abnormality-detection"
+    ],
+    "kernel_sources": [],
+    "model_sources": [],
+    "output_files": [],
+    "execution_evidence": "Public logs contain notebook conversion messages only; no training stdout, metric, checkpoint, or retained output is exposed."
+  },
+  "attached_data": {
+    "concatenation_order": [
+      "dreaddevelopment/knee-raptor-corpus",
+      "dreaddevelopment/knee-raptor-corpus-ext"
+    ],
+    "aggregate_study_count": 4407,
+    "aggregate_volume_shape": [
+      4407,
+      44,
+      336,
+      336
+    ],
+    "volume_dtype": "uint8",
+    "volume_access": "numpy memory map",
+    "datasets": [
+      {
+        "slug": "dreaddevelopment/knee-raptor-corpus",
+        "url": "https://www.kaggle.com/datasets/dreaddevelopment/knee-raptor-corpus",
+        "dataset_id": 11703975,
+        "version": 2,
+        "version_note": "add-all_vols-corpus",
+        "last_updated": "2026-08-19T15:22:22.303Z",
+        "license": "CC0-1.0",
+        "study_count": 3200,
+        "total_bytes": 15897501120,
+        "files": [
+          {
+            "name": "all_ids.npy",
+            "size_bytes": 819328,
+            "etag_md5": "cac84b408590d45d67420884cb0d7d03"
+          },
+          {
+            "name": "all_masks.npy",
+            "size_bytes": 140928,
+            "etag_md5": "8aeb911a4ee5590d97d0c7497cead92c"
+          },
+          {
+            "name": "all_vols.npy",
+            "size_bytes": 15895756928,
+            "etag_md5": "e57b2d99849172f3c36d4cea40e05edc"
+          },
+          {
+            "name": "window_index.npy",
+            "size_bytes": 783936,
+            "etag_md5": "5da25640a4fa5851430bfc82a725fa15"
+          }
+        ]
+      },
+      {
+        "slug": "dreaddevelopment/knee-raptor-corpus-ext",
+        "url": "https://www.kaggle.com/datasets/dreaddevelopment/knee-raptor-corpus-ext",
+        "dataset_id": 11735963,
+        "version": 1,
+        "version_note": "Initial release",
+        "last_updated": "2026-08-21T23:14:46.213Z",
+        "license": "CC0-1.0",
+        "study_count": 1207,
+        "total_bytes": 5996043337,
+        "files": [
+          {
+            "name": "extra_ids.npy",
+            "size_bytes": 309120,
+            "etag_md5": "9f031e86bf4114f1a80a6419a0af325d"
+          },
+          {
+            "name": "extra_masks.npy",
+            "size_bytes": 53236,
+            "etag_md5": "b98fb526138cbe781820f08b493a3066"
+          },
+          {
+            "name": "extra_meta.json",
+            "size_bytes": 85,
+            "etag_md5": "ce68ba631254c68ce98bef58216a8aca",
+            "content": {
+              "built": 1207,
+              "failed": 0,
+              "gold_included": 13,
+              "seconds": 1970.203477859497
+            }
+          },
+          {
+            "name": "extra_vols.npy",
+            "size_bytes": 5995680896,
+            "etag_md5": "3d867ebf417469e70e77b39d0608e01d"
+          }
+        ]
+      }
+    ],
+    "file_identity_semantics": "Kaggle exposed object ETags represented as MD5 values. These are recorded storage identities and are not represented as SHA-256 digests.",
+    "competition": {
+      "slug": "rsna-knee-abnormality-detection",
+      "competition_id": 154281,
+      "immutable_version_available": false,
+      "observed_train_csv": {
+        "storage_object_id": 20902466,
+        "size_bytes": 5690007,
+        "etag_md5": "3868da29af79ebde4f91b3a97372c095",
+        "last_modified": "2026-09-19T00:43:11Z"
+      }
+    }
+  },
+  "preprocessed_corpus_description": {
+    "evidence_role": "Public attached-dataset description; the training notebook consumes these arrays but does not construct them.",
+    "row_order": "Preserve original array order.",
+    "slice_span_fraction": [
+      0.15,
+      0.85
+    ],
+    "physical_crop_mm": 140.0,
+    "intermediate_size": 336,
+    "slots": [
+      {
+        "plane": "Sagittal",
+        "preferred_fluid_sensitive": 1,
+        "slice_count": 12
+      },
+      {
+        "plane": "Sagittal",
+        "preferred_fluid_sensitive": 0,
+        "slice_count": 10
+      },
+      {
+        "plane": "Coronal",
+        "preferred_fluid_sensitive": 1,
+        "slice_count": 8
+      },
+      {
+        "plane": "Coronal",
+        "preferred_fluid_sensitive": null,
+        "slice_count": 6
+      },
+      {
+        "plane": "Axial",
+        "preferred_fluid_sensitive": null,
+        "slice_count": 8
+      }
+    ],
+    "total_slices": 44,
+    "missing_slots": "Zero-filled and represented in the mask."
+  },
+  "training_data_pipeline": {
+    "window_channels": [
+      "previous",
+      "center",
+      "next"
+    ],
+    "mask_semantics": "The mask defines the valid-range endpoints. Neighbor validity is not checked independently when constructing a three-slice window.",
+    "short_study_fallback": "Use the source fallback when fewer than three centers remain; the source does not expose a frozen output fixture for this branch.",
+    "training_center_selection": "Build the valid center pool, random.shuffle it for each __getitem__, and take k centers.",
+    "evaluation_center_selection": "Select k_eval evenly spaced centers with linspace.",
+    "scale": "Convert uint8 to float and divide by 255.",
+    "resize": "Bilinear resize to the configured model resolution.",
+    "augmentation": {
+      "multiplicative_gain": "g=1+(random.random()-0.5)*0.20, then clamp to [0,1]",
+      "approximate_range": [
+        0.9,
+        1.1
+      ],
+      "flips": false,
+      "other_augmentation": false
+    },
+    "normalization_default": "none",
+    "normalization_optional": "imagenet",
+    "roi_default": false,
+    "roi_optional_defaults": {
+      "mode": "compartment",
+      "pad": 0.06,
+      "overlap": 0.12
+    }
+  },
+  "labels": {
+    "required_filename": "labels_llm_soft.parquet",
+    "required_columns": [
+      "StudyInstanceUID",
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ],
+    "target_order": [
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ],
+    "expected_soft_label_count": 4349,
+    "expected_range": [
+      0.0,
+      1.0
+    ],
+    "attachment_status": "not_attached_or_pinned",
+    "authoritative_source": null,
+    "missing_file_behavior": "Print an explanatory message and exit successfully without training.",
+    "gold_validation": {
+      "source": "competition train.csv",
+      "selection": "Rows where all twelve target columns are non-null.",
+      "expected_study_count": 58,
+      "role": "validation only",
+      "excluded_from_soft_label_training": true
+    },
+    "training_targets": "Continuous report-derived soft probabilities for non-gold studies; values are not thresholded.",
+    "unknown_semantics": "No unknown class, ignore index, partial-label mask, or explicit range validation.",
+    "positive_weight": "Compute training-label means, clip prevalence to [0.03,0.7], compute (1-prev)/prev, then clip each weight to [1,10].",
+    "candidate": {
+      "slug": "dreaddevelopment/rsna-knee-labels",
+      "url": "https://www.kaggle.com/datasets/dreaddevelopment/rsna-knee-labels",
+      "dataset_id": 11640568,
+      "version": 3,
+      "version_note": "full 4349-study coverage (batch04 relabeled)",
+      "total_bytes": 712331,
+      "authority": "non_authoritative_candidate",
+      "reason": "The training notebook neither attaches nor pins this dataset and only searches for the required basename.",
+      "files": [
+        {
+          "name": "labels_llm_soft.parquet",
+          "size_bytes": 176422,
+          "etag_md5": "40e6ca84dd07f329f7833f071c1a5db0"
+        },
+        {
+          "name": "labels_llm_soft.csv",
+          "size_bytes": 535909,
+          "etag_md5": "96e6723f7dcc997f8951060a23dd22cf"
+        }
+      ]
+    }
+  },
+  "configurations": {
+    "executable_defaults": {
+      "kind": "executable_cli_defaults",
+      "architecture": "vit_small_patch16_224",
+      "resolution": 224,
+      "checkpoint_source": "timm",
+      "pretrained": true,
+      "epochs": 12,
+      "batch_size": 8,
+      "validation_batch_size": 4,
+      "training_windows": 12,
+      "evaluation_windows": 24,
+      "backbone_learning_rate": 0.00003,
+      "head_learning_rate": 0.001,
+      "weight_decay": 0.02,
+      "workers": 4,
+      "freeze_blocks": 0,
+      "topk": 3,
+      "normalization": "none",
+      "gradient_checkpointing": false,
+      "seed": 42,
+      "roi": false
+    },
+    "documented_coatnet_example": {
+      "kind": "documented_typical_command_not_observed_run",
+      "architecture": "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k",
+      "resolution": 384,
+      "checkpoint_source": "timm",
+      "epochs": 16,
+      "batch_size": 8,
+      "training_windows": 12,
+      "evaluation_windows": 24,
+      "gradient_checkpointing": true
+    },
+    "actual_run_configuration": null,
+    "discrepancy": "The source does not identify which configuration produced a public checkpoint or completed run."
+  },
+  "model": {
+    "backbone_factory": "timm.create_model(arch,pretrained=use_timm,num_classes=0,in_chans=3); ViT-like names additionally use global_pool=token and dynamic_img_size=true, other architectures use global_pool=avg.",
+    "checkpoint_initialization": "timm selects pretrained weights; none or empty selects random initialization; a path loads only backbone.* keys with strict=false and unwraps a student mapping when present.",
+    "head": "LayerNorm(F); Linear(F,256), Tanh, Dropout(0.2), Linear(256,12); per-target softmax attention over windows; per-target clsW dot pooled feature plus clsb.",
+    "classifier_initialization": "clsW zeros followed by trunc_normal std=0.02; clsb zeros; Linear and LayerNorm modules otherwise use PyTorch defaults.",
+    "freeze_blocks": "When positive, freeze matching leading blocks.N or stages.N groups; only trainable parameters enter the optimizer."
+  },
+  "optimization": {
+    "loss": "BCEWithLogitsLoss with per-target pos_weight and continuous soft targets.",
+    "optimizer": "AdamW with separate trainable backbone and head parameter groups.",
+    "optimizer_defaults": "AdamW beta, epsilon, and other unspecified values use the installed PyTorch defaults.",
+    "scheduler": "OneCycleLR with max_lr=[backbone_lr,head_lr], total_steps=len(train_loader)*epochs, pct_start=0.15; step once per batch.",
+    "gradient_accumulation": false,
+    "step_order": [
+      "zero_grad",
+      "forward",
+      "backward",
+      "clip_grad_norm_3.0",
+      "optimizer_step",
+      "scheduler_step"
+    ]
+  },
+  "precision_and_seed": {
+    "autocast": "CUDA training and evaluation use torch.autocast with bfloat16; CPU does not use that branch.",
+    "gradient_scaler": false,
+    "seed": 42,
+    "seeded_generators": [
+      "python_random",
+      "numpy",
+      "torch_manual_seed"
+    ],
+    "unseeded_or_unpinned": [
+      "torch_cuda_manual_seed_all",
+      "dataloader_generator",
+      "worker_init_fn",
+      "deterministic_algorithms",
+      "cudnn_determinism"
+    ]
+  },
+  "checkpointing": {
+    "validation_metric": "Macro mean of twelve per-target ROC-AUC values on the 58 all-known gold studies.",
+    "best_selection": "Strictly greater gold macro ROC-AUC replaces the best epoch.",
+    "checkpoint_metadata": [
+      "gold_auc",
+      "aucs",
+      "src",
+      "res",
+      "arch",
+      "lab",
+      "epoch"
+    ],
+    "topk_default": 3,
+    "topk_averaging": "Retain the top epochs in RAM; equally average floating tensors and copy non-floating tensors from the highest-ranked state; write an _swa.pt file.",
+    "swa_semantics": "Snapshot tensor averaging only; no torch.optim.swa_utils, SWA scheduler, or online SWA update.",
+    "post_average_state": "Evaluate the averaged state on gold, then restore the best single-epoch model in memory.",
+    "public_training_checkpoint": null
+  },
+  "source_resource_comments": {
+    "typical_runtime": "approximately 3 hours on an RTX 4090",
+    "typical_peak_memory": "23.7 GB for the documented CoAtNet arm",
+    "topk_copy_memory": "approximately 293 MB per CoAtNet copy and approximately 87 MB per small-ViT copy",
+    "evidence_role": "Source comments only; not measured Kaggle T4 feasibility evidence."
+  },
+  "unresolved_authoritative_identities": [
+    "The required soft-label parquet source/version/hash is not attached or pinned.",
+    "The actual executed architecture and command-line arguments are not exposed.",
+    "No completed public training output or checkpoint is retained.",
+    "Python, PyTorch, timm, NumPy, pandas, scikit-learn, and CUDA runtime package versions are not captured.",
+    "The timm pretrained weight URL and byte digest are not pinned.",
+    "The competition input has no immutable dataset version exposed by the observed API.",
+    "The current-version source hash could not be independently retrieved through an explicit version-8 endpoint because that request returned HTTP 403."
+  ],
+  "boundaries": {
+    "authoritative_training_recipe_complete": false,
+    "resource_infeasible": false,
+    "training_run_completed": false
+  }
+}

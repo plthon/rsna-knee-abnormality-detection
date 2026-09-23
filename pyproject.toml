@@ -36,6 +36,7 @@ packages = ["src/rsna_knee"]
 "contracts/report-weak-supervision-v1.json" = "rsna_knee/report-weak-supervision-v1.json"
 "contracts/dinov2-vits14-lvd142m.json" = "rsna_knee/dinov2-vits14-lvd142m.json"
 "contracts/raptor-reference-v1.json" = "rsna_knee/raptor-reference-v1.json"
+"contracts/raptor-training-reference-v1.json" = "rsna_knee/raptor-training-reference-v1.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

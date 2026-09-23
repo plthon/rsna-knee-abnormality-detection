@@ -16,6 +16,9 @@ from rsna_knee import raptor_reference as raptor
 
 PROJECT_ROOT = Path(__file__).parents[1]
 REFERENCE_CONTRACT = PROJECT_ROOT / "contracts" / "raptor-reference-v1.json"
+TRAINING_REFERENCE_CONTRACT = (
+    PROJECT_ROOT / "contracts" / "raptor-training-reference-v1.json"
+)
 CHECKPOINT = (
     PROJECT_ROOT
     / ".artifacts/raptor-reference/model-dataset/raptor_ft_coatnet_v4_full.pt"
@@ -53,6 +56,159 @@ def test_reference_contract_freezes_public_source_and_exact_layout() -> None:
     assert [slot[2] for slot in raptor.SLOTS] == [18, 14, 12, 8, 12]
     assert raptor.STACK_SIZE == 64
     assert raptor.WINDOW_COUNT == 42
+
+
+def test_training_reference_contract_freezes_blocked_public_source() -> None:
+    contract, digest = raptor.load_raptor_training_reference_contract(
+        TRAINING_REFERENCE_CONTRACT
+    )
+
+    assert len(digest) == 64
+    assert contract["status"] == "blocked_pending_authoritative_training_provenance"
+    notebook = contract["public_notebook"]
+    assert notebook["url"] == (
+        "https://www.kaggle.com/code/dreaddevelopment/"
+        "knee-mri-training-the-twelve-finding-model"
+    )
+    assert notebook["kaggle_id"] == 131724100
+    assert notebook["current_version"] == 8
+    assert notebook["source_sha256"] == (
+        "6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699"
+    )
+    assert notebook["source_size_bytes"] == 35181
+    assert notebook["source_line_count"] == 670
+    assert notebook["docker_image"] == (
+        "gcr.io/kaggle-images/python@sha256:"
+        "dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9"
+    )
+    datasets = contract["attached_data"]["datasets"]
+    assert [(dataset["dataset_id"], dataset["version"]) for dataset in datasets] == [
+        (11703975, 2),
+        (11735963, 1),
+    ]
+    assert [
+        (file["name"], file["size_bytes"], file["etag_md5"])
+        for file in datasets[0]["files"]
+    ] == [
+        ("all_ids.npy", 819328, "cac84b408590d45d67420884cb0d7d03"),
+        ("all_masks.npy", 140928, "8aeb911a4ee5590d97d0c7497cead92c"),
+        ("all_vols.npy", 15895756928, "e57b2d99849172f3c36d4cea40e05edc"),
+        ("window_index.npy", 783936, "5da25640a4fa5851430bfc82a725fa15"),
+    ]
+    assert [
+        (file["name"], file["size_bytes"], file["etag_md5"])
+        for file in datasets[1]["files"]
+    ] == [
+        ("extra_ids.npy", 309120, "9f031e86bf4114f1a80a6419a0af325d"),
+        ("extra_masks.npy", 53236, "b98fb526138cbe781820f08b493a3066"),
+        ("extra_meta.json", 85, "ce68ba631254c68ce98bef58216a8aca"),
+        ("extra_vols.npy", 5995680896, "3d867ebf417469e70e77b39d0608e01d"),
+    ]
+    assert contract["attached_data"]["aggregate_volume_shape"] == [
+        4407,
+        44,
+        336,
+        336,
+    ]
+    assert tuple(contract["labels"]["target_order"]) == raptor.TARGET_NAMES
+    assert contract["labels"]["authoritative_source"] is None
+    assert contract["labels"]["candidate"]["authority"] == (
+        "non_authoritative_candidate"
+    )
+    configurations = contract["configurations"]
+    assert configurations["executable_defaults"]["architecture"] == (
+        "vit_small_patch16_224"
+    )
+    assert configurations["documented_coatnet_example"]["architecture"] == (
+        raptor.ARCHITECTURE
+    )
+    assert configurations["actual_run_configuration"] is None
+    assert contract["checkpointing"]["public_training_checkpoint"] is None
+    assert contract["unresolved_authoritative_identities"] == [
+        "The required soft-label parquet source/version/hash is not attached or pinned.",
+        "The actual executed architecture and command-line arguments are not exposed.",
+        "No completed public training output or checkpoint is retained.",
+        (
+            "Python, PyTorch, timm, NumPy, pandas, scikit-learn, and CUDA "
+            "runtime package versions are not captured."
+        ),
+        "The timm pretrained weight URL and byte digest are not pinned.",
+        (
+            "The competition input has no immutable dataset version exposed by the "
+            "observed API."
+        ),
+        (
+            "The current-version source hash could not be independently retrieved "
+            "through an explicit version-8 endpoint because that request returned "
+            "HTTP 403."
+        ),
+    ]
+    assert contract["boundaries"] == {
+        "authoritative_training_recipe_complete": False,
+        "resource_infeasible": False,
+        "training_run_completed": False,
+    }
+    packaged_contract, packaged_digest = (
+        raptor.load_raptor_training_reference_contract()
+    )
+    assert packaged_contract == contract
+    assert packaged_digest == digest
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "status",
+        "source_digest",
+        "target_order",
+        "candidate_authority",
+        "authoritative_label_source",
+        "merged_configuration",
+        "actual_run_configuration",
+        "public_training_checkpoint",
+        "resource_infeasible",
+        "completed_training",
+    ),
+)
+def test_training_reference_contract_rejects_unfounded_claims(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    contract = json.loads(TRAINING_REFERENCE_CONTRACT.read_text())
+    if mutation == "status":
+        contract["status"] = "training_reproduced"
+    elif mutation == "source_digest":
+        contract["public_notebook"]["source_sha256"] = "0" * 64
+    elif mutation == "target_order":
+        contract["labels"]["target_order"] = list(reversed(raptor.TARGET_NAMES))
+    elif mutation == "candidate_authority":
+        contract["labels"]["candidate"]["authority"] = "authoritative"
+    elif mutation == "authoritative_label_source":
+        contract["labels"]["authoritative_source"] = {
+            "dataset_id": 11640568,
+            "version": 3,
+        }
+    elif mutation == "merged_configuration":
+        contract["configurations"]["documented_coatnet_example"]["kind"] = (
+            "executable_cli_defaults"
+        )
+    elif mutation == "actual_run_configuration":
+        contract["configurations"]["actual_run_configuration"] = {
+            "architecture": raptor.ARCHITECTURE
+        }
+    elif mutation == "public_training_checkpoint":
+        contract["checkpointing"]["public_training_checkpoint"] = {
+            "filename": "fabricated.pt"
+        }
+    elif mutation == "resource_infeasible":
+        contract["boundaries"]["resource_infeasible"] = True
+    else:
+        contract["boundaries"]["training_run_completed"] = True
+
+    mutated_path = tmp_path / "raptor-training-reference-v1.json"
+    mutated_path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="training reference contract"):
+        raptor.load_raptor_training_reference_contract(mutated_path)
 
 
 def test_series_selection_preserves_row_order_and_preference() -> None:

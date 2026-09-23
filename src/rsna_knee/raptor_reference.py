@@ -68,6 +68,42 @@ _EXPECTED_CHECKPOINT_KEYS = {
     "lab",
     "epoch",
 }
+_TRAINING_REFERENCE_STATUS = "blocked_pending_authoritative_training_provenance"
+_TRAINING_NOTEBOOK_SOURCE_SHA256 = (
+    "6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699"
+)
+_PUBLIC_DOCKER_IMAGE = (
+    "gcr.io/kaggle-images/python@sha256:"
+    "dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9"
+)
+_TRAINING_DATASET_IDENTITIES = (
+    (
+        "dreaddevelopment/knee-raptor-corpus",
+        11703975,
+        2,
+        3200,
+        15897501120,
+        (
+            ("all_ids.npy", 819328, "cac84b408590d45d67420884cb0d7d03"),
+            ("all_masks.npy", 140928, "8aeb911a4ee5590d97d0c7497cead92c"),
+            ("all_vols.npy", 15895756928, "e57b2d99849172f3c36d4cea40e05edc"),
+            ("window_index.npy", 783936, "5da25640a4fa5851430bfc82a725fa15"),
+        ),
+    ),
+    (
+        "dreaddevelopment/knee-raptor-corpus-ext",
+        11735963,
+        1,
+        1207,
+        5996043337,
+        (
+            ("extra_ids.npy", 309120, "9f031e86bf4114f1a80a6419a0af325d"),
+            ("extra_masks.npy", 53236, "b98fb526138cbe781820f08b493a3066"),
+            ("extra_meta.json", 85, "ce68ba631254c68ce98bef58216a8aca"),
+            ("extra_vols.npy", 5995680896, "3d867ebf417469e70e77b39d0608e01d"),
+        ),
+    ),
+)
 
 OrderedSeries = tuple[list[tuple[Path, float]], float]
 SeriesOrderer = Callable[[Path], OrderedSeries]
@@ -155,6 +191,145 @@ def load_reference_contract(path: Path | None = None) -> tuple[dict[str, Any], s
         or tuple(metadata.get("lab", ())) != TARGET_NAMES
     ):
         raise ValueError("Raptor reference contract identity has drifted")
+    return contract, hashlib.sha256(raw).hexdigest()
+
+
+def load_raptor_training_reference_contract(
+    path: Path | None = None,
+) -> tuple[dict[str, Any], str]:
+    raw = (
+        path.read_bytes() if path is not None else _training_reference_contract_bytes()
+    )
+    contract = cast(dict[str, Any], json.loads(raw))
+    notebook = contract.get("public_notebook")
+    attached = contract.get("attached_data")
+    labels = contract.get("labels")
+    configurations = contract.get("configurations")
+    checkpointing = contract.get("checkpointing")
+    boundaries = contract.get("boundaries")
+    if not all(
+        isinstance(value, dict)
+        for value in (
+            notebook,
+            attached,
+            labels,
+            configurations,
+            checkpointing,
+            boundaries,
+        )
+    ):
+        raise ValueError("Raptor training reference contract is malformed")
+    notebook = cast(dict[str, Any], notebook)
+    attached = cast(dict[str, Any], attached)
+    labels = cast(dict[str, Any], labels)
+    configurations = cast(dict[str, Any], configurations)
+    checkpointing = cast(dict[str, Any], checkpointing)
+    boundaries = cast(dict[str, Any], boundaries)
+
+    competition_targets = load_verified_submission_contract().target_names
+    if (
+        contract.get("schema_version") != 1
+        or contract.get("status") != _TRAINING_REFERENCE_STATUS
+        or notebook.get("kaggle_id") != 131724100
+        or notebook.get("current_version") != 8
+        or notebook.get("source_sha256") != _TRAINING_NOTEBOOK_SOURCE_SHA256
+        or notebook.get("source_size_bytes") != 35181
+        or notebook.get("source_line_count") != 670
+        or notebook.get("docker_image") != _PUBLIC_DOCKER_IMAGE
+        or notebook.get("dataset_sources")
+        != [
+            "dreaddevelopment/knee-raptor-corpus",
+            "dreaddevelopment/knee-raptor-corpus-ext",
+        ]
+        or notebook.get("kernel_sources") != []
+        or notebook.get("model_sources") != []
+        or notebook.get("output_files") != []
+        or tuple(labels.get("target_order", ())) != TARGET_NAMES
+        or tuple(labels.get("target_order", ())) != competition_targets
+        or labels.get("attachment_status") != "not_attached_or_pinned"
+        or labels.get("authoritative_source") is not None
+        or attached.get("aggregate_study_count") != 4407
+        or attached.get("aggregate_volume_shape") != [4407, 44, 336, 336]
+        or checkpointing.get("public_training_checkpoint") is not None
+        or boundaries
+        != {
+            "authoritative_training_recipe_complete": False,
+            "resource_infeasible": False,
+            "training_run_completed": False,
+        }
+    ):
+        raise ValueError("Raptor training reference contract identity has drifted")
+
+    datasets_raw = attached.get("datasets")
+    if not isinstance(datasets_raw, list) or not all(
+        isinstance(dataset, dict) for dataset in datasets_raw
+    ):
+        raise ValueError("Raptor training reference contract datasets are malformed")
+    datasets = cast(list[dict[str, Any]], datasets_raw)
+    observed_datasets: list[
+        tuple[
+            object,
+            object,
+            object,
+            object,
+            object,
+            tuple[tuple[object, object, object], ...],
+        ]
+    ] = []
+    for dataset in datasets:
+        files_raw = dataset.get("files")
+        if not isinstance(files_raw, list) or not all(
+            isinstance(file, dict) for file in files_raw
+        ):
+            raise ValueError(
+                "Raptor training reference contract dataset files are malformed"
+            )
+        dataset_files = cast(list[dict[str, Any]], files_raw)
+        observed_datasets.append(
+            (
+                dataset.get("slug"),
+                dataset.get("dataset_id"),
+                dataset.get("version"),
+                dataset.get("study_count"),
+                dataset.get("total_bytes"),
+                tuple(
+                    (
+                        file.get("name"),
+                        file.get("size_bytes"),
+                        file.get("etag_md5"),
+                    )
+                    for file in dataset_files
+                ),
+            )
+        )
+    if tuple(observed_datasets) != _TRAINING_DATASET_IDENTITIES:
+        raise ValueError("Raptor training reference contract dataset identity drifted")
+
+    candidate = labels.get("candidate")
+    defaults = configurations.get("executable_defaults")
+    documented = configurations.get("documented_coatnet_example")
+    if not all(isinstance(value, dict) for value in (candidate, defaults, documented)):
+        raise ValueError(
+            "Raptor training reference contract source facts are malformed"
+        )
+    candidate = cast(dict[str, Any], candidate)
+    defaults = cast(dict[str, Any], defaults)
+    documented = cast(dict[str, Any], documented)
+    if (
+        candidate.get("dataset_id") != 11640568
+        or candidate.get("version") != 3
+        or candidate.get("authority") != "non_authoritative_candidate"
+        or defaults.get("kind") != "executable_cli_defaults"
+        or defaults.get("architecture") != "vit_small_patch16_224"
+        or documented.get("kind") != "documented_typical_command_not_observed_run"
+        or documented.get("architecture") != ARCHITECTURE
+        or configurations.get("actual_run_configuration") is not None
+        or not contract.get("unresolved_authoritative_identities")
+    ):
+        raise ValueError(
+            "Raptor training reference contract claims unsupported evidence"
+        )
+
     return contract, hashlib.sha256(raw).hexdigest()
 
 
@@ -831,3 +1006,14 @@ def _reference_contract_bytes() -> bytes:
     if source.is_file():
         return source.read_bytes()
     return files("rsna_knee").joinpath("raptor-reference-v1.json").read_bytes()
+
+
+def _training_reference_contract_bytes() -> bytes:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "raptor-training-reference-v1.json"
+    )
+    if source.is_file():
+        return source.read_bytes()
+    return files("rsna_knee").joinpath("raptor-training-reference-v1.json").read_bytes()
