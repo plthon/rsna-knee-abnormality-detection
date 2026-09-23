@@ -76,31 +76,82 @@ _PUBLIC_DOCKER_IMAGE = (
     "gcr.io/kaggle-images/python@sha256:"
     "dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _TrainingFileIdentity:
+    name: str
+    size_bytes: int
+    etag_md5: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TrainingDatasetIdentity:
+    slug: str
+    dataset_id: int
+    version: int
+    study_count: int
+    total_bytes: int
+    files: tuple[_TrainingFileIdentity, ...]
+
+
 _TRAINING_DATASET_IDENTITIES = (
-    (
-        "dreaddevelopment/knee-raptor-corpus",
-        11703975,
-        2,
-        3200,
-        15897501120,
-        (
-            ("all_ids.npy", 819328, "cac84b408590d45d67420884cb0d7d03"),
-            ("all_masks.npy", 140928, "8aeb911a4ee5590d97d0c7497cead92c"),
-            ("all_vols.npy", 15895756928, "e57b2d99849172f3c36d4cea40e05edc"),
-            ("window_index.npy", 783936, "5da25640a4fa5851430bfc82a725fa15"),
+    _TrainingDatasetIdentity(
+        slug="dreaddevelopment/knee-raptor-corpus",
+        dataset_id=11703975,
+        version=2,
+        study_count=3200,
+        total_bytes=15897501120,
+        files=(
+            _TrainingFileIdentity(
+                name="all_ids.npy",
+                size_bytes=819328,
+                etag_md5="cac84b408590d45d67420884cb0d7d03",
+            ),
+            _TrainingFileIdentity(
+                name="all_masks.npy",
+                size_bytes=140928,
+                etag_md5="8aeb911a4ee5590d97d0c7497cead92c",
+            ),
+            _TrainingFileIdentity(
+                name="all_vols.npy",
+                size_bytes=15895756928,
+                etag_md5="e57b2d99849172f3c36d4cea40e05edc",
+            ),
+            _TrainingFileIdentity(
+                name="window_index.npy",
+                size_bytes=783936,
+                etag_md5="5da25640a4fa5851430bfc82a725fa15",
+            ),
         ),
     ),
-    (
-        "dreaddevelopment/knee-raptor-corpus-ext",
-        11735963,
-        1,
-        1207,
-        5996043337,
-        (
-            ("extra_ids.npy", 309120, "9f031e86bf4114f1a80a6419a0af325d"),
-            ("extra_masks.npy", 53236, "b98fb526138cbe781820f08b493a3066"),
-            ("extra_meta.json", 85, "ce68ba631254c68ce98bef58216a8aca"),
-            ("extra_vols.npy", 5995680896, "3d867ebf417469e70e77b39d0608e01d"),
+    _TrainingDatasetIdentity(
+        slug="dreaddevelopment/knee-raptor-corpus-ext",
+        dataset_id=11735963,
+        version=1,
+        study_count=1207,
+        total_bytes=5996043337,
+        files=(
+            _TrainingFileIdentity(
+                name="extra_ids.npy",
+                size_bytes=309120,
+                etag_md5="9f031e86bf4114f1a80a6419a0af325d",
+            ),
+            _TrainingFileIdentity(
+                name="extra_masks.npy",
+                size_bytes=53236,
+                etag_md5="b98fb526138cbe781820f08b493a3066",
+            ),
+            _TrainingFileIdentity(
+                name="extra_meta.json",
+                size_bytes=85,
+                etag_md5="ce68ba631254c68ce98bef58216a8aca",
+            ),
+            _TrainingFileIdentity(
+                name="extra_vols.npy",
+                size_bytes=5995680896,
+                etag_md5="3d867ebf417469e70e77b39d0608e01d",
+            ),
         ),
     ),
 )
@@ -266,16 +317,7 @@ def load_raptor_training_reference_contract(
     ):
         raise ValueError("Raptor training reference contract datasets are malformed")
     datasets = cast(list[dict[str, Any]], datasets_raw)
-    observed_datasets: list[
-        tuple[
-            object,
-            object,
-            object,
-            object,
-            object,
-            tuple[tuple[object, object, object], ...],
-        ]
-    ] = []
+    observed_datasets: list[_TrainingDatasetIdentity] = []
     for dataset in datasets:
         files_raw = dataset.get("files")
         if not isinstance(files_raw, list) or not all(
@@ -286,17 +328,17 @@ def load_raptor_training_reference_contract(
             )
         dataset_files = cast(list[dict[str, Any]], files_raw)
         observed_datasets.append(
-            (
-                dataset.get("slug"),
-                dataset.get("dataset_id"),
-                dataset.get("version"),
-                dataset.get("study_count"),
-                dataset.get("total_bytes"),
-                tuple(
-                    (
-                        file.get("name"),
-                        file.get("size_bytes"),
-                        file.get("etag_md5"),
+            _TrainingDatasetIdentity(
+                slug=cast(str, dataset.get("slug")),
+                dataset_id=cast(int, dataset.get("dataset_id")),
+                version=cast(int, dataset.get("version")),
+                study_count=cast(int, dataset.get("study_count")),
+                total_bytes=cast(int, dataset.get("total_bytes")),
+                files=tuple(
+                    _TrainingFileIdentity(
+                        name=cast(str, file.get("name")),
+                        size_bytes=cast(int, file.get("size_bytes")),
+                        etag_md5=cast(str, file.get("etag_md5")),
                     )
                     for file in dataset_files
                 ),
