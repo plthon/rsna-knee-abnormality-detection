@@ -322,3 +322,19 @@ def test_label_identity_lifecycle_gates_training(tmp_path: Path) -> None:
     loaded, _ = reference.load_raptor_training_reference_contract(path)
     with pytest.raises(PermissionError, match="label identity pin"):
         reconstruction.required_pinned_label_identity(loaded)
+
+
+def test_pretrained_cache_revision_is_checked_before_symlink_resolution(
+    tmp_path: Path,
+) -> None:
+    revision = "abc123"
+    blob = tmp_path / "blobs" / "weight-bytes"
+    blob.parent.mkdir()
+    blob.write_bytes(b"weights")
+    snapshot = tmp_path / "snapshots" / revision / "model.safetensors"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.symlink_to(blob)
+
+    assert reconstruction._resolved_pretrained_cache_path(snapshot, revision) == (
+        blob.resolve()
+    )
