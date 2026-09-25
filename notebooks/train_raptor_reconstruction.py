@@ -34,8 +34,6 @@ from rsna_knee.raptor_reconstruction import (
     verify_raptor_reconstruction_artifact,
 )
 
-PACKAGE_ARCHIVE.unlink()
-
 # %% [markdown]
 # ## Train only the selected reconstruction stage
 
@@ -61,6 +59,7 @@ outcome = run_raptor_reconstruction(
         "competition_submission": False,
     },
 )
+PACKAGE_ARCHIVE.unlink()
 verification = verify_raptor_reconstruction_artifact(WORK_ROOT)
 
 

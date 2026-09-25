@@ -1177,6 +1177,9 @@ def test_raptor_reconstruction_bundle_is_guarded_training_only(
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
     assert 'STAGE_LITERAL = "smoke"' in source
     assert "run_raptor_reconstruction" in source
+    assert source.index("PACKAGE_ARCHIVE.unlink()") > source.index(
+        "run_raptor_reconstruction("
+    )
     assert '"hidden_test_inference": False' in source
     assert '"competition_submission": False' in source
     assert "write_submission" not in source
