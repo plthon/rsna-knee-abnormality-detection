@@ -58,13 +58,13 @@ def test_reference_contract_freezes_public_source_and_exact_layout() -> None:
     assert raptor.WINDOW_COUNT == 42
 
 
-def test_training_reference_contract_freezes_blocked_public_source() -> None:
+def test_training_reference_contract_freezes_selected_reconstruction() -> None:
     contract, digest = raptor.load_raptor_training_reference_contract(
         TRAINING_REFERENCE_CONTRACT
     )
 
     assert len(digest) == 64
-    assert contract["status"] == "blocked_pending_authoritative_training_provenance"
+    assert contract["status"] == "best_evidence_reconstruction_ready_for_smoke"
     notebook = contract["public_notebook"]
     assert notebook["url"] == (
         "https://www.kaggle.com/code/dreaddevelopment/"
@@ -145,6 +145,9 @@ def test_training_reference_contract_freezes_blocked_public_source() -> None:
     ]
     assert contract["boundaries"] == {
         "authoritative_training_recipe_complete": False,
+        "best_evidence_reconstruction_selected": True,
+        "label_identity_pinned": True,
+        "pretrained_identity_pinned": False,
         "resource_infeasible": False,
         "training_run_completed": False,
     }
@@ -162,6 +165,8 @@ def test_training_reference_contract_freezes_blocked_public_source() -> None:
         "source_digest",
         "target_order",
         "candidate_authority",
+        "historical_attachment",
+        "reconstruction_recipe",
         "authoritative_label_source",
         "merged_configuration",
         "actual_run_configuration",
@@ -183,6 +188,12 @@ def test_training_reference_contract_rejects_unfounded_claims(
         contract["labels"]["target_order"] = list(reversed(raptor.TARGET_NAMES))
     elif mutation == "candidate_authority":
         contract["labels"]["candidate"]["authority"] = "authoritative"
+    elif mutation == "historical_attachment":
+        contract["labels"]["reconstruction_selection"][
+            "historical_attachment_proven"
+        ] = True
+    elif mutation == "reconstruction_recipe":
+        contract["configurations"]["reconstruction_configuration"]["epochs"] = 15
     elif mutation == "authoritative_label_source":
         contract["labels"]["authoritative_source"] = {
             "dataset_id": 11640568,

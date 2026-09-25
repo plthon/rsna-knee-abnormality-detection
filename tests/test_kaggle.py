@@ -26,6 +26,7 @@ from rsna_knee.kaggle import (
     build_plane_gating_bundle,
     build_public_baseline_bundle,
     build_raptor_parity_bundle,
+    build_raptor_reconstruction_bundle,
     build_raptor_scoring_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
@@ -1135,6 +1136,112 @@ def test_raptor_parity_bundle_is_clean_offline_and_gold_only(
     assert "write_submission" not in source
     assert "Competition submission: not run" in source
     assert "Training: not run" in source
+
+
+def test_raptor_reconstruction_bundle_is_guarded_training_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = Path(__file__).parents[1]
+    output = tmp_path / "raptor-reconstruction"
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("c" * 40, True))
+    with pytest.raises(ValueError, match="clean committed Git revision"):
+        build_raptor_reconstruction_bundle(
+            project, output, stage="smoke", gpu_approved=True
+        )
+
+    monkeypatch.setattr("rsna_knee.kaggle._git_state", lambda _: ("c" * 40, False))
+    with pytest.raises(PermissionError, match="GPU approval"):
+        build_raptor_reconstruction_bundle(project, output, stage="smoke")
+    with pytest.raises(ValueError, match="stage smoke or full"):
+        build_raptor_reconstruction_bundle(
+            project, output, stage="other", gpu_approved=True
+        )
+
+    bundle = build_raptor_reconstruction_bundle(
+        project, output, stage="smoke", gpu_approved=True
+    )
+    metadata = json.loads(bundle.kernel_metadata_path.read_text())
+    assert metadata["competition_sources"] == ["rsna-knee-abnormality-detection"]
+    assert metadata["dataset_sources"] == [
+        "dreaddevelopment/knee-raptor-corpus",
+        "dreaddevelopment/knee-raptor-corpus-ext",
+        "dreaddevelopment/rsna-knee-labels",
+    ]
+    assert metadata["kernel_sources"] == []
+    assert metadata["model_sources"] == []
+    assert metadata["enable_gpu"] == "true"
+    assert metadata["enable_internet"] == "true"
+    assert metadata["is_private"] == "true"
+
+    notebook = json.loads(bundle.notebook_path.read_text())
+    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert 'STAGE_LITERAL = "smoke"' in source
+    assert "run_raptor_reconstruction" in source
+    assert '"hidden_test_inference": False' in source
+    assert '"competition_submission": False' in source
+    assert "write_submission" not in source
+    assert "kaggle competitions submit" not in source
+    assert "test_series" not in source
+
+    full = build_raptor_reconstruction_bundle(
+        project,
+        tmp_path / "raptor-full",
+        stage="full",
+        gpu_approved=True,
+    )
+    full_notebook = json.loads(full.notebook_path.read_text())
+    full_source = "\n".join("".join(cell["source"]) for cell in full_notebook["cells"])
+    assert 'STAGE_LITERAL = "full"' in full_source
+
+    with pytest.raises(ValueError, match="Internet is allowed only"):
+        build_kaggle_bundle(
+            project,
+            tmp_path / "invalid-internet",
+            KaggleSpec(
+                source_name="score_raptor_reference.py",
+                notebook_name="score.ipynb",
+                kernel_id="plthon/score",
+                title="Score",
+                internet=True,
+                validator="raptor_scoring",
+            ),
+        )
+
+
+def test_raptor_reconstruction_output_check_is_strict(tmp_path: Path) -> None:
+    source_path = (
+        Path(__file__).parents[1] / "notebooks" / "train_raptor_reconstruction.py"
+    )
+    source_module = ast.parse(source_path.read_text())
+    validator_node = next(
+        node
+        for node in source_module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "validate_raptor_reconstruction_outputs"
+    )
+    validator_module = ast.fix_missing_locations(
+        ast.Module(body=[validator_node], type_ignores=[])
+    )
+    namespace: dict[str, object] = {"Path": Path}
+    exec(  # noqa: S102 - executes a function from repository source
+        compile(validator_module, str(source_path), "exec"),
+        namespace,
+    )
+    validator = namespace["validate_raptor_reconstruction_outputs"]
+    assert callable(validator)
+    expected = {
+        "raptor-reconstruction-best.pt",
+        "raptor-reconstruction-swa.pt",
+        "raptor-reconstruction-report.json",
+        "run-manifest.json",
+        "__notebook__.ipynb",
+    }
+    for name in expected:
+        (tmp_path / name).touch()
+    validator(tmp_path)
+    (tmp_path / "submission.csv").touch()
+    with pytest.raises(ValueError, match="submission.csv"):
+        validator(tmp_path)
 
 
 def test_raptor_scoring_bundle_is_clean_private_and_inference_only(

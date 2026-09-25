@@ -15,6 +15,7 @@ from rsna_knee.kaggle import (
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
     build_raptor_parity_bundle,
+    build_raptor_reconstruction_bundle,
     build_raptor_scoring_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
@@ -55,6 +56,7 @@ def main() -> None:
             "dinov2-scoring",
             "dinov2-resume-dataset",
             "raptor-parity",
+            "raptor-reconstruction",
             "raptor-scoring",
         ),
     )
@@ -122,6 +124,7 @@ def main() -> None:
                 "dinov2-scoring": "dinov2-scoring",
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
                 "raptor-parity": "raptor-parity",
+                "raptor-reconstruction": f"raptor-reconstruction-{arguments.stage}",
                 "raptor-scoring": "raptor-reference-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
@@ -143,6 +146,16 @@ def main() -> None:
                 arguments.output,
                 kernel_id=arguments.kernel_id
                 or "plthon/rsna-knee-raptor-reference-parity",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-reconstruction":
+            if arguments.stage not in {"smoke", "full"}:
+                parser.error("raptor-reconstruction requires --stage smoke|full")
+            bundle = build_raptor_reconstruction_bundle(
+                project_root,
+                arguments.output,
+                stage=arguments.stage,
+                kernel_id=arguments.kernel_id,
                 gpu_approved=arguments.approve_gpu,
             )
         elif arguments.target == "raptor-scoring":

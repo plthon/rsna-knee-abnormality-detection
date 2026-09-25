@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "captured_at": "2026-09-23",
-  "status": "blocked_pending_authoritative_training_provenance",
+  "status": "best_evidence_reconstruction_ready_for_smoke",
   "public_notebook": {
     "url": "https://www.kaggle.com/code/dreaddevelopment/knee-mri-training-the-twelve-finding-model",
     "kaggle_id": 131724100,
@@ -27,7 +27,8 @@
     "kernel_sources": [],
     "model_sources": [],
     "output_files": [],
-    "execution_evidence": "Public logs contain notebook conversion messages only; no training stdout, metric, checkpoint, or retained output is exposed."
+    "execution_evidence": "Public logs contain notebook conversion messages only; no training stdout, metric, checkpoint, or retained output is exposed.",
+    "evidence_semantic": "published_authoritative"
   },
   "attached_data": {
     "concatenation_order": [
@@ -128,7 +129,8 @@
         "etag_md5": "3868da29af79ebde4f91b3a97372c095",
         "last_modified": "2026-09-19T00:43:11Z"
       }
-    }
+    },
+    "evidence_semantic": "published_authoritative"
   },
   "preprocessed_corpus_description": {
     "evidence_role": "Public attached-dataset description; the training notebook consumes these arrays but does not construct them.",
@@ -167,7 +169,8 @@
       }
     ],
     "total_slices": 44,
-    "missing_slots": "Zero-filled and represented in the mask."
+    "missing_slots": "Zero-filled and represented in the mask.",
+    "evidence_semantic": "published_authoritative"
   },
   "training_data_pipeline": {
     "window_channels": [
@@ -197,7 +200,8 @@
       "mode": "compartment",
       "pad": 0.06,
       "overlap": 0.12
-    }
+    },
+    "evidence_semantic": "published_authoritative"
   },
   "labels": {
     "required_filename": "labels_llm_soft.parquet",
@@ -269,6 +273,43 @@
           "etag_md5": "96e6723f7dcc997f8951060a23dd22cf"
         }
       ]
+    },
+    "evidence_semantic": "published_authoritative",
+    "reconstruction_selection": {
+      "evidence_semantic": "best_evidence_inferred",
+      "slug": "dreaddevelopment/rsna-knee-labels",
+      "dataset_id": 11640568,
+      "version": 3,
+      "filename": "labels_llm_soft.parquet",
+      "basis": [
+        "matching required filename",
+        "4349-study coverage",
+        "common public author/source",
+        "released-model description"
+      ],
+      "historical_attachment_proven": false,
+      "reconstruction_identity": {
+        "evidence_semantic": "reconstruction_specific_pinned_identity",
+        "status": "pinned_after_approved_read_only_retrieval",
+        "sha256": "15f7339514ff9af961da64c4b7eb40cb3c231aa6aaac93c99cde42201a2f9373",
+        "size_bytes": 176422,
+        "columns": [
+          "StudyInstanceUID",
+          "ACL",
+          "MCL",
+          "Medial Meniscus",
+          "Lateral Meniscus",
+          "Medial OA",
+          "Lateral OA",
+          "PF OA",
+          "Effusion",
+          "Synovitis",
+          "Baker's",
+          "Contusion",
+          "Fracture"
+        ],
+        "row_count": 4349
+      }
     }
   },
   "configurations": {
@@ -283,7 +324,7 @@
       "validation_batch_size": 4,
       "training_windows": 12,
       "evaluation_windows": 24,
-      "backbone_learning_rate": 0.00003,
+      "backbone_learning_rate": 3e-05,
       "head_learning_rate": 0.001,
       "weight_decay": 0.02,
       "workers": 4,
@@ -306,14 +347,67 @@
       "gradient_checkpointing": true
     },
     "actual_run_configuration": null,
-    "discrepancy": "The source does not identify which configuration produced a public checkpoint or completed run."
+    "discrepancy": "The source does not identify which configuration produced a public checkpoint or completed run.",
+    "reconstruction_configuration": {
+      "evidence_semantic": "best_evidence_inferred",
+      "kind": "issue_36_best_evidence_reconstruction",
+      "architecture": "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k",
+      "resolution": 384,
+      "checkpoint_source": "timm_pretrained",
+      "pretrained": true,
+      "epochs": 16,
+      "batch_size": 8,
+      "validation_batch_size": 4,
+      "training_windows": 12,
+      "evaluation_windows": 24,
+      "backbone_learning_rate": 3e-05,
+      "head_learning_rate": 0.001,
+      "weight_decay": 0.02,
+      "workers": 4,
+      "freeze_blocks": 0,
+      "topk": 3,
+      "normalization": "none",
+      "gradient_checkpointing": true,
+      "seed": 42,
+      "roi": false,
+      "augmentation": {
+        "multiplicative_gain_minimum": 0.9,
+        "multiplicative_gain_maximum": 1.1,
+        "flips": false,
+        "other_augmentation": false
+      },
+      "optimizer": "AdamW",
+      "scheduler": "OneCycleLR",
+      "scheduler_pct_start": 0.15,
+      "scheduler_step": "per_batch_after_optimizer",
+      "precision": "cuda_bfloat16_autocast",
+      "gradient_scaler": false,
+      "gradient_accumulation": false,
+      "gradient_clip_norm": 3.0,
+      "loss": "BCEWithLogitsLoss_continuous_soft_targets_with_pos_weight",
+      "gold_validation_study_count": 58,
+      "gold_validation_only": true,
+      "best_selection": "strict_macro_auc_improvement",
+      "state_averaging": "equal_weight_top_3_epoch_states"
+    }
   },
   "model": {
     "backbone_factory": "timm.create_model(arch,pretrained=use_timm,num_classes=0,in_chans=3); ViT-like names additionally use global_pool=token and dynamic_img_size=true, other architectures use global_pool=avg.",
     "checkpoint_initialization": "timm selects pretrained weights; none or empty selects random initialization; a path loads only backbone.* keys with strict=false and unwraps a student mapping when present.",
     "head": "LayerNorm(F); Linear(F,256), Tanh, Dropout(0.2), Linear(256,12); per-target softmax attention over windows; per-target clsW dot pooled feature plus clsb.",
     "classifier_initialization": "clsW zeros followed by trunc_normal std=0.02; clsb zeros; Linear and LayerNorm modules otherwise use PyTorch defaults.",
-    "freeze_blocks": "When positive, freeze matching leading blocks.N or stages.N groups; only trainable parameters enter the optimizer."
+    "freeze_blocks": "When positive, freeze matching leading blocks.N or stages.N groups; only trainable parameters enter the optimizer.",
+    "reconstruction_pretrained_identity": {
+      "evidence_semantic": "reconstruction_specific_pinned_identity",
+      "status": "pending_execution",
+      "provider": "huggingface_hub_via_timm",
+      "repository": "timm/coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k",
+      "filename": "model.safetensors",
+      "requested_revision": null,
+      "resolved_revision": null,
+      "sha256": null,
+      "size_bytes": null
+    }
   },
   "optimization": {
     "loss": "BCEWithLogitsLoss with per-target pos_weight and continuous soft targets.",
@@ -363,7 +457,14 @@
     "topk_averaging": "Retain the top epochs in RAM; equally average floating tensors and copy non-floating tensors from the highest-ranked state; write an _swa.pt file.",
     "swa_semantics": "Snapshot tensor averaging only; no torch.optim.swa_utils, SWA scheduler, or online SWA update.",
     "post_average_state": "Evaluate the averaged state on gold, then restore the best single-epoch model in memory.",
-    "public_training_checkpoint": null
+    "public_training_checkpoint": null,
+    "reconstruction_output": {
+      "evidence_semantic": "reconstruction_specific_pinned_identity",
+      "status": "pending_execution",
+      "best_checkpoint_sha256": null,
+      "averaged_checkpoint_sha256": null,
+      "run_manifest_sha256": null
+    }
   },
   "source_resource_comments": {
     "typical_runtime": "approximately 3 hours on an RTX 4090",
@@ -382,7 +483,22 @@
   ],
   "boundaries": {
     "authoritative_training_recipe_complete": false,
+    "best_evidence_reconstruction_selected": true,
+    "label_identity_pinned": true,
+    "pretrained_identity_pinned": false,
     "resource_infeasible": false,
     "training_run_completed": false
+  },
+  "decision": {
+    "issue": 36,
+    "recorded_at": "2026-09-24",
+    "objective": "best_evidence_reconstruction_of_published_training_recipe",
+    "historical_byte_identity_required": false,
+    "remote_training_approved": false
+  },
+  "evidence_semantics": {
+    "published_authoritative": "Directly observed public notebook code, metadata, attached-input identities, released checkpoint metadata, or verified Phase 1 evidence.",
+    "best_evidence_inferred": "Selected reconstruction input or configuration supported by multiple public signals but not proven to be the author historical run identity.",
+    "reconstruction_specific_pinned_identity": "Identity measured from an asset, environment, manifest, or checkpoint used by this reconstruction; it makes no claim about the author historical run."
   }
 }

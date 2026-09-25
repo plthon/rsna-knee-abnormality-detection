@@ -192,35 +192,35 @@ After separate Stop point 3 approval, the exact locally verified artifact was su
 
 This establishes Phase 1 success without tuning, alternate checkpoints, geometry changes, TTA, ensembles, or variant submissions. The Raptor checkpoint inference path is therefore a verified competitive external reference; it does not replace issue #31 as the retained internally trained model.
 
-## Phase 2 training-source capture
+## Phase 2 best-evidence training reconstruction
 
-The public training source and attached-input metadata are frozen in `contracts/raptor-training-reference-v1.json`. The contract status is `blocked_pending_authoritative_training_provenance`; it is a source-evidence record, not a runnable training recipe.
+The public training source and attached-input metadata remain frozen in `contracts/raptor-training-reference-v1.json`. The 2026-09-24 issue decision narrows the objective from unavailable byte-identical historical forensics to one best-evidence reconstruction. The contract now keeps three evidence semantics separate:
 
-The captured source is public notebook version 8, `dreaddevelopment/knee-mri-training-the-twelve-finding-model`, Kaggle kernel ID `131724100`. The current source response is 35,181 UTF-8 bytes over 670 lines with SHA-256 `6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699`. Kaggle metadata identified a Tesla T4 and Docker image `gcr.io/kaggle-images/python@sha256:dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9`, with GPU and internet enabled. An explicit version-8 source request returned HTTP 403, so the hash is tied to the current public source response whose metadata reported version 8 rather than a separately successful version-pinned download.
+- `published_authoritative`: behavior and identities directly observed in public source, metadata, attached corpora, or verified Phase 1 evidence;
+- `best_evidence_inferred`: the selected reconstruction recipe and supervision source, supported by public evidence but not proven to be the author's historical run;
+- `reconstruction_specific_pinned_identity`: bytes, environment, manifests, and checkpoints measured from this reconstruction, without a historical-provenance claim.
 
-The notebook attaches two CC0 preprocessed corpora in this order:
+All earlier source capture remains unchanged. The notebook is current metadata version 8, `dreaddevelopment/knee-mri-training-the-twelve-finding-model`, kernel ID `131724100`, with captured source SHA-256 `6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699`. Its attached corpora remain, in order, `dreaddevelopment/knee-raptor-corpus` ID `11703975` v2 and `dreaddevelopment/knee-raptor-corpus-ext` ID `11735963` v1, describing 4,407 studies in `(4407, 44, 336, 336)` uint8 arrays. Exact observed file sizes and ETag-MD5 storage identities remain frozen; the approximately 21.89 GB payload has not been downloaded locally.
 
-1. `dreaddevelopment/knee-raptor-corpus`, dataset ID `11703975`, version 2: 3,200 studies and 15,897,501,120 bytes.
-2. `dreaddevelopment/knee-raptor-corpus-ext`, dataset ID `11735963`, version 1: 1,207 studies and 5,996,043,337 bytes.
+The selected reconstruction configuration is fixed without search or tuning:
 
-Together they describe a `(4407, 44, 336, 336)` uint8 volume array plus masks. Exact observed file names, byte sizes, and Kaggle/GCS ETag-MD5 identities are recorded in the contract. Those ETags are storage identities and are not presented as SHA-256 hashes. The approximately 21.89 GB volume payload was not downloaded because it cannot resolve the missing label, run-argument, environment, pretrained-weight, or checkpoint identities.
+- `coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k`, timm pretrained initialization, resolution 384;
+- 16 epochs, training/validation batch sizes 8/4, 12/24 training/evaluation windows;
+- native gradient checkpointing, no frozen backbone blocks;
+- AdamW backbone/head learning rates `3e-5` / `1e-3`, weight decay `0.02`;
+- OneCycleLR with `pct_start=0.15`, stepped after every optimizer step;
+- CUDA BF16 autocast, no GradScaler, no accumulation, gradient clipping at `3.0`;
+- seed 42 using the source's Python/NumPy/`torch.manual_seed` calls only;
+- uint8 scaling by 255, bilinear resize, normalization disabled, ROI disabled;
+- only multiplicative intensity gain `[0.9, 1.1]`, with no flips or added augmentation;
+- continuous soft-label `BCEWithLogitsLoss` with source prevalence-derived `pos_weight`;
+- the 58 all-known organizer studies excluded from training and used only for 12-target macro ROC-AUC validation;
+- strict macro-AUC improvement for the best checkpoint and equal tensor averaging of the top three epoch states.
 
-Established executable behavior includes three adjacent slices as channels; random training centers and evenly spaced evaluation centers; uint8 scaling by 255; bilinear model resize; only ±10% multiplicative intensity augmentation; no flips; default normalization and ROI disabled; 58 all-known organizer rows used only for gold validation; continuous soft targets for non-gold studies; prevalence-derived positive weights; target-specific attention pooling; AdamW backbone/head parameter groups; OneCycleLR stepped every batch; bfloat16 CUDA autocast without a gradient scaler; no gradient accumulation; gradient clipping at 3.0; and equal averaging of the top three epoch state dictionaries.
+`dreaddevelopment/rsna-knee-labels` ID `11640568` v3 / `labels_llm_soft.parquet` is selected as **best-evidence inferred** supervision because it has the required basename, 4,349-study coverage, common public author/source, and released-model context. It is still not represented as a proven historical notebook attachment. After separate Stop point 0 approval, only that 176,422-byte parquet was retrieved. Its SHA-256 is `15f7339514ff9af961da64c4b7eb40cb3c231aa6aaac93c99cde42201a2f9373`; its MD5 matches the frozen Kaggle ETag identity `40e6ca84dd07f329f7833f071c1a5db0`. It contains 4,349 unique studies, the exact UID-plus-12-target column order, finite probabilities in `[0.05, 0.95]`, and no out-of-range values.
 
-The source does not establish one exact executed configuration. Its executable defaults specify `vit_small_patch16_224`, resolution 224, 12 epochs, batch size 8, 12/24 train/evaluation windows, no gradient checkpointing, and timm pretrained initialization. A separately documented typical command specifies `coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k`, resolution 384, 16 epochs, batch size 8, 12/24 windows, and gradient checkpointing. The contract preserves these as distinct source facts and does not synthesize either into a claimed public run.
+The repository now contains a Raptor-specific reconstruction path that reuses the verified `RaptorClassifier` state layout, validates corpus/cohort separation, implements the captured 44-slice window behavior and exact selected optimizer/scheduler/checkpoint policy, and emits source-style best and top-three-averaged checkpoints. The private Kaggle bundle is training-only: it has no hidden-test inference or competition-submission path. It captures the actual Python/PyTorch/timm/CUDA environment and the resolved Hugging Face pretrained revision/file hash in run provenance. The frozen Phase 1 public checkpoint loader remains hash-pinned and unchanged in authority.
 
-The required `labels_llm_soft.parquet` is explicitly not provided and no label dataset is attached or pinned by the notebook. Public dataset `dreaddevelopment/rsna-knee-labels`, ID `11640568`, version 3, contains a matching basename and describes 4,349-study coverage, but it is recorded only as a non-authoritative candidate and is not adopted. The notebook also exposes no completed training output, checkpoint, actual command, timm/PyTorch package versions, or pretrained-weight URL/digest. Public logs contain notebook conversion messages only and the kernel exposes no retained output files.
+Historical uncertainties remain explicit: the author's exact label attachment, executed CLI, package environment, pretrained bytes, and completed training output are unknown. Reconstruction outputs will be compared with released checkpoint evidence (best epoch 12, stored gold macro ROC-AUC `0.9167492483170476`, public leaderboard `0.924`) but are not required to produce identical weights and will not trigger post-hoc tuning.
 
-Source comments claim approximately three hours and 23.7 GB for the documented CoAtNet arm on an RTX 4090, with approximately 293 MB per in-memory CoAtNet top-k copy. These are contextual comments, not measured Kaggle T4 evidence, so Phase 2 is not classified as resource-infeasible.
-
-## Pending approval-gated evidence
-
-The following fields remain deliberately unfilled:
-
-- Authoritative soft-label dataset identity: unresolved.
-- Actual public training configuration and environment: unresolved.
-- Public training checkpoint/output identity: unresolved.
-- Training result: not run.
-- Final issue #36 outcome classification: pending Phase 2.
-
-The current decision is: **Phase 1 succeeded; Phase 2 is blocked pending authoritative training provenance.** No candidate labels were substituted, no training bundle was created, and no corpus payload, smoke run, or training run was started. Any future remote smoke or full training requires separate Stop point 4 approval.
+Current state: **Phase 1 succeeded; the Phase 2 best-evidence implementation and reconstruction label identity are locally frozen and ready for a separate Stop point 4 smoke decision.** No corpus payload or pretrained weight was downloaded locally, and no Kaggle run, hidden inference, submission, or training was executed. The exact-recipe smoke run remains unauthorized; full training remains a later separate approval if the smoke passes.

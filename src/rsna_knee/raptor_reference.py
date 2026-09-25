@@ -5,6 +5,7 @@ import gc
 import glob
 import hashlib
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -68,7 +69,8 @@ _EXPECTED_CHECKPOINT_KEYS = {
     "lab",
     "epoch",
 }
-_TRAINING_REFERENCE_STATUS = "blocked_pending_authoritative_training_provenance"
+_TRAINING_REFERENCE_STATUS = "best_evidence_reconstruction_selected_pending_asset_pin"
+_TRAINING_REFERENCE_READY_STATUS = "best_evidence_reconstruction_ready_for_smoke"
 _TRAINING_NOTEBOOK_SOURCE_SHA256 = (
     "6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699"
 )
@@ -258,6 +260,9 @@ def load_raptor_training_reference_contract(
     configurations = contract.get("configurations")
     checkpointing = contract.get("checkpointing")
     boundaries = contract.get("boundaries")
+    decision = contract.get("decision")
+    evidence_semantics = contract.get("evidence_semantics")
+    model = contract.get("model")
     if not all(
         isinstance(value, dict)
         for value in (
@@ -267,6 +272,9 @@ def load_raptor_training_reference_contract(
             configurations,
             checkpointing,
             boundaries,
+            decision,
+            evidence_semantics,
+            model,
         )
     ):
         raise ValueError("Raptor training reference contract is malformed")
@@ -276,11 +284,15 @@ def load_raptor_training_reference_contract(
     configurations = cast(dict[str, Any], configurations)
     checkpointing = cast(dict[str, Any], checkpointing)
     boundaries = cast(dict[str, Any], boundaries)
+    decision = cast(dict[str, Any], decision)
+    evidence_semantics = cast(dict[str, Any], evidence_semantics)
+    model = cast(dict[str, Any], model)
 
     competition_targets = load_verified_submission_contract().target_names
     if (
         contract.get("schema_version") != 1
-        or contract.get("status") != _TRAINING_REFERENCE_STATUS
+        or contract.get("status")
+        not in {_TRAINING_REFERENCE_STATUS, _TRAINING_REFERENCE_READY_STATUS}
         or notebook.get("kaggle_id") != 131724100
         or notebook.get("current_version") != 8
         or notebook.get("source_sha256") != _TRAINING_NOTEBOOK_SOURCE_SHA256
@@ -302,11 +314,19 @@ def load_raptor_training_reference_contract(
         or attached.get("aggregate_study_count") != 4407
         or attached.get("aggregate_volume_shape") != [4407, 44, 336, 336]
         or checkpointing.get("public_training_checkpoint") is not None
-        or boundaries
+        or decision
         != {
-            "authoritative_training_recipe_complete": False,
-            "resource_infeasible": False,
-            "training_run_completed": False,
+            "issue": 36,
+            "recorded_at": "2026-09-24",
+            "objective": "best_evidence_reconstruction_of_published_training_recipe",
+            "historical_byte_identity_required": False,
+            "remote_training_approved": False,
+        }
+        or set(evidence_semantics)
+        != {
+            "published_authoritative",
+            "best_evidence_inferred",
+            "reconstruction_specific_pinned_identity",
         }
     ):
         raise ValueError("Raptor training reference contract identity has drifted")
@@ -348,24 +368,136 @@ def load_raptor_training_reference_contract(
         raise ValueError("Raptor training reference contract dataset identity drifted")
 
     candidate = labels.get("candidate")
+    selection = labels.get("reconstruction_selection")
     defaults = configurations.get("executable_defaults")
     documented = configurations.get("documented_coatnet_example")
-    if not all(isinstance(value, dict) for value in (candidate, defaults, documented)):
+    reconstruction = configurations.get("reconstruction_configuration")
+    pretrained = model.get("reconstruction_pretrained_identity")
+    reconstruction_output = checkpointing.get("reconstruction_output")
+    if not all(
+        isinstance(value, dict)
+        for value in (
+            candidate,
+            selection,
+            defaults,
+            documented,
+            reconstruction,
+            pretrained,
+            reconstruction_output,
+        )
+    ):
         raise ValueError(
             "Raptor training reference contract source facts are malformed"
         )
     candidate = cast(dict[str, Any], candidate)
+    selection = cast(dict[str, Any], selection)
     defaults = cast(dict[str, Any], defaults)
     documented = cast(dict[str, Any], documented)
+    reconstruction = cast(dict[str, Any], reconstruction)
+    pretrained = cast(dict[str, Any], pretrained)
+    reconstruction_output = cast(dict[str, Any], reconstruction_output)
+    expected_reconstruction = {
+        "evidence_semantic": "best_evidence_inferred",
+        "kind": "issue_36_best_evidence_reconstruction",
+        "architecture": ARCHITECTURE,
+        "resolution": MODEL_INPUT_SIZE,
+        "checkpoint_source": "timm_pretrained",
+        "pretrained": True,
+        "epochs": 16,
+        "batch_size": 8,
+        "validation_batch_size": 4,
+        "training_windows": 12,
+        "evaluation_windows": 24,
+        "backbone_learning_rate": 3e-5,
+        "head_learning_rate": 1e-3,
+        "weight_decay": 0.02,
+        "workers": 4,
+        "freeze_blocks": 0,
+        "topk": 3,
+        "normalization": "none",
+        "gradient_checkpointing": True,
+        "seed": 42,
+        "roi": False,
+        "augmentation": {
+            "multiplicative_gain_minimum": 0.9,
+            "multiplicative_gain_maximum": 1.1,
+            "flips": False,
+            "other_augmentation": False,
+        },
+        "optimizer": "AdamW",
+        "scheduler": "OneCycleLR",
+        "scheduler_pct_start": 0.15,
+        "scheduler_step": "per_batch_after_optimizer",
+        "precision": "cuda_bfloat16_autocast",
+        "gradient_scaler": False,
+        "gradient_accumulation": False,
+        "gradient_clip_norm": 3.0,
+        "loss": "BCEWithLogitsLoss_continuous_soft_targets_with_pos_weight",
+        "gold_validation_study_count": 58,
+        "gold_validation_only": True,
+        "best_selection": "strict_macro_auc_improvement",
+        "state_averaging": "equal_weight_top_3_epoch_states",
+    }
+    reconstruction_identity = cast(dict[str, Any], selection["reconstruction_identity"])
+    expected_boundary_base = {
+        "authoritative_training_recipe_complete": False,
+        "best_evidence_reconstruction_selected": True,
+        "pretrained_identity_pinned": False,
+        "resource_infeasible": False,
+        "training_run_completed": False,
+    }
+    lifecycle = reconstruction_identity.get("status")
+    if lifecycle == "pending_approved_read_only_retrieval":
+        valid_lifecycle = (
+            contract.get("status") == _TRAINING_REFERENCE_STATUS
+            and boundaries == {**expected_boundary_base, "label_identity_pinned": False}
+            and reconstruction_identity.get("sha256") is None
+            and reconstruction_identity.get("size_bytes") is None
+            and reconstruction_identity.get("columns") is None
+            and reconstruction_identity.get("row_count") is None
+        )
+    elif lifecycle == "pinned_after_approved_read_only_retrieval":
+        valid_lifecycle = (
+            contract.get("status") == _TRAINING_REFERENCE_READY_STATUS
+            and boundaries == {**expected_boundary_base, "label_identity_pinned": True}
+            and isinstance(reconstruction_identity.get("sha256"), str)
+            and re.fullmatch(
+                r"[0-9a-f]{64}", cast(str, reconstruction_identity["sha256"])
+            )
+            is not None
+            and type(reconstruction_identity.get("size_bytes")) is int
+            and reconstruction_identity.get("columns")
+            == ["StudyInstanceUID", *TARGET_NAMES]
+            and reconstruction_identity.get("row_count") == 4349
+        )
+    else:
+        valid_lifecycle = False
+    if not valid_lifecycle:
+        raise ValueError("Raptor training reference contract lifecycle has drifted")
+
     if (
         candidate.get("dataset_id") != 11640568
         or candidate.get("version") != 3
         or candidate.get("authority") != "non_authoritative_candidate"
+        or selection.get("evidence_semantic") != "best_evidence_inferred"
+        or selection.get("dataset_id") != 11640568
+        or selection.get("version") != 3
+        or selection.get("filename") != "labels_llm_soft.parquet"
+        or selection.get("historical_attachment_proven") is not False
+        or not isinstance(selection.get("reconstruction_identity"), dict)
         or defaults.get("kind") != "executable_cli_defaults"
         or defaults.get("architecture") != "vit_small_patch16_224"
         or documented.get("kind") != "documented_typical_command_not_observed_run"
         or documented.get("architecture") != ARCHITECTURE
+        or reconstruction != expected_reconstruction
         or configurations.get("actual_run_configuration") is not None
+        or pretrained.get("evidence_semantic")
+        != "reconstruction_specific_pinned_identity"
+        or pretrained.get("status") != "pending_execution"
+        or pretrained.get("repository") != "timm/coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k"
+        or pretrained.get("sha256") is not None
+        or reconstruction_output.get("status") != "pending_execution"
+        or reconstruction_output.get("best_checkpoint_sha256") is not None
         or not contract.get("unresolved_authoritative_identities")
     ):
         raise ValueError(

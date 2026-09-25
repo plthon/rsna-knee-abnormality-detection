@@ -91,6 +91,11 @@ _DINOV2_TRAINING_DATASET_SOURCES = (
     "plthon/dinov2-vits14-lvd142m",
     _COMBINED_CHECKPOINT_DATASET_ID,
 )
+_RAPTOR_RECONSTRUCTION_DATASET_SOURCES = (
+    "dreaddevelopment/knee-raptor-corpus",
+    "dreaddevelopment/knee-raptor-corpus-ext",
+    "dreaddevelopment/rsna-knee-labels",
+)
 _PUBLIC_BASELINE_CONTRACTS = (
     "data-index.json",
     "gold-baseline.json",
@@ -111,6 +116,7 @@ class KaggleSpec:
     kernel_sources: tuple[str, ...] = ()
     model_sources: tuple[str, ...] = ()
     gpu: bool = False
+    internet: bool = False
     machine_shape: str = ""
     replacements: Mapping[str, str] = field(default_factory=dict)
     embed_package: bool = False
@@ -216,6 +222,8 @@ def build_kaggle_bundle(
         _validate_raptor_parity_source(source)
     elif spec.validator == "raptor_scoring":
         _validate_raptor_scoring_source(source)
+    elif spec.validator == "raptor_reconstruction":
+        _validate_raptor_reconstruction_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -1307,6 +1315,61 @@ def build_raptor_scoring_bundle(
     return _record_rendered_notebook_hash(bundle, label="Raptor scoring")
 
 
+def build_raptor_reconstruction_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    stage: str,
+    kernel_id: str | None = None,
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build the private best-evidence Raptor training reconstruction."""
+    if stage not in {"smoke", "full"}:
+        raise ValueError("Raptor reconstruction requires stage smoke or full")
+    source_path = project_root / "notebooks" / "train_raptor_reconstruction.py"
+    contract_names = ("competition.json", "raptor-training-reference-v1.json")
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor reconstruction requires contracts/{name}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError(
+            "Raptor reconstruction requires a clean committed Git revision"
+        )
+    resolved_kernel_id = kernel_id or f"plthon/rsna-knee-raptor-reconstruction-{stage}"
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="train_raptor_reconstruction.ipynb",
+            kernel_id=resolved_kernel_id,
+            title=f"RSNA Knee Raptor Reconstruction {stage.title()}",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=_RAPTOR_RECONSTRUCTION_DATASET_SOURCES,
+            gpu=True,
+            internet=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_RECONSTRUCTION_STAGE__": stage,
+                "__RSNA_KNEE_KERNEL_ID__": resolved_kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_reconstruction",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor reconstruction")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -1434,6 +1497,8 @@ def _validate_spec(spec: KaggleSpec, *, gpu_approved: bool) -> None:
         )
     if not spec.gpu and spec.machine_shape:
         raise ValueError("CPU metadata cannot select an accelerator shape")
+    if spec.internet and spec.validator != "raptor_reconstruction":
+        raise ValueError("Internet is allowed only for Raptor reconstruction")
 
 
 def _kernel_metadata(spec: KaggleSpec) -> dict[str, object]:
@@ -1446,7 +1511,7 @@ def _kernel_metadata(spec: KaggleSpec) -> dict[str, object]:
         "competition_sources": list(spec.competition_sources),
         "dataset_sources": list(spec.dataset_sources),
         "enable_gpu": str(spec.gpu).lower(),
-        "enable_internet": "false",
+        "enable_internet": str(spec.internet).lower(),
         "enable_tpu": "false",
         "id": spec.kernel_id,
         "is_private": "true",
@@ -1467,7 +1532,7 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
     _require_resolved_kaggle_id(kernel_id)
     if (
         metadata.get("is_private") != "true"
-        or metadata.get("enable_internet") != "false"
+        or metadata.get("enable_internet") not in {"true", "false"}
         or metadata.get("enable_tpu") != "false"
         or metadata.get("kernel_type") != "notebook"
         or metadata.get("language") != "python"
@@ -1504,6 +1569,9 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
     ):
         raise ValueError("Bundle provenance does not match the rendered metadata")
     validator = provenance.get("validator")
+    internet_enabled = metadata.get("enable_internet") == "true"
+    if internet_enabled != (validator == "raptor_reconstruction"):
+        raise ValueError("Kaggle bundle internet policy differs from its validator")
     if validator == "ordering":
         _validate_public_ordering_source(_notebook_source(source))
     elif validator == "baseline":
@@ -1589,6 +1657,16 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         dataset_sources = metadata.get("dataset_sources")
         if not isinstance(dataset_sources, list) or len(dataset_sources) != 1:
             raise ValueError("DINOv2 scoring requires one retained checkpoint input")
+    elif validator == "raptor_reconstruction":
+        _validate_raptor_reconstruction_source(_notebook_source(source))
+        if (
+            metadata.get("competition_sources") != ["rsna-knee-abnormality-detection"]
+            or tuple(metadata.get("dataset_sources", ()))
+            != _RAPTOR_RECONSTRUCTION_DATASET_SOURCES
+            or metadata.get("kernel_sources") != []
+            or metadata.get("model_sources") != []
+        ):
+            raise ValueError("Raptor reconstruction attached unexpected inputs")
     elif validator in {"raptor_parity", "raptor_scoring"}:
         notebook_source = _notebook_source(source)
         if validator == "raptor_parity":
@@ -2087,6 +2165,39 @@ def _validate_raptor_scoring_source(source: str) -> None:
     )
     if any(value in source for value in forbidden):
         raise ValueError("Raptor scoring notebook crosses an unapproved boundary")
+
+
+def _validate_raptor_reconstruction_source(source: str) -> None:
+    required = (
+        "run_raptor_reconstruction",
+        "verify_raptor_reconstruction_artifact",
+        'STAGE_LITERAL = "smoke"',
+        '"training": True',
+        '"hidden_test_inference": False',
+        '"competition_submission": False',
+        '"raptor-reconstruction-best.pt"',
+        '"raptor-reconstruction-swa.pt"',
+        '"raptor-reconstruction-report.json"',
+        '"run-manifest.json"',
+        "Training stage: completed",
+        "Hidden-test inference: not run",
+        "Competition submission: not run",
+    )
+    stage_markers = ('STAGE_LITERAL = "smoke"', 'STAGE_LITERAL = "full"')
+    if any(value not in source for value in required if value not in stage_markers):
+        raise ValueError("Raptor reconstruction notebook omits a training safeguard")
+    if not any(value in source for value in stage_markers):
+        raise ValueError("Raptor reconstruction notebook has no resolved stage")
+    forbidden = (
+        'COMPETITION_ROOT / "test_series"',
+        '"submission.csv"',
+        "write_submission",
+        "run_raptor_reference",
+        "kaggle competitions submit",
+        "competitions.submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor reconstruction crosses an unapproved boundary")
 
 
 def _validate_reports_source(source: str) -> None:
