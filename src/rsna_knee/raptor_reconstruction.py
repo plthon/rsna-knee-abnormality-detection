@@ -868,7 +868,7 @@ def _resolve_pretrained_weight() -> PretrainedWeightIdentity:
     raw_path = hub.hf_hub_download(
         repo_id=repository, filename=filename, revision=revision
     )
-    path = _resolved_pretrained_cache_path(Path(raw_path), revision)
+    path = _validated_pretrained_cache_path(Path(raw_path), revision)
     return PretrainedWeightIdentity(
         repository=repository,
         requested_revision=None,
@@ -880,12 +880,12 @@ def _resolve_pretrained_weight() -> PretrainedWeightIdentity:
     )
 
 
-def _resolved_pretrained_cache_path(path: Path, revision: str) -> Path:
+def _validated_pretrained_cache_path(path: Path, revision: str) -> Path:
     if not path.is_file() or revision not in path.parts:
         raise ValueError(
             "Raptor pretrained cache path does not pin the resolved revision"
         )
-    return path.resolve()
+    return path
 
 
 def _new_backbone(

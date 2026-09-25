@@ -335,6 +335,6 @@ def test_pretrained_cache_revision_is_checked_before_symlink_resolution(
     snapshot.parent.mkdir(parents=True)
     snapshot.symlink_to(blob)
 
-    assert reconstruction._resolved_pretrained_cache_path(snapshot, revision) == (
-        blob.resolve()
-    )
+    validated = reconstruction._validated_pretrained_cache_path(snapshot, revision)
+    assert validated == snapshot
+    assert validated.suffix == ".safetensors"
