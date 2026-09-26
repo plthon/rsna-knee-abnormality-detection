@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -142,7 +143,10 @@ def test_crop_config_preserves_frozen_baseline_and_rejects_other_interventions()
     }
 
 
-def test_crop_checkpoint_reload_and_schema_target_protection(tmp_path: Path) -> None:
+@pytest.mark.parametrize("image_size", [224, 336])
+def test_crop_checkpoint_reload_and_schema_target_protection(
+    tmp_path: Path, image_size: int
+) -> None:
     torch = pytest.importorskip("torch")
     from rsna_knee.combined_supervision import (
         _combined_config_record,
@@ -158,7 +162,17 @@ def test_crop_checkpoint_reload_and_schema_target_protection(tmp_path: Path) -> 
     )
 
     config = load_combined_baseline_config(
-        Path(__file__).parents[1] / "configs/physical-crop.toml"
+        Path(__file__).parents[1]
+        / (
+            "configs/physical-crop.toml"
+            if image_size == 224
+            else "configs/resolution-336.toml"
+        )
+    )
+    schema = (
+        "rsna-knee-physical-crop-v1"
+        if image_size == 224
+        else "rsna-knee-resolution-336-v1"
     )
     targets = list(load_verified_submission_contract().target_names)
     model = _new_uninitialized_model(len(targets))
@@ -177,8 +191,8 @@ def test_crop_checkpoint_reload_and_schema_target_protection(tmp_path: Path) -> 
     assert decoded.spatial_counts["series_crop"] == 1
     assert decoded.spatial_counts["studies_crop"] == 1
     assert model.aggregation == "mean" and model.plane_gate is None
-    payload = {
-        "checkpoint_schema_version": "rsna-knee-physical-crop-v1",
+    payload: dict[str, Any] = {
+        "checkpoint_schema_version": schema,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": {},
         "scaler_state_dict": {},
@@ -213,11 +227,17 @@ def test_crop_checkpoint_reload_and_schema_target_protection(tmp_path: Path) -> 
     with torch.no_grad():
         torch.testing.assert_close(loaded(*inputs), model(*inputs), atol=1e-5, rtol=0)
     assert metadata["preprocessing"]["physical_fov_mm"] == 130.0
+    assert metadata["preprocessing"]["image_size"] == image_size
+    payload["preprocessing"]["image_size"] = 336 if image_size == 224 else 224
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="preprocessing"):
+        load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
+    payload["preprocessing"]["image_size"] = image_size
     payload["checkpoint_schema_version"] = 1
     torch.save(payload, checkpoint)
     with pytest.raises(ValueError, match="spatial identity"):
         load_combined_checkpoint(checkpoint, device=torch.device("cpu"))
-    payload["checkpoint_schema_version"] = "rsna-knee-physical-crop-v1"
+    payload["checkpoint_schema_version"] = schema
     payload["targets"] = list(reversed(targets))
     torch.save(payload, checkpoint)
     with pytest.raises(ValueError, match="target order"):

@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-22",
+  "status": "captured_from_public_inference_source",
+  "public_notebook": {
+    "url": "https://www.kaggle.com/code/dreaddevelopment/knee-mri-twelve-findings-from-a-single-model",
+    "version": 7,
+    "version_url": "https://www.kaggle.com/code/dreaddevelopment/knee-mri-twelve-findings-from-a-single-model/versions/7",
+    "kaggle_id": 131625748,
+    "last_run_at": "2026-09-18T23:06:07.922Z",
+    "source_sha256": "859aae12ecea593b45ab0a5f6463fa573cd3083f340c161e920f10fbba29e81b",
+    "kernel_metadata_sha256": "41bd29eaa2b8079dacf886b103793c4b849cb96aceef6751f77ec838fa3cee7f",
+    "docker_image": "gcr.io/kaggle-images/python@sha256:dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9",
+    "machine_shape": "NvidiaTeslaT4",
+    "internet_enabled": false
+  },
+  "model_dataset": {
+    "url": "https://www.kaggle.com/datasets/dreaddevelopment/raptor-knee-widedense",
+    "version": 2,
+    "dataset_id": 11742423,
+    "license": "CC0-1.0",
+    "last_updated": "2026-08-23T04:12:20.703000",
+    "metadata_sha256": "eea3f4c07fad7c2490320be3a5297ec031b3897368aef99ea318e8f95f948b3a"
+  },
+  "checkpoint": {
+    "filename": "raptor_ft_coatnet_v4_full.pt",
+    "size_bytes": 292829402,
+    "sha256": "89606f05849838529e1b4658d28fb049623205d9853371548403bca460361ded",
+    "top_level_keys": [
+      "model",
+      "gold_auc",
+      "aucs",
+      "src",
+      "res",
+      "arch",
+      "lab",
+      "epoch"
+    ],
+    "state_dict_entries": 486,
+    "metadata": {
+      "arch": "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k",
+      "res": 384,
+      "lab": [
+        "ACL",
+        "MCL",
+        "Medial Meniscus",
+        "Lateral Meniscus",
+        "Medial OA",
+        "Lateral OA",
+        "PF OA",
+        "Effusion",
+        "Synovitis",
+        "Baker's",
+        "Contusion",
+        "Fracture"
+      ],
+      "epoch": 12,
+      "src": "timm-pretrained",
+      "gold_auc": 0.9167492483170476,
+      "aucs": {
+        "ACL": 0.9669117647058824,
+        "MCL": 0.9705215419501134,
+        "Medial Meniscus": 0.9483173076923077,
+        "Lateral Meniscus": 0.8807453416149068,
+        "Medial OA": 0.9860465116279069,
+        "Lateral OA": 0.8684719535783366,
+        "PF OA": 0.8288288288288287,
+        "Effusion": 0.9788819875776398,
+        "Synovitis": 0.7574671445639187,
+        "Baker's": 0.9873188405797102,
+        "Contusion": 0.9149797570850202,
+        "Fracture": 0.9125000000000001
+      }
+    },
+    "loader": {
+      "weights_modified": false,
+      "state_dict_strict": true,
+      "repository_safety_difference": "torch.load uses weights_only=true; tensor and primitive metadata behavior is unchanged"
+    }
+  },
+  "study_stack": {
+    "intermediate_size": 336,
+    "physical_crop_mm": 140.0,
+    "slice_span_fraction": [
+      0.06,
+      0.94
+    ],
+    "slots": [
+      {
+        "plane": "Sagittal",
+        "preferred_fluid_sensitive": 1,
+        "slice_count": 18
+      },
+      {
+        "plane": "Sagittal",
+        "preferred_fluid_sensitive": 0,
+        "slice_count": 14
+      },
+      {
+        "plane": "Coronal",
+        "preferred_fluid_sensitive": 1,
+        "slice_count": 12
+      },
+      {
+        "plane": "Coronal",
+        "preferred_fluid_sensitive": 0,
+        "slice_count": 8
+      },
+      {
+        "plane": "Axial",
+        "preferred_fluid_sensitive": -1,
+        "slice_count": 12
+      }
+    ],
+    "total_slices": 64,
+    "series_selection": "For each slot, preserve test_series.csv row order, exclude already-used SeriesInstanceUID values, choose the first same-plane row with the preferred integer Fluid_Sensitive value when preference is 0 or 1, otherwise choose the first unused same-plane row.",
+    "dicom_file_match": "*.dcm",
+    "slice_order": "Sort ascending by dot(ImagePositionPatient, cross(IOP row, IOP column)); use InstanceNumber when IOP/IPP are unavailable; unreadable headers use position 0.0 and spacing 0.5.",
+    "sampling": "For n>1, lo=int(n*0.06), hi=max(int(n*0.94)-1, lo), then np.linspace(lo, hi, slot_count).round().astype(int); for n=1 repeat index 0.",
+    "short_series": "Repeated source indices are retained; they are not deduplicated.",
+    "pixel_spacing": "Use only float(PixelSpacing[0]); default to 0.5 when absent or the header fails. During crop, nonpositive sampled spacing falls back to the median of successfully read header spacings.",
+    "decode": "pydicom.dcmread, apply_modality_lut, float32; MONOCHROME1 transforms pixels as max-pixel without adding the minimum.",
+    "intensity": "Compute one 2nd/98th percentile pair over all successfully decoded sampled pixels in the selected series, clip (pixel-lo)/(hi-lo+1e-6) to [0,1], spatially transform, multiply by 255 and truncate to uint8.",
+    "crop": "side=round(140/max(spacing,1e-3)), clamp side to min(source height,source width), center-crop a square with floor offsets; no padding.",
+    "intermediate_resize": "cv2.resize to 336x336 with INTER_AREA for both downsampling and upsampling.",
+    "missing_slot": "Leave every slice in the slot zero-filled.",
+    "decode_failure": "Leave that sampled slice zero-filled and continue.",
+    "mask": "A slice is valid only when the sum of its uint8 pixels is greater than zero."
+  },
+  "windows": {
+    "count": 42,
+    "center_selection": "Find nonzero mask indices. If fewer than three exist, substitute arange(min(3, depth)). Let lo=min(valid), hi=max(valid); candidates are every center from lo+1 through hi-1 whose neighbors remain within lo..hi. If empty, use max(1,min(floor((lo+hi)/2),depth-2)). Select 42 candidate positions with rounded linspace indices, retaining duplicates.",
+    "slot_boundaries": "Candidate centers are bounded only by the first and last valid stack slices. Zero-filled slots and slot boundaries are not excluded, so a three-slice window may cross them.",
+    "channels": [
+      "previous",
+      "center",
+      "next"
+    ],
+    "model_resize": "torch.nn.functional.interpolate to 384x384, bilinear, align_corners=false",
+    "scale": "Convert uint8 to float32 and divide by 255 before model resize.",
+    "normalization": {
+      "name": "imagenet",
+      "mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "std": [
+        0.229,
+        0.224,
+        0.225
+      ]
+    }
+  },
+  "model": {
+    "architecture": "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k",
+    "backbone_factory": "timm.create_model(pretrained=false,num_classes=0,in_chans=3,global_pool=avg)",
+    "feature_count": 1024,
+    "head": "LayerNorm(1024); Linear(1024,256), Tanh, Dropout(0.2), Linear(256,12); softmax attention across 42 windows independently per target; per-target clsW dot pooled feature plus clsb.",
+    "attention_mask": "No mask is passed to attention. Every constructed window participates.",
+    "activation": "sigmoid logits",
+    "cuda_precision": "First attempt uses float16 autocast; any RuntimeError retries the study in float32 after emptying the CUDA cache. CPU uses float32.",
+    "cuda_backend": {
+      "cudnn_benchmark": true,
+      "matmul_allow_tf32": true
+    },
+    "determinism": "Model is placed in eval mode; no test-time augmentation is used."
+  },
+  "output": {
+    "raw_study_failure": "Initialize every target to 0.5 and retain those values when any study preprocessing or inference exception occurs.",
+    "submission_transform": "Clip each arm's sigmoid outputs to [0,1], compute per-target percentile ranks with argsort(argsort(x))/(study_count-1), and use those ranks as final predictions. With one arm at weight 1.0 this is still applied.",
+    "ensemble": "One arm only; normalized weight 1.0.",
+    "submission_order": [
+      "StudyInstanceUID",
+      "ACL",
+      "MCL",
+      "Medial Meniscus",
+      "Lateral Meniscus",
+      "Medial OA",
+      "Lateral OA",
+      "PF OA",
+      "Effusion",
+      "Synovitis",
+      "Baker's",
+      "Contusion",
+      "Fracture"
+    ]
+  },
+  "reference_evidence": {
+    "public_leaderboard_score": 0.924,
+    "gold_macro_roc_auc": 0.9167492483170476,
+    "gold_cohort_study_count": 58,
+    "gold_metric_role": "sanity/parity diagnostic only; checkpoint metadata does not establish an unbiased comparison cohort"
+  },
+  "source_discrepancies": [
+    "The prose says a missing slot is skipped by the model, but executable code only uses the mask to bound center selection; zero-filled internal gaps still produce attention windows.",
+    "The prose describes a 140 mm PixelSpacing crop generally, but executable code uses PixelSpacing[0] for both square dimensions, clamps to the source image, and never pads.",
+    "The K_EVAL comment says every window position, but executable code samples exactly 42 rounded positions from all candidates and may omit or duplicate candidate centers.",
+    "Comments still mention three arms, K_EVAL=24, 0.914/0.915 live scores and an old 0.8893 result; executable ARMS contains one checkpoint and K_EVAL is 42.",
+    "The executable submission uses percentile ranks rather than the model's sigmoid probabilities directly.",
+    "Notebook prose and checkpoint metadata report approximately 0.9167 macro ROC-AUC on 58 gold studies, while executable-source comments report 0.9054 for this model on a 58-study gate; the source does not reconcile these values."
+  ],
+  "unresolved_nonbehavioral_metadata": [
+    "The notebook source does not print timm or OpenCV package versions. The Kaggle docker image digest is pinned instead."
+  ]
+}

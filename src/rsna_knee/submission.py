@@ -13,6 +13,7 @@ from .competition_contract import (
 )
 from .dicom import decode_pixels
 from .provenance import create_run_id, write_run_manifest
+from .public_label_audit import find_input_files
 
 _VALIDATION_SCHEMA_VERSION = 1
 
@@ -327,7 +328,7 @@ def _validate_submission(
 
 
 def _discover_competition_root(input_root: Path) -> Path:
-    candidates = sorted(input_root.rglob("sample_submission.csv"))
+    candidates = sorted(find_input_files(input_root, "sample_submission.csv"))
     if not candidates:
         raise FileNotFoundError(
             f"No sample_submission.csv found below input root: {input_root}"

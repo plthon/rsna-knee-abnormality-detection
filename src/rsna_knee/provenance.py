@@ -32,6 +32,7 @@ def write_run_manifest(
     notebook: Mapping[str, object],
     artifacts: Sequence[Path],
     artifact_root: Path,
+    runtime: Mapping[str, object] | None = None,
 ) -> Path:
     """Write compact provenance for one portable pipeline run."""
     artifact_root = artifact_root.resolve()
@@ -47,12 +48,19 @@ def write_run_manifest(
             }
         )
 
+    runtime_record = _capture_runtime()
+    for key, value in (runtime or {}).items():
+        current = runtime_record.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            current.update(value)
+        else:
+            runtime_record[key] = value
     manifest = {
         "artifacts": artifact_records,
         "configuration": dict(configuration),
         "notebook": dict(notebook),
         "run_id": run_id,
-        "runtime": _capture_runtime(),
+        "runtime": runtime_record,
         "schema_version": 1,
         "source": dict(source),
     }

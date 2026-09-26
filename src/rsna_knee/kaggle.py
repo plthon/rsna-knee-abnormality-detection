@@ -91,6 +91,11 @@ _DINOV2_TRAINING_DATASET_SOURCES = (
     "plthon/dinov2-vits14-lvd142m",
     _COMBINED_CHECKPOINT_DATASET_ID,
 )
+_RAPTOR_RECONSTRUCTION_DATASET_SOURCES = (
+    "dreaddevelopment/knee-raptor-corpus",
+    "dreaddevelopment/knee-raptor-corpus-ext",
+    "dreaddevelopment/rsna-knee-labels",
+)
 _PUBLIC_BASELINE_CONTRACTS = (
     "data-index.json",
     "gold-baseline.json",
@@ -111,6 +116,7 @@ class KaggleSpec:
     kernel_sources: tuple[str, ...] = ()
     model_sources: tuple[str, ...] = ()
     gpu: bool = False
+    internet: bool = False
     machine_shape: str = ""
     replacements: Mapping[str, str] = field(default_factory=dict)
     embed_package: bool = False
@@ -202,6 +208,8 @@ def build_kaggle_bundle(
             clipped_window=spec.validator == "clipped_window",
             slot_attention=spec.validator == "slot_attention",
         )
+    elif spec.validator in {"resolution_smoke", "resolution_full"}:
+        _validate_resolution_source(source, smoke=spec.validator == "resolution_smoke")
     elif spec.validator in {"plane_gated_scoring", "physical_crop_scoring"}:
         _validate_plane_gated_scoring_source(
             source, physical_crop=spec.validator == "physical_crop_scoring"
@@ -210,6 +218,12 @@ def build_kaggle_bundle(
         _validate_dinov2_training_source(source)
     elif spec.validator == "dinov2_scoring":
         _validate_dinov2_scoring_source(source)
+    elif spec.validator == "raptor_parity":
+        _validate_raptor_parity_source(source)
+    elif spec.validator == "raptor_scoring":
+        _validate_raptor_scoring_source(source)
+    elif spec.validator == "raptor_reconstruction":
+        _validate_raptor_reconstruction_source(source)
     elif spec.validator == "reports":
         _validate_reports_source(source)
 
@@ -810,18 +824,36 @@ def build_plane_gating_bundle(
     project_root: Path,
     output_root: Path,
     *,
-    kernel_id: str = "plthon/rsna-knee-plane-gating",
+    kernel_id: str | None = None,
     gpu_approved: bool = False,
     slot_attention: bool = False,
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
+    resolution_stage: str | None = None,
+    resource_smoke_path: Path | None = None,
 ) -> KaggleBundle:
     """Build a guarded controlled-training and paired-validation bundle."""
-    if sum((physical_crop, adjacent_slice, clipped_window, slot_attention)) > 1:
+    is_resolution = resolution_stage is not None
+    if is_resolution and resolution_stage not in {"smoke", "full"}:
+        raise ValueError("Resolution stage must be smoke or full")
+    if (
+        sum(
+            (
+                physical_crop,
+                adjacent_slice,
+                clipped_window,
+                slot_attention,
+                is_resolution,
+            )
+        )
+        > 1
+    ):
         raise ValueError("Choose one controlled representation experiment")
     name = (
-        "slot-attention"
+        "resolution-336"
+        if is_resolution
+        else "slot-attention"
         if slot_attention
         else "clipped-window"
         if clipped_window
@@ -832,15 +864,7 @@ def build_plane_gating_bundle(
         else "plane-gating"
     )
     source_name = (
-        "train_slot_attention"
-        if slot_attention
-        else "train_clipped_window"
-        if clipped_window
-        else "train_adjacent_slice"
-        if adjacent_slice
-        else "train_physical_crop"
-        if physical_crop
-        else "train_plane_gating"
+        "train_resolution" if is_resolution else f"train_{name.replace('-', '_')}"
     )
     config_path = project_root / "configs" / f"{name}.toml"
     source_path = project_root / "notebooks" / f"{source_name}.py"
@@ -852,71 +876,119 @@ def build_plane_gating_bundle(
     )
     config_bytes = config_path.read_bytes()
     git_commit, git_dirty = _git_state(project_root)
-    if (
-        (physical_crop or adjacent_slice or clipped_window or slot_attention)
-        and gpu_approved
-        and git_dirty
-    ):
+    guarded = name != "plane-gating"
+    if guarded and gpu_approved and git_dirty:
         raise ValueError(
-            "Physical crop GPU execution requires a clean committed revision"
+            "Controlled experiment GPU execution requires a clean committed revision"
         )
+    replacements = {
+        "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+        "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
+        "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+        "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+        "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": _sha256(source_path),
+        "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+    }
+    if is_resolution:
+        from dataclasses import replace
+
+        from .combined_supervision import (
+            _expected_resolution_configuration,
+            load_combined_baseline_config,
+        )
+        from .resolution import require_resolution_smoke
+
+        if resolution_stage == "full" and resource_smoke_path is None:
+            raise ValueError("Full bundle requires successful resource smoke evidence")
+        if resolution_stage == "smoke" and resource_smoke_path is not None:
+            raise ValueError(
+                "Smoke starts at batch 16 and does not accept prior evidence"
+            )
+        replacements["__RSNA_KNEE_RESOLUTION_STAGE__"] = str(resolution_stage)
+        replacements["__RSNA_KNEE_RESOURCE_SMOKE__"] = ""
+        if resource_smoke_path is not None:
+            smoke_bytes = resource_smoke_path.read_bytes()
+            batch_size = json.loads(smoke_bytes)["configuration"]["training"][
+                "batch_size"
+            ]
+            _expected_resolution_configuration(batch_size)
+            config = replace(
+                load_combined_baseline_config(config_path),
+                batch_size=batch_size,
+                gradient_accumulation_steps=16 // batch_size,
+            )
+            require_resolution_smoke(
+                resource_smoke_path,
+                config,
+                {"git_commit": git_commit, "git_dirty": git_dirty},
+            )
+            replacements["__RSNA_KNEE_RESOURCE_SMOKE__"] = base64.b64encode(
+                smoke_bytes
+            ).decode("ascii")
+    elif resource_smoke_path is not None:
+        raise ValueError("Resource smoke applies only to the resolution experiment")
     bundle = build_kaggle_bundle(
         project_root,
         output_root,
         KaggleSpec(
             source_name=source_path.name,
             notebook_name=f"{source_name}.ipynb",
-            kernel_id=kernel_id,
-            title="RSNA Knee Slot Attention"
-            if slot_attention
-            else "RSNA Knee Clipped Window"
-            if clipped_window
-            else "RSNA Knee Adjacent Slice"
-            if adjacent_slice
-            else "RSNA Knee Physical Crop"
-            if physical_crop
-            else "RSNA Knee Plane Gating",
+            kernel_id=kernel_id
+            or (
+                f"plthon/rsna-knee-resolution-336-{resolution_stage}"
+                if is_resolution
+                else "plthon/rsna-knee-plane-gating"
+            ),
+            title=f"RSNA Knee Resolution 336 {str(resolution_stage).title()}"
+            if is_resolution
+            else f"RSNA Knee {name.replace('-', ' ').title()}",
             competition_sources=("rsna-knee-abnormality-detection",),
             dataset_sources=_PLANE_GATING_DATASET_SOURCES,
             kernel_sources=(
                 (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop")
-                if adjacent_slice or clipped_window or slot_attention
+                if adjacent_slice or clipped_window or slot_attention or is_resolution
                 else _PLANE_GATING_KERNEL_SOURCES
             ),
-            gpu=gpu_approved
-            if physical_crop or adjacent_slice or clipped_window or slot_attention
-            else True,
-            machine_shape=_GPU_MACHINE_SHAPE
-            if gpu_approved
-            or not (physical_crop or adjacent_slice or clipped_window or slot_attention)
-            else "",
-            replacements={
-                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
-                "__RSNA_KNEE_CONFIG__": base64.b64encode(config_bytes).decode("ascii"),
-                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
-                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
-                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
-                    source_path.read_bytes()
-                ).hexdigest(),
-                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
-            },
+            gpu=gpu_approved if guarded else True,
+            machine_shape=_GPU_MACHINE_SHAPE if gpu_approved or not guarded else "",
+            replacements=replacements,
             embed_package=True,
             package_contracts=contract_names,
-            validator=(
-                "slot_attention"
-                if slot_attention
-                else "clipped_window"
-                if clipped_window
-                else "adjacent_slice"
-                if adjacent_slice
-                else "physical_crop"
-                if physical_crop
-                else "plane_gating"
-            ),
+            validator=f"resolution_{resolution_stage}"
+            if is_resolution
+            else name.replace("-", "_"),
         ),
         gpu_approved=gpu_approved,
     )
     return _record_rendered_notebook_hash(bundle, label=name.replace("-", " ").title())
+
+
+def _validate_resolution_source(source: str, *, smoke: bool) -> None:
+    required = (
+        f'STAGE = "{"smoke" if smoke else "full"}"',
+        'if STAGE == "smoke":',
+        'elif STAGE == "full":',
+        "run_resolution_smoke(",
+        "run_combined_baseline(",
+        "approved_gpu=GPU_APPROVED",
+        "source_provenance=source_provenance",
+        '"git_dirty"',
+        '"config_sha256"',
+        "load_combined_baseline_config(CONFIG_PATH)",
+        "resource_smoke_path=SMOKE_PATH",
+        "run_test_inference=False",
+        "verify_physical_crop_artifact(",
+        "resolution_336=True",
+    )
+    if any(text not in source for text in required) or any(
+        text in source
+        for text in (
+            "run_combined_scoring(",
+            "competitions submit",
+            "run_test_inference=True",
+        )
+    ):
+        raise ValueError("Resolution notebook omits a required execution safeguard")
 
 
 def build_plane_gated_scoring_bundle(
@@ -1139,6 +1211,165 @@ def build_dinov2_scoring_bundle(
     return _record_rendered_notebook_hash(bundle, label="DINOv2 scoring")
 
 
+def build_raptor_parity_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-raptor-reference-parity",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build approved CPU/T4 parity and organizer-gold diagnostics for Raptor."""
+    contract_names = (
+        "competition.json",
+        "data-index.json",
+        "gold-supervision.json",
+        "raptor-reference-v1.json",
+    )
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor parity requires contracts/{name}")
+    source_path = project_root / "notebooks" / "raptor_reference_parity.py"
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Missing notebook source: {source_path}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("Raptor parity requires a clean committed Git revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="raptor_reference_parity.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Raptor Reference Parity",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=("dreaddevelopment/raptor-knee-widedense",),
+            kernel_sources=("plthon/rsna-knee-data-index",),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_parity",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor parity")
+
+
+def build_raptor_scoring_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    kernel_id: str = "plthon/rsna-knee-raptor-reference-scoring",
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build approved hidden inference for the exact public Raptor checkpoint."""
+    contract_names = ("competition.json", "raptor-reference-v1.json")
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor scoring requires contracts/{name}")
+    source_path = project_root / "notebooks" / "score_raptor_reference.py"
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Missing notebook source: {source_path}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("Raptor scoring requires a clean committed Git revision")
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="score_raptor_reference.ipynb",
+            kernel_id=kernel_id,
+            title="RSNA Knee Raptor Reference Scoring",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=("dreaddevelopment/raptor-knee-widedense",),
+            gpu=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_KERNEL_ID__": kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_scoring",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor scoring")
+
+
+def build_raptor_reconstruction_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    stage: str,
+    kernel_id: str | None = None,
+    gpu_approved: bool = False,
+) -> KaggleBundle:
+    """Build the private best-evidence Raptor training reconstruction."""
+    if stage not in {"smoke", "full"}:
+        raise ValueError("Raptor reconstruction requires stage smoke or full")
+    source_path = project_root / "notebooks" / "train_raptor_reconstruction.py"
+    contract_names = ("competition.json", "raptor-training-reference-v1.json")
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor reconstruction requires contracts/{name}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError(
+            "Raptor reconstruction requires a clean committed Git revision"
+        )
+    resolved_kernel_id = kernel_id or f"plthon/rsna-knee-raptor-reconstruction-{stage}"
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="train_raptor_reconstruction.ipynb",
+            kernel_id=resolved_kernel_id,
+            title=f"RSNA Knee Raptor Reconstruction {stage.title()}",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=_RAPTOR_RECONSTRUCTION_DATASET_SOURCES,
+            gpu=True,
+            internet=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_RECONSTRUCTION_STAGE__": stage,
+                "__RSNA_KNEE_KERNEL_ID__": resolved_kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_reconstruction",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor reconstruction")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -1266,6 +1497,8 @@ def _validate_spec(spec: KaggleSpec, *, gpu_approved: bool) -> None:
         )
     if not spec.gpu and spec.machine_shape:
         raise ValueError("CPU metadata cannot select an accelerator shape")
+    if spec.internet and spec.validator != "raptor_reconstruction":
+        raise ValueError("Internet is allowed only for Raptor reconstruction")
 
 
 def _kernel_metadata(spec: KaggleSpec) -> dict[str, object]:
@@ -1278,7 +1511,7 @@ def _kernel_metadata(spec: KaggleSpec) -> dict[str, object]:
         "competition_sources": list(spec.competition_sources),
         "dataset_sources": list(spec.dataset_sources),
         "enable_gpu": str(spec.gpu).lower(),
-        "enable_internet": "false",
+        "enable_internet": str(spec.internet).lower(),
         "enable_tpu": "false",
         "id": spec.kernel_id,
         "is_private": "true",
@@ -1299,7 +1532,7 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
     _require_resolved_kaggle_id(kernel_id)
     if (
         metadata.get("is_private") != "true"
-        or metadata.get("enable_internet") != "false"
+        or metadata.get("enable_internet") not in {"true", "false"}
         or metadata.get("enable_tpu") != "false"
         or metadata.get("kernel_type") != "notebook"
         or metadata.get("language") != "python"
@@ -1336,6 +1569,9 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
     ):
         raise ValueError("Bundle provenance does not match the rendered metadata")
     validator = provenance.get("validator")
+    internet_enabled = metadata.get("enable_internet") == "true"
+    if internet_enabled != (validator == "raptor_reconstruction"):
+        raise ValueError("Kaggle bundle internet policy differs from its validator")
     if validator == "ordering":
         _validate_public_ordering_source(_notebook_source(source))
     elif validator == "baseline":
@@ -1372,6 +1608,16 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         )
         if tuple(metadata.get("kernel_sources", ())) != expected_kernels:
             raise ValueError("Plane gating must attach the frozen index kernel output")
+    elif validator in {"resolution_smoke", "resolution_full"}:
+        _validate_resolution_source(
+            _notebook_source(source), smoke=validator == "resolution_smoke"
+        )
+        if tuple(
+            metadata.get("dataset_sources", ())
+        ) != _PLANE_GATING_DATASET_SOURCES or tuple(
+            metadata.get("kernel_sources", ())
+        ) != (*_PLANE_GATING_KERNEL_SOURCES, "plthon/rsna-knee-physical-crop"):
+            raise ValueError("Resolution bundles require the frozen #31 inputs")
     elif validator == "physical_crop_scoring":
         _validate_plane_gated_scoring_source(
             _notebook_source(source), physical_crop=True
@@ -1411,6 +1657,32 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         dataset_sources = metadata.get("dataset_sources")
         if not isinstance(dataset_sources, list) or len(dataset_sources) != 1:
             raise ValueError("DINOv2 scoring requires one retained checkpoint input")
+    elif validator == "raptor_reconstruction":
+        _validate_raptor_reconstruction_source(_notebook_source(source))
+        if (
+            metadata.get("competition_sources") != ["rsna-knee-abnormality-detection"]
+            or tuple(metadata.get("dataset_sources", ()))
+            != _RAPTOR_RECONSTRUCTION_DATASET_SOURCES
+            or metadata.get("kernel_sources") != []
+            or metadata.get("model_sources") != []
+        ):
+            raise ValueError("Raptor reconstruction attached unexpected inputs")
+    elif validator in {"raptor_parity", "raptor_scoring"}:
+        notebook_source = _notebook_source(source)
+        if validator == "raptor_parity":
+            _validate_raptor_parity_source(notebook_source)
+            raptor_expected_kernels: list[str] = ["plthon/rsna-knee-data-index"]
+        else:
+            _validate_raptor_scoring_source(notebook_source)
+            raptor_expected_kernels = []
+        if (
+            metadata.get("competition_sources") != ["rsna-knee-abnormality-detection"]
+            or metadata.get("dataset_sources")
+            != ["dreaddevelopment/raptor-knee-widedense"]
+            or metadata.get("kernel_sources") != raptor_expected_kernels
+            or metadata.get("model_sources") != []
+        ):
+            raise ValueError("Raptor bundle attached unexpected inputs")
     elif validator == "reports":
         _validate_reports_source(_notebook_source(source))
     elif validator == "report_llm":
@@ -1828,6 +2100,104 @@ def _validate_dinov2_scoring_source(source: str) -> None:
     forbidden = ("run_combined_baseline", "train_epoch", "derive_combined_cohort")
     if any(value in source for value in forbidden):
         raise ValueError("DINOv2 scoring notebook contains training work")
+
+
+def _validate_raptor_parity_source(source: str) -> None:
+    required = (
+        "derive_gold_training_cohort",
+        "evaluate_point_predictions",
+        "load_raptor_model",
+        "torch.backends.cudnn.benchmark = True",
+        "torch.backends.cuda.matmul.allow_tf32 = True",
+        'COMPETITION_ROOT / "train_series"',
+        '"hidden_test_inference": False',
+        '"competition_submission": False',
+        '"training": False',
+        "Hidden-test inference: not run",
+        "Competition submission: not run",
+        "Training: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Raptor parity notebook omits a phase-boundary safeguard")
+    forbidden = (
+        'COMPETITION_ROOT / "test_series"',
+        "run_raptor_reference",
+        "write_submission",
+        "kaggle competitions submit",
+        "train_epoch",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor parity notebook crosses an unapproved boundary")
+
+
+def _validate_raptor_scoring_source(source: str) -> None:
+    required = (
+        "CHECKPOINT_FILENAME",
+        "CHECKPOINT_SHA256",
+        "CHECKPOINT_SIZE_BYTES",
+        "run_raptor_reference",
+        "torch.backends.cudnn.benchmark = True",
+        "torch.backends.cuda.matmul.allow_tf32 = True",
+        '"hidden_test_inference": True',
+        '"competition_submission": False',
+        '"training": False',
+        '"submission.csv"',
+        '"submission-fallbacks.csv"',
+        '"submission-validation.json"',
+        '"raptor-reference-run.json"',
+        '"run-manifest.json"',
+        "Hidden-test inference: completed",
+        "Competition submission: not run",
+        "Training: not run",
+    )
+    if any(value not in source for value in required):
+        raise ValueError("Raptor scoring notebook omits an inference safeguard")
+    forbidden = (
+        "derive_gold_training_cohort",
+        "evaluate_point_predictions",
+        'COMPETITION_ROOT / "train_series"',
+        "write_submission",
+        "run_combined_baseline",
+        "run_combined_scoring",
+        "train_epoch",
+        "kaggle competitions submit",
+        "competitions.submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor scoring notebook crosses an unapproved boundary")
+
+
+def _validate_raptor_reconstruction_source(source: str) -> None:
+    required = (
+        "run_raptor_reconstruction",
+        "verify_raptor_reconstruction_artifact",
+        'STAGE_LITERAL = "smoke"',
+        '"training": True',
+        '"hidden_test_inference": False',
+        '"competition_submission": False',
+        '"raptor-reconstruction-best.pt"',
+        '"raptor-reconstruction-swa.pt"',
+        '"raptor-reconstruction-report.json"',
+        '"run-manifest.json"',
+        "Training stage: completed",
+        "Hidden-test inference: not run",
+        "Competition submission: not run",
+    )
+    stage_markers = ('STAGE_LITERAL = "smoke"', 'STAGE_LITERAL = "full"')
+    if any(value not in source for value in required if value not in stage_markers):
+        raise ValueError("Raptor reconstruction notebook omits a training safeguard")
+    if not any(value in source for value in stage_markers):
+        raise ValueError("Raptor reconstruction notebook has no resolved stage")
+    forbidden = (
+        'COMPETITION_ROOT / "test_series"',
+        '"submission.csv"',
+        "write_submission",
+        "run_raptor_reference",
+        "kaggle competitions submit",
+        "competitions.submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor reconstruction crosses an unapproved boundary")
 
 
 def _validate_reports_source(source: str) -> None:

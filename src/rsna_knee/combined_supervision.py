@@ -35,7 +35,7 @@ from .holdout import (
 )
 from .indexing import build_competition_index, verify_index_artifact
 from .provenance import create_run_id, write_run_manifest
-from .public_label_audit import resolve_dataset_root
+from .public_label_audit import find_input_files, resolve_dataset_root
 from .sequence_slots import SLOT_ORDER, SLOT_SCHEMA, slot_metadata
 from .submission import (
     SubmissionInputs,
@@ -559,8 +559,11 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
         0 <= preprocessing.lower_percentile < preprocessing.upper_percentile <= 100
     ):
         raise ValueError("Preprocessing percentiles are invalid")
-    if preprocessing.image_size != 224:
-        raise ValueError("Baseline requires 224 by 224 pixel inputs")
+    if preprocessing.image_size != 224 and not (
+        preprocessing.image_size == 336
+        and preprocessing.spatial_mode == "physical_crop"
+    ):
+        raise ValueError("Only the fixed physical-crop experiment permits 336 inputs")
     if config.weight_identity != supported_backbones[config.architecture]:
         raise ValueError("Unexpected initialization weight identity")
     if config.architecture == "dinov2_vits14" and config.aggregation != "mean":
@@ -594,6 +597,8 @@ def load_combined_baseline_config(path: Path) -> CombinedBaselineConfig:
                 == "central_80_three_anchor"
             )
             if preprocessing.input_representation == "adjacent_slice_2_5d"
+            else _expected_resolution_configuration(config.batch_size)
+            if config.preprocessing.image_size == 336
             else _expected_physical_crop_configuration()
         )
         if _combined_config_record(config) != expected:
@@ -628,7 +633,7 @@ def discover_combined_training_inputs(
         expected_manifest_hash = _text(outputs, "manifest_sha256")
         candidates = [
             path.parent
-            for path in sorted(input_root.rglob("studies.csv"))
+            for path in sorted(find_input_files(input_root, "studies.csv"))
             if path.stat().st_size == expected_size
             and _sha256(path) == expected_hash
             and (path.parent / "index-manifest.json").is_file()
@@ -660,7 +665,7 @@ def discover_combined_training_inputs(
         expected_hash = _text(artifact, "sha256")
         weight_candidates = [
             path
-            for path in sorted(input_root.rglob(expected_name))
+            for path in sorted(find_input_files(input_root, expected_name))
             if path.is_file()
             and path.stat().st_size == expected_size
             and _sha256(path) == expected_hash
@@ -950,7 +955,7 @@ def discover_combined_checkpoint(
 ) -> Path:
     """Find exactly one attached checkpoint with the required digest."""
     candidates = sorted(
-        path for path in input_root.rglob("checkpoint.pt") if path.is_file()
+        path for path in find_input_files(input_root, "checkpoint.pt") if path.is_file()
     )
     matching = [path for path in candidates if _sha256(path) == expected_sha256]
     if len(matching) == 1 or (allow_identical_copies and matching):
@@ -976,6 +981,8 @@ def load_verified_combined_checkpoint(
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
+    resolution_336: bool = False,
+    physical_batch_size: int = 16,
 ) -> tuple[StudyClassifier, dict[str, Any]]:
     """Verify the frozen checkpoint before deserializing it for scoring."""
     if not path.is_file():
@@ -1003,7 +1010,9 @@ def load_verified_combined_checkpoint(
         "imagenet_std": [0.229, 0.224, 0.225],
     }
     expected_config = (
-        _expected_slot_configuration()
+        _expected_resolution_configuration(physical_batch_size)
+        if resolution_336
+        else _expected_slot_configuration()
         if slot_attention
         else _expected_adjacent_slice_configuration(clipped_window=clipped_window)
         if adjacent_slice or clipped_window
@@ -1011,14 +1020,22 @@ def load_verified_combined_checkpoint(
         if physical_crop
         else _expected_baseline_configuration()
     )
-    if physical_crop or adjacent_slice or clipped_window or slot_attention:
+    if (
+        physical_crop
+        or adjacent_slice
+        or clipped_window
+        or slot_attention
+        or resolution_336
+    ):
         expected_preprocessing.update(
             cast(dict[str, Any], expected_config["preprocessing"])
         )
     if adjacent_slice or clipped_window:
         expected_preprocessing["channel_adapter"] = "prestacked_previous_center_next"
     expected_schema = (
-        SLOT_SCHEMA
+        RESOLUTION_SCHEMA
+        if resolution_336
+        else SLOT_SCHEMA
         if slot_attention
         else _CLIPPED_WINDOW_SCHEMA
         if clipped_window
@@ -1364,8 +1381,26 @@ def run_combined_scoring(
     physical_crop: bool = False,
     adjacent_slice: bool = False,
     clipped_window: bool = False,
+    resolution_336: bool = False,
+    physical_batch_size: int = 16,
+    retained_artifact_dir: Path | None = None,
 ) -> CombinedScoringOutcome:
     """Run inference-only scoring against the live competition test mount."""
+    if resolution_336:
+        if retained_artifact_dir is None:
+            raise ValueError(
+                "Resolution inference requires a validation-retained artifact"
+            )
+        verification = verify_physical_crop_artifact(
+            retained_artifact_dir, resolution_336=True
+        )
+        if (
+            verification["decision"]["result"] != "keep"
+            or verification["checkpoint_sha256"] != expected_checkpoint_sha256
+        ):
+            raise ValueError(
+                "Resolution inference requires the exact validation-kept checkpoint"
+            )
     checkpoint = checkpoint_path or (
         discover_combined_checkpoint(input_root)
         if expected_checkpoint_sha256 == COMBINED_BASELINE_CHECKPOINT_SHA256
@@ -1373,7 +1408,24 @@ def run_combined_scoring(
             input_root, expected_sha256=expected_checkpoint_sha256
         )
     )
-    if aggregation == "target_slot_attention":
+    if resolution_336:
+        if (
+            backbone != "resnet18"
+            or aggregation != "mean"
+            or not physical_crop
+            or adjacent_slice
+            or clipped_window
+        ):
+            raise ValueError("Resolution scoring requires the fixed 336 contract")
+        model, checkpoint_payload = load_verified_combined_checkpoint(
+            checkpoint,
+            device=torch.device("cpu"),
+            expected_sha256=expected_checkpoint_sha256,
+            contract_path=competition_contract_path,
+            resolution_336=True,
+            physical_batch_size=physical_batch_size,
+        )
+    elif aggregation == "target_slot_attention":
         if (
             backbone != "resnet18"
             or not physical_crop
@@ -1622,9 +1674,24 @@ def run_combined_baseline(
     public_dataset_contract_path: Path | None = None,
     data_index_contract_path: Path | None = None,
     run_test_inference: bool = True,
+    resource_smoke_path: Path | None = None,
 ) -> CombinedBaselineOutcome:
     """Execute complete combined gold + public baseline training and validation."""
+    is_resolution = config.preprocessing.image_size == 336
+    resource_smoke = None
+    if is_resolution:
+        if run_test_inference:
+            raise ValueError(
+                "Resolution hidden inference requires separate approval after validation"
+            )
+        from .resolution import require_resolution_smoke, require_smoke_hardware
+
+        resource_smoke = require_resolution_smoke(
+            resource_smoke_path, config, source_provenance or {}
+        )
     cuda_evidence = require_approved_cuda(approved=approved_gpu)
+    if resource_smoke is not None:
+        require_smoke_hardware(resource_smoke, cuda_evidence)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_everything(config.seed)
 
@@ -1680,7 +1747,8 @@ def run_combined_baseline(
     control_checkpoint_size_bytes = None
     is_slot_attention = config.aggregation == "target_slot_attention"
     uses_crop_control = (
-        is_slot_attention
+        is_resolution
+        or is_slot_attention
         or config.preprocessing.input_representation == "adjacent_slice_2_5d"
     )
     is_adjacent_slice = (
@@ -1705,6 +1773,8 @@ def run_combined_baseline(
                 clipped_window=is_clipped_window
             )
             if is_adjacent_slice
+            else _expected_resolution_configuration(config.batch_size)
+            if config.preprocessing.image_size == 336
             else _expected_physical_crop_configuration()
         )
         if _combined_config_record(config) != expected:
@@ -1727,6 +1797,7 @@ def run_combined_baseline(
                     if uses_crop_control
                     else COMBINED_BASELINE_CHECKPOINT_SHA256
                 ),
+                allow_identical_copies=is_resolution,
             )
         if uses_crop_control:
             control_model, control_checkpoint = load_verified_physical_crop_checkpoint(
@@ -1737,6 +1808,7 @@ def run_combined_baseline(
             control_preprocessing = replace(
                 config.preprocessing,
                 input_representation="same_slice_rgb",
+                image_size=224,
                 slice_count=8,
                 sampling_layout="full_span",
             )
@@ -1761,9 +1833,13 @@ def run_combined_baseline(
             load_physical_crop_validation_predictions(
                 input_root, partition.val_studies, cohort.target_names
             )
-            if is_slot_attention
+            if is_slot_attention or is_resolution
             else None
         )
+        if is_resolution and control_val_pred is None:
+            raise ValueError(
+                "Resolution experiment requires verified cached #31 predictions"
+            )
         control_predictions_reused = control_val_pred is not None
         if control_val_pred is None:
             control_val_pred = predict_partition(
@@ -1811,7 +1887,9 @@ def run_combined_baseline(
         seed_everything(config.seed)
 
     artifact_dir = work_root / (
-        SLOT_SCHEMA
+        RESOLUTION_SCHEMA
+        if is_resolution
+        else SLOT_SCHEMA
         if is_slot_attention
         else _CLIPPED_WINDOW_SCHEMA
         if is_clipped_window
@@ -1864,7 +1942,7 @@ def run_combined_baseline(
         else:
             candidates = [
                 path
-                for path in sorted(input_root.rglob("checkpoint.pt"))
+                for path in sorted(find_input_files(input_root, "checkpoint.pt"))
                 if path.is_file() and path != control_checkpoint_path
             ]
             for candidate in candidates:
@@ -2227,7 +2305,9 @@ def run_combined_baseline(
 
         checkpoint_payload = {
             "checkpoint_schema_version": (
-                SLOT_SCHEMA
+                RESOLUTION_SCHEMA
+                if is_resolution
+                else SLOT_SCHEMA
                 if is_slot_attention
                 else _CLIPPED_WINDOW_SCHEMA
                 if is_clipped_window
@@ -2407,7 +2487,9 @@ def run_combined_baseline(
                 ),
             }
         decision = (
-            _slot_decision(comparison, config)
+            _resolution_decision(comparison, config)
+            if is_resolution
+            else _slot_decision(comparison, config)
             if is_slot_attention
             else _adjacent_slice_decision(comparison, config)
             if is_adjacent_slice
@@ -2424,7 +2506,9 @@ def run_combined_baseline(
             reloaded_val_pred,
             cohort.target_names,
             candidate_name=(
-                "slot_attention"
+                "resolution_336"
+                if is_resolution
+                else "slot_attention"
                 if is_slot_attention
                 else "clipped_window_2_5d"
                 if is_clipped_window
@@ -2497,6 +2581,7 @@ def run_combined_baseline(
     report_data = {
         "schema_version": _COMBINED_REPORT_SCHEMA_VERSION,
         "status": "complete",
+        **({"resource_smoke": resource_smoke} if is_resolution else {}),
         "implementation": dict(source_provenance or {}),
         "configuration": _combined_config_record(config),
         "cohort": {
@@ -2897,6 +2982,7 @@ def load_combined_checkpoint(
     if set(checkpoint) != required:
         raise ValueError("Combined checkpoint fields are incomplete or unexpected")
     if schema_version not in {
+        RESOLUTION_SCHEMA,
         SLOT_SCHEMA,
         _COMBINED_CHECKPOINT_SCHEMA_VERSION,
         _PHYSICAL_CROP_SCHEMA,
@@ -2920,6 +3006,7 @@ def load_combined_checkpoint(
     if is_crop != (
         schema_version
         in {
+            RESOLUTION_SCHEMA,
             _PHYSICAL_CROP_SCHEMA,
             _ADJACENT_SLICE_SCHEMA,
             _CLIPPED_WINDOW_SCHEMA,
@@ -2937,6 +3024,10 @@ def load_combined_checkpoint(
                 clipped_window=schema_version == _CLIPPED_WINDOW_SCHEMA
             )
             if schema_version in {_ADJACENT_SLICE_SCHEMA, _CLIPPED_WINDOW_SCHEMA}
+            else _expected_resolution_configuration(
+                checkpoint["configuration"]["training"]["batch_size"]
+            )
+            if schema_version == RESOLUTION_SCHEMA
             else _expected_physical_crop_configuration()
         )
         if checkpoint.get("configuration") != expected:
@@ -3653,8 +3744,14 @@ def _plane_gate_decision(
 
 
 def _dinov2_decision(
-    comparison: Mapping[str, Any], config: CombinedBaselineConfig
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig | Mapping[str, Any]
 ) -> dict[str, object]:
+    validation = (
+        _combined_config_record(config)["validation"]
+        if isinstance(config, CombinedBaselineConfig)
+        else config["validation"]
+    )
+    validation = cast(Mapping[str, Any], validation)
     delta = comparison["delta"]["official_macro_auc"]
     uncertainty = comparison["bootstrap"]["uncertainty"]["official_macro_auc_delta"]
     positive_fraction = uncertainty["fraction_positive"]
@@ -3668,24 +3765,24 @@ def _dinov2_decision(
     large_regressions = sorted(
         target
         for target, value in target_deltas.items()
-        if value is not None and value < -config.large_target_regression
+        if value is not None and value < -validation["large_target_regression"]
     )
     keep = (
         delta is not None
-        and delta >= config.minimum_macro_auc_delta
+        and delta >= validation["minimum_macro_auc_delta"]
         and positive_fraction is not None
-        and positive_fraction >= config.minimum_bootstrap_positive_fraction
+        and positive_fraction >= validation["minimum_bootstrap_positive_fraction"]
         and not large_regressions
     )
     return {
         "result": "keep" if keep else "reject",
-        "minimum_macro_auc_delta": config.minimum_macro_auc_delta,
+        "minimum_macro_auc_delta": validation["minimum_macro_auc_delta"],
         "minimum_bootstrap_positive_fraction": (
-            config.minimum_bootstrap_positive_fraction
+            validation["minimum_bootstrap_positive_fraction"]
         ),
         "targets_non_decreasing": non_decreasing,
         "ideal_targets_non_decreasing": 8,
-        "large_regression_threshold": config.large_target_regression,
+        "large_regression_threshold": validation["large_target_regression"],
         "large_regression_targets": large_regressions,
         "generic_backbone_recommendation": "continue" if keep else "stop",
     }
@@ -4042,6 +4139,23 @@ def _expected_physical_crop_configuration() -> dict[str, object]:
     return config
 
 
+RESOLUTION_SCHEMA = "rsna-knee-resolution-336-v1"
+
+
+def _expected_resolution_configuration(batch_size: int = 16) -> dict[str, object]:
+    if type(batch_size) is not int or batch_size not in {1, 2, 4, 8, 16}:
+        raise ValueError("Resolution physical batch must divide effective batch 16")
+    config = _expected_physical_crop_configuration()
+    cast(dict[str, object], config["preprocessing"])["image_size"] = 336
+    training = cast(dict[str, object], config["training"])
+    training["batch_size"] = batch_size
+    if batch_size != 16:
+        training.update(
+            gradient_accumulation_steps=16 // batch_size, effective_batch_size=16
+        )
+    return config
+
+
 def _expected_adjacent_slice_configuration(
     *, clipped_window: bool = False
 ) -> dict[str, object]:
@@ -4056,6 +4170,21 @@ def _expected_adjacent_slice_configuration(
         sampling_layout="central_80_three_anchor" if clipped_window else "full_span",
     ).record()
     return config
+
+
+def _resolution_decision(
+    comparison: Mapping[str, Any], config: CombinedBaselineConfig | Mapping[str, Any]
+) -> dict[str, object]:
+    result = _dinov2_decision(comparison, config)
+    result.pop("generic_backbone_recommendation")
+    if any(
+        record["delta_roc_auc"] is None
+        for record in comparison["delta"]["per_target"].values()
+    ):
+        result["result"] = "reject"
+    result["retained_resolution"] = 336 if result["result"] == "keep" else 224
+    result["next_experiment"] = "separately_scoped_encoder_comparison"
+    return result
 
 
 def _physical_crop_decision(
@@ -4172,7 +4301,9 @@ def load_verified_adjacent_slice_checkpoint(
     )
 
 
-def verify_physical_crop_artifact(artifact_dir: Path) -> dict[str, Any]:
+def verify_physical_crop_artifact(
+    artifact_dir: Path, *, resolution_336: bool = False
+) -> dict[str, Any]:
     manifest = json.loads((artifact_dir / "run-manifest.json").read_text())
     for record in manifest["artifacts"]:
         path = artifact_dir / record["path"]
@@ -4183,21 +4314,44 @@ def verify_physical_crop_artifact(artifact_dir: Path) -> dict[str, Any]:
             raise ValueError("Physical crop artifact hash mismatch")
     report = json.loads((artifact_dir / "training-report.json").read_text())
     comparison = report["controlled_comparison"]
+    batch_size = report["configuration"]["training"]["batch_size"]
+    expected_config = (
+        _expected_resolution_configuration(batch_size)
+        if resolution_336
+        else _expected_physical_crop_configuration()
+    )
     if (
         report["status"] != "complete"
         or not report["checkpoint"]["reload_reproducible"]
-        or report["configuration"] != _expected_physical_crop_configuration()
+        or report["configuration"] != expected_config
         or not report.get("physical_crop_evidence")
         or comparison["validation_membership_digest"]
         != "8b1240fc2456779ba64fa115b23956adb131fb387f01c0f0424a933a2096ee88"
         or comparison["decision"]["result"] not in {"keep", "reject"}
     ):
         raise ValueError("Physical crop report is incomplete")
+    if resolution_336:
+        metrics = comparison["metrics"]
+        targets = load_verified_submission_contract().target_names
+        if (
+            comparison["baseline_checkpoint_sha256"] != PHYSICAL_CROP_CHECKPOINT_SHA256
+            or not report["baseline_reproducibility"]["control_predictions_reused"]
+            or report["resource_smoke"]["status"] != "safe_for_separate_full_approval"
+            or set(metrics["delta"]["per_target"]) != set(targets)
+            or comparison["decision"]["result"]
+            != _resolution_decision(metrics, report["configuration"])["result"]
+        ):
+            raise ValueError(
+                "Resolution control, smoke, targets, or keep decision differs"
+            )
     checkpoint_path = artifact_dir / "checkpoint.pt"
-    _, checkpoint = load_verified_physical_crop_checkpoint(
+    _, checkpoint = load_verified_combined_checkpoint(
         checkpoint_path,
         device=torch.device("cpu"),
         expected_sha256=_sha256(checkpoint_path),
+        physical_crop=True,
+        resolution_336=resolution_336,
+        physical_batch_size=batch_size,
     )
     if checkpoint["configuration"] != manifest["configuration"]:
         raise ValueError("Physical crop configuration provenance differs")
@@ -4347,7 +4501,7 @@ def load_physical_crop_validation_predictions(
     input_root: Path, studies: Sequence[PartitionStudy], targets: Sequence[str]
 ) -> PartitionPrediction | None:
     """Reuse #31 predictions only with matching artifact provenance and exact rows."""
-    for path in sorted(input_root.rglob("validation-predictions.csv")):
+    for path in sorted(find_input_files(input_root, "validation-predictions.csv")):
         report_path = path.parent / "training-report.json"
         if not report_path.is_file():
             continue

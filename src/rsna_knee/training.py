@@ -39,6 +39,7 @@ from .dinov2 import DINOV2_VITS14_FEATURE_COUNT, DinoV2ViTS14, dinov2_vits14
 from .indexing import verify_index_artifact
 from .preprocessing import preprocess_series_result, uniform_indices
 from .provenance import create_run_id, write_run_manifest
+from .public_label_audit import find_input_files
 from .sequence_slots import TargetSpecificSlotAttention, resolve_sequence_slot
 from .submission import (
     SubmissionArtifacts,
@@ -456,7 +457,7 @@ def discover_training_inputs(
         expected_manifest_hash = _text(outputs, "manifest_sha256")
         candidates = [
             path.parent
-            for path in sorted(input_root.rglob("studies.csv"))
+            for path in sorted(find_input_files(input_root, "studies.csv"))
             if path.stat().st_size == expected_size
             and _sha256(path) == expected_hash
             and (path.parent / "index-manifest.json").is_file()
@@ -481,7 +482,7 @@ def discover_training_inputs(
     expected_hash = _text(artifact, "sha256")
     candidates = [
         path
-        for path in sorted(input_root.rglob(expected_name))
+        for path in sorted(find_input_files(input_root, expected_name))
         if path.is_file()
         and path.stat().st_size == expected_size
         and _sha256(path) == expected_hash
@@ -815,6 +816,7 @@ def load_indexed_studies(
             seen_uids.add(uid)
             study_indices[int(row["study_index"])] = uid
 
+    root = competition_root.resolve()
     series_rows = _read_csv(index_artifact_dir / "series.csv", _SERIES_COLUMNS)
     series_metadata: dict[int, tuple[str, Path, int, AnatomicalPlane | None, int]] = {}
     for row in series_rows:
@@ -822,11 +824,12 @@ def load_indexed_studies(
         if study_index not in study_indices or int(row["usable_slice_count"]) <= 0:
             continue
         series_index = int(row["series_index"])
-        relative_path = Path(row["relative_path"])
+        series_path = (root / row["relative_path"]).resolve()
+        series_path.relative_to(root)
         expected_selected = row["selection_mask"].count("1")
         series_metadata[series_index] = (
             study_indices[study_index],
-            relative_path,
+            series_path,
             expected_selected,
             resolve_anatomical_plane(row["Anatomical_Plane"]),
             resolve_sequence_slot(row["Anatomical_Plane"], row["Fluid_Sensitive"]),
@@ -843,7 +846,6 @@ def load_indexed_studies(
 
     paths_by_series: dict[int, dict[int, Path]] = defaultdict(dict)
     selected_positions: dict[int, dict[int, int]] = defaultdict(dict)
-    root = competition_root.resolve()
     with (index_artifact_dir / "slices.csv").open(
         newline="", encoding="utf-8-sig"
     ) as file:
@@ -858,9 +860,10 @@ def load_indexed_studies(
             filename = row["filename"]
             if Path(filename).name != filename:
                 raise ValueError("Index slice filename must be a basename")
-            relative_series = series_metadata[series_index][1]
-            path = (competition_root / relative_series / filename).resolve()
-            path.relative_to(root)
+            path = series_metadata[series_index][1] / filename
+            if path.is_symlink():
+                path = path.resolve()
+                path.relative_to(root)
             ordered_position = int(row["ordered_position"])
             if ordered_position in paths_by_series[series_index]:
                 raise ValueError("Index contains a duplicate ordered series position")
@@ -935,6 +938,14 @@ def masked_binary_cross_entropy(
     return losses[known].mean()
 
 
+class ResourceSmokeTimeout(TimeoutError):
+    """A bounded smoke stopped with public-safe partial measurements."""
+
+    def __init__(self, message: str, progress: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.progress = progress
+
+
 def train_epoch(
     *,
     model: StudyClassifier,
@@ -950,6 +961,7 @@ def train_epoch(
     epoch: int,
     collect_diagnostics: bool = False,
     gradient_accumulation_steps: int = 1,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Train one partition epoch with the shared decode, mask, and pooling path."""
     if batch_size <= 0:
@@ -975,6 +987,21 @@ def train_epoch(
     start = time.perf_counter()
     model.train()
     for start_index in range(0, len(ordered), batch_size):
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise ResourceSmokeTimeout(
+                "Bounded training exceeded its resource-smoke deadline",
+                {
+                    "training_seconds": time.perf_counter() - start,
+                    "attempted_study_count": attempted,
+                    "optimized_study_count": optimized,
+                    "optimizer_step_count": optimizer_steps,
+                    "valid_slice_count": valid_slices,
+                    "decode_seconds": decode_seconds,
+                    "forward_backward_seconds": forward_backward_seconds,
+                    "spatial_counts": dict(spatial_counts),
+                    "decode_errors": dict(decode_errors),
+                },
+            )
         batch = ordered[start_index : start_index + batch_size]
         decoded: list[DecodedStudy] = []
         decode_start = time.perf_counter()
@@ -1081,6 +1108,7 @@ def predict_partition(
     preprocessing: PreprocessingConfig,
     mixed_precision: bool,
     device: torch.device,
+    deadline: float | None = None,
 ) -> PartitionPrediction:
     """Predict one labeled partition with shared decode and padding semantics."""
     probabilities: list[tuple[float, ...]] = []
@@ -1094,6 +1122,18 @@ def predict_partition(
     model.eval()
     with torch.no_grad():
         for study in studies:
+            if deadline is not None and time.perf_counter() >= deadline:
+                raise ResourceSmokeTimeout(
+                    "Bounded validation exceeded its resource-smoke deadline",
+                    {
+                        "completed_study_count": len(successful),
+                        "valid_slice_count": valid_slices,
+                        "decode_seconds": decode_seconds,
+                        "forward_seconds": forward_seconds,
+                        "spatial_counts": dict(spatial_counts),
+                        "decode_errors": dict(decode_errors),
+                    },
+                )
             decode_start = time.perf_counter()
             decoded = decode_study(
                 indexed[study.study_uid], preprocessing, labels=study.labels

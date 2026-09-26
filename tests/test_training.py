@@ -546,3 +546,90 @@ def _canonical_json(value: object) -> bytes:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_index_loading_does_not_resolve_shared_parents_per_slice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    from typing import Any
+
+    from rsna_knee.preprocessing import uniform_indices
+
+    root, index, _, _ = _cohort_fixture(tmp_path)
+    with (index / "series.csv").open() as file:
+        series_rows = list(csv.DictReader(file))
+    series_rows[2].update(
+        slice_count="32", usable_slice_count="32", selection_mask="11111111"
+    )
+    _write_csv(index / "series.csv", SERIES_COLUMNS, list(series_rows))
+    with (index / "slices.csv").open() as file:
+        template = list(csv.DictReader(file))[2]
+    rows = [
+        dict(
+            template,
+            slice_index=str(i),
+            filename=f"slice-{i}.dcm",
+            ordered_position=str(i),
+        )
+        for i in range(32)
+    ]
+    _write_csv(index / "slices.csv", SLICE_COLUMNS, rows)
+    _write_csv(
+        index / "selected_slices.csv",
+        SELECTED_COLUMNS,
+        [
+            {"series_index": 2, "slot": slot, "slice_index": i, "ordered_position": i}
+            for slot, i in enumerate(uniform_indices(32, 8))
+        ],
+    )
+    series = root / "train_series/study-a/series-a"
+    series.mkdir(parents=True)
+    for row in rows:
+        (series / row["filename"]).touch()
+    expected = tuple((series / f"slice-{i}.dcm").resolve() for i in range(32))
+    root = root.resolve()
+    count = 0
+    lstat = os.lstat
+
+    def stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal count
+        if Path(path) == root:
+            count += 1
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", stat)
+    result = load_indexed_studies(root, index, ["study-a"], split="train")
+    assert result["study-a"].series[0].paths == expected
+    assert count <= 3, f"Repeated common-parent checks: {count}"
+
+
+@pytest.mark.parametrize(
+    "escape", ["relative", "series_link", "slice_link", "inside_link"]
+)
+def test_index_paths_preserve_containment_and_symlink_semantics(
+    tmp_path: Path, escape: str
+) -> None:
+    root, index, _, _ = _cohort_fixture(tmp_path)
+    with (index / "series.csv").open() as file:
+        rows = list(csv.DictReader(file))
+    series = root / rows[2]["relative_path"]
+    series.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if escape == "relative":
+        rows[2]["relative_path"] = "../outside"
+        _write_csv(index / "series.csv", SERIES_COLUMNS, list(rows))
+    elif escape == "series_link":
+        series.symlink_to(outside, target_is_directory=True)
+    else:
+        series.mkdir()
+        target = (root if escape == "inside_link" else outside) / "actual.dcm"
+        target.touch()
+        (series / "slice-a.dcm").symlink_to(target)
+    if escape == "inside_link":
+        resolved = load_indexed_studies(root, index, ["study-a"], split="train")
+        assert resolved["study-a"].series[0].paths == ((root / "actual.dcm").resolve(),)
+    else:
+        with pytest.raises(ValueError):
+            load_indexed_studies(root, index, ["study-a"], split="train")

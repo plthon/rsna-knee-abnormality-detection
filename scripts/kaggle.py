@@ -14,6 +14,9 @@ from rsna_knee.kaggle import (
     build_public_baseline_bundle,
     build_public_label_audit_bundle,
     build_public_notebook_bundle,
+    build_raptor_parity_bundle,
+    build_raptor_reconstruction_bundle,
+    build_raptor_scoring_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
@@ -41,6 +44,7 @@ def main() -> None:
             "report-source-comparison",
             "combined-baseline",
             "combined-scoring",
+            "resolution-336",
             "physical-crop-scoring",
             "physical-crop",
             "adjacent-slice",
@@ -51,10 +55,16 @@ def main() -> None:
             "dinov2-training",
             "dinov2-scoring",
             "dinov2-resume-dataset",
+            "raptor-parity",
+            "raptor-reconstruction",
+            "raptor-scoring",
         ),
     )
     build.add_argument("--output", type=Path)
-    build.add_argument("--stage", choices=("audit", "smoke", "extract", "compare"))
+    build.add_argument(
+        "--stage", choices=("audit", "smoke", "full", "extract", "compare")
+    )
+    build.add_argument("--resource-smoke", type=Path)
     build.add_argument(
         "--wheel-dataset-id", default="plthon/rsna-knee-gold-baseline-package"
     )
@@ -102,6 +112,7 @@ def main() -> None:
                 "report-source-comparison": "report-source-comparison",
                 "combined-baseline": "gold-public-scoring",
                 "combined-scoring": "gold-public-scoring",
+                "resolution-336": f"resolution-336-{arguments.stage}",
                 "physical-crop": "physical-crop",
                 "adjacent-slice": "adjacent-slice",
                 "clipped-window": "clipped-window",
@@ -112,6 +123,9 @@ def main() -> None:
                 "dinov2-training": "dinov2-training",
                 "dinov2-scoring": "dinov2-scoring",
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
+                "raptor-parity": "raptor-parity",
+                "raptor-reconstruction": f"raptor-reconstruction-{arguments.stage}",
+                "raptor-scoring": "raptor-reference-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
         if arguments.target == "ordering":
@@ -125,6 +139,44 @@ def main() -> None:
                 kernel_id=arguments.kernel_id
                 or "plthon/rsna-knee-a-reproducible-mri-baseline",
                 gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-parity":
+            bundle = build_raptor_parity_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-raptor-reference-parity",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-reconstruction":
+            if arguments.stage not in {"smoke", "full"}:
+                parser.error("raptor-reconstruction requires --stage smoke|full")
+            bundle = build_raptor_reconstruction_bundle(
+                project_root,
+                arguments.output,
+                stage=arguments.stage,
+                kernel_id=arguments.kernel_id,
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-scoring":
+            bundle = build_raptor_scoring_bundle(
+                project_root,
+                arguments.output,
+                kernel_id=arguments.kernel_id
+                or "plthon/rsna-knee-raptor-reference-scoring",
+                gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "resolution-336":
+            if arguments.stage not in {"smoke", "full"}:
+                parser.error("resolution-336 requires --stage smoke|full")
+            bundle = build_plane_gating_bundle(
+                project_root,
+                arguments.output,
+                resolution_stage=arguments.stage,
+                gpu_approved=arguments.approve_gpu,
+                resource_smoke_path=arguments.resource_smoke,
+                kernel_id=arguments.kernel_id
+                or f"plthon/rsna-knee-resolution-336-{arguments.stage}",
             )
         elif arguments.target == "physical-crop-scoring":
             bundle = build_physical_crop_scoring_bundle(
