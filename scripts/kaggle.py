@@ -17,6 +17,7 @@ from rsna_knee.kaggle import (
     build_raptor_parity_bundle,
     build_raptor_reconstruction_bundle,
     build_raptor_scoring_bundle,
+    build_raptor_t4_derivative_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
@@ -57,6 +58,7 @@ def main() -> None:
             "dinov2-resume-dataset",
             "raptor-parity",
             "raptor-reconstruction",
+            "raptor-t4-derivative",
             "raptor-scoring",
         ),
     )
@@ -125,6 +127,7 @@ def main() -> None:
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
                 "raptor-parity": "raptor-parity",
                 "raptor-reconstruction": f"raptor-reconstruction-{arguments.stage}",
+                "raptor-t4-derivative": f"raptor-t4-derivative-{arguments.stage}",
                 "raptor-scoring": "raptor-reference-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
@@ -157,6 +160,17 @@ def main() -> None:
                 stage=arguments.stage,
                 kernel_id=arguments.kernel_id,
                 gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-t4-derivative":
+            if arguments.stage not in {"smoke", "full"}:
+                parser.error("raptor-t4-derivative requires --stage smoke|full")
+            bundle = build_raptor_t4_derivative_bundle(
+                project_root,
+                arguments.output,
+                stage=arguments.stage,
+                kernel_id=arguments.kernel_id,
+                gpu_approved=arguments.approve_gpu,
+                resume_dataset_id=arguments.resume_dataset_id,
             )
         elif arguments.target == "raptor-scoring":
             bundle = build_raptor_scoring_bundle(

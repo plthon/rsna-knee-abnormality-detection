@@ -1,0 +1,11 @@
+# Issue #38: Raptor T4 derivative
+
+Local implementation is complete. The remote resource smoke has not been approved or run, so T4 feasibility and the issue's required A/B/C outcome are pending measured evidence.
+
+The immutable #36 reference remains in `contracts/raptor-training-reference-v1.json` and `docs/raptor-reference-report.md`: its faithful batch-8 recipe failed on the first T4 backward pass. The separately named #38 contract pins that parent by SHA-256 and changes physical batch size to 4 and gradient accumulation to 2. Every other training setting comes from the parent configuration. The 4,349 soft-label studies yield 1,088 physical micro-batches and 544 optimizer updates per full epoch, matching the batch-8 update count. OneCycleLR is configured for 544 updates per epoch, not 1,088 loader iterations.
+
+Each micro-batch loss is divided by 2 before backward. Gradients are clipped once before each optimizer step; the scheduler steps immediately after the optimizer. A final odd micro-batch group is stepped with the same loss-divided-by-2 rule and recorded as a smaller update. With the frozen 4,349-study cohort, the final group has two micro-batches containing 4 and 1 studies, so there is no odd micro-batch group. The final update therefore contains 5 studies, as in the parent batch-8 recipe, though the two micro-batch means have equal weight.
+
+The smoke is limited to three optimizer updates and records micro-batch and update times, update count, scheduler count, GPU identity, package versions, pretrained-weight identity, and peak allocated/reserved GPU memory. The notebook records the kernel ID and any `KAGGLE_KERNEL_VERSION` supplied by Kaggle; the exact remote version must also be recorded when retrieving the approved run. An OOM writes a failure report and stops without retry or further memory changes. The full run saves model, optimizer, scheduler, completed epoch, update count, top-three ranking, best metric, provenance identities, and Python/NumPy/PyTorch/CUDA random states after each epoch. Resume checks the derivative, source commit, label, pretrained weight, and scheduler progress before continuing; it cannot restart the learning-rate schedule.
+
+No hidden-test inference or competition submission is included. A successful smoke would require a separate approval before the 16-epoch run.

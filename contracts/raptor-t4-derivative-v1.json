@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "issue_38_kaggle_t4_derivative",
+  "parent_contract": "raptor-training-reference-v1.json",
+  "parent_sha256": "5dacaa0823d6898739b1d767923c31f9e1ddab733085d58f21d6e4efdb702993",
+  "physical_batch_size": 4,
+  "gradient_accumulation_steps": 2,
+  "effective_batch_size": 8,
+  "partial_group": "step with loss divided by 2; record the smaller final update",
+  "smoke_optimizer_updates": 3
+}
