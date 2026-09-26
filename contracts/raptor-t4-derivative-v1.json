@@ -7,5 +7,7 @@
   "gradient_accumulation_steps": 2,
   "effective_batch_size": 8,
   "partial_group": "step with loss divided by 2; record the smaller final update",
-  "smoke_optimizer_updates": 3
+  "smoke_optimizer_updates": 3,
+  "pretrained_revision": "2c31d82376cc244c907c064332941e6c65be81f1",
+  "pretrained_sha256": "91570c7af10fea0af03c1b0a49be3e4775596239890eb4193c75129b3045623e"
 }

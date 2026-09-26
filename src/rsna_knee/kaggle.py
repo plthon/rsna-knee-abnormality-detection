@@ -1378,8 +1378,15 @@ def build_raptor_t4_derivative_bundle(
     kernel_id: str | None = None,
     gpu_approved: bool = False,
     resume_dataset_id: str | None = None,
+    session: int = 1,
 ) -> KaggleBundle:
-    if stage not in {"smoke", "full"} or (resume_dataset_id and stage != "full"):
+    if (
+        stage not in {"smoke", "full"}
+        or (resume_dataset_id and stage != "full")
+        or not 1 <= session <= 8
+        or (stage == "smoke" and session != 1)
+        or (resume_dataset_id and session != 1)
+    ):
         raise ValueError("Raptor T4 derivative requires smoke or full stage")
     source_path = project_root / "notebooks" / "train_raptor_t4_derivative.py"
     contract_names = (
@@ -1393,7 +1400,13 @@ def build_raptor_t4_derivative_bundle(
     git_commit, git_dirty = _git_state(project_root)
     if git_dirty:
         raise ValueError("Raptor T4 derivative requires a clean committed Git revision")
-    resolved_kernel_id = kernel_id or f"plthon/rsna-knee-raptor-t4-derivative-{stage}"
+    suffix = f"{stage}-{session}" if stage == "full" else stage
+    resolved_kernel_id = kernel_id or f"plthon/rsna-knee-raptor-t4-derivative-{suffix}"
+    prior_kernel = (
+        f"plthon/rsna-knee-raptor-t4-derivative-full-{session - 1}"
+        if session > 1
+        else None
+    )
     bundle = build_kaggle_bundle(
         project_root,
         output_root,
@@ -1401,12 +1414,13 @@ def build_raptor_t4_derivative_bundle(
             source_name=source_path.name,
             notebook_name="train_raptor_t4_derivative.ipynb",
             kernel_id=resolved_kernel_id,
-            title=f"RSNA Knee Raptor T4 Derivative {stage.title()}",
+            title=f"RSNA Knee Raptor T4 Derivative {suffix.title()}",
             competition_sources=("rsna-knee-abnormality-detection",),
             dataset_sources=(
                 *_RAPTOR_RECONSTRUCTION_DATASET_SOURCES,
                 *((resume_dataset_id,) if resume_dataset_id else ()),
             ),
+            kernel_sources=(prior_kernel,) if prior_kernel else (),
             gpu=True,
             internet=True,
             machine_shape=_GPU_MACHINE_SHAPE,
@@ -1419,7 +1433,9 @@ def build_raptor_t4_derivative_bundle(
                 ).hexdigest(),
                 "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
                 "__RSNA_KNEE_DERIVATIVE_STAGE__": stage,
-                "__RSNA_KNEE_DERIVATIVE_RESUME__": json.dumps(bool(resume_dataset_id)),
+                "__RSNA_KNEE_DERIVATIVE_RESUME__": json.dumps(
+                    bool(resume_dataset_id or prior_kernel)
+                ),
                 "__RSNA_KNEE_KERNEL_ID__": resolved_kernel_id,
             },
             embed_package=True,
@@ -1736,13 +1752,22 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         ):
             raise ValueError("Raptor reconstruction attached unexpected inputs")
     elif validator == "raptor_t4_derivative":
-        _validate_raptor_t4_derivative_source(_notebook_source(source))
+        notebook_source = _notebook_source(source)
+        _validate_raptor_t4_derivative_source(notebook_source)
         datasets = tuple(metadata.get("dataset_sources", ()))
+        kernel_id = metadata.get("id", "")
+        final_slug = kernel_id.rsplit("-", 1)[-1]
+        session = int(final_slug) if final_slug.isdigit() else 1
+        derivative_kernels = (
+            [f"plthon/rsna-knee-raptor-t4-derivative-full-{session - 1}"]
+            if session > 1
+            else []
+        )
         if (
             metadata.get("competition_sources") != ["rsna-knee-abnormality-detection"]
             or datasets[:3] != _RAPTOR_RECONSTRUCTION_DATASET_SOURCES
             or len(datasets) not in {3, 4}
-            or metadata.get("kernel_sources") != []
+            or metadata.get("kernel_sources") != derivative_kernels
             or metadata.get("model_sources") != []
         ):
             raise ValueError("Raptor T4 derivative attached unexpected inputs")
@@ -2289,7 +2314,7 @@ def _validate_raptor_t4_derivative_source(source: str) -> None:
         '"raptor-t4-swa.pt"',
         '"raptor-t4-report.json"',
         '"run-manifest.json"',
-        "Training stage: completed",
+        "Training segment: completed",
         "Hidden-test inference: not run",
         "Competition submission: not run",
     )

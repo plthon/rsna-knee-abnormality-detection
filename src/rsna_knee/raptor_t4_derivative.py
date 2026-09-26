@@ -55,6 +55,9 @@ def derivative_config() -> tuple[
         or raw.get("gradient_accumulation_steps") != 2
         or raw.get("effective_batch_size") != 8
         or raw.get("smoke_optimizer_updates") != 3
+        or raw.get("pretrained_revision") != "2c31d82376cc244c907c064332941e6c65be81f1"
+        or raw.get("pretrained_sha256")
+        != "91570c7af10fea0af03c1b0a49be3e4775596239890eb4193c75129b3045623e"
     ):
         raise ValueError("Raptor T4 derivative configuration has drifted")
     original = parent.reconstruction_config(contract)
@@ -298,7 +301,11 @@ def run_raptor_t4_derivative(
         gold_ids=gold_ids,
         gold_targets=gold_targets,
     )
-    model, pretrained = parent._initialize_pretrained_model(device)
+    model, pretrained = parent._initialize_pretrained_model(
+        device,
+        revision=derivative["pretrained_revision"],
+        expected_sha256=derivative["pretrained_sha256"],
+    )
     train_loader = DataLoader(
         parent.RaptorWindowDataset(
             corpus=corpus,
@@ -407,9 +414,8 @@ def run_raptor_t4_derivative(
             json.dumps(failure, indent=2, sort_keys=True) + "\n"
         )
 
-    for epoch in range(
-        completed_epoch + 1, (1 if stage == "smoke" else config.epochs) + 1
-    ):
+    target_epoch = 1 if stage == "smoke" else min(completed_epoch + 2, config.epochs)
+    for epoch in range(completed_epoch + 1, target_epoch + 1):
         progress: dict[str, object] = {}
         try:
             training = train_epoch(
@@ -478,7 +484,7 @@ def run_raptor_t4_derivative(
             )
     if best is None:
         raise RuntimeError("Raptor T4 derivative produced no evaluated epoch")
-    expected_updates = 3 if stage == "smoke" else config.epochs * updates_per_epoch
+    expected_updates = 3 if stage == "smoke" else target_epoch * updates_per_epoch
     if total_updates != expected_updates or scheduler.last_epoch != total_updates:
         raise RuntimeError("Raptor T4 optimizer or scheduler update count differs")
     averaged_state = parent.average_ranked_states(top_states)
@@ -521,6 +527,8 @@ def run_raptor_t4_derivative(
         "label_source": label_record,
         "pretrained_weight": pretrained.record(),
         "epochs": records,
+        "completed_epochs": target_epoch,
+        "full_training_complete": stage == "full" and target_epoch == config.epochs,
         "optimizer_update_count": total_updates,
         "scheduler_step_count": scheduler.last_epoch,
         "resume_boundaries": resume_boundaries,

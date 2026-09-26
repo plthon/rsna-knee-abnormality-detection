@@ -74,6 +74,7 @@ def main() -> None:
         "--weight-dataset-id", default="plthon/torchvision-resnet18-imagenet1k-v1"
     )
     build.add_argument("--kernel-id", default=None)
+    build.add_argument("--session", type=int, default=1)
     build.add_argument("--approve-gpu", action="store_true")
     build.add_argument("--checkpoint-dataset-id")
     build.add_argument("--checkpoint-sha256")
@@ -127,7 +128,10 @@ def main() -> None:
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
                 "raptor-parity": "raptor-parity",
                 "raptor-reconstruction": f"raptor-reconstruction-{arguments.stage}",
-                "raptor-t4-derivative": f"raptor-t4-derivative-{arguments.stage}",
+                "raptor-t4-derivative": (
+                    f"raptor-t4-derivative-{arguments.stage}"
+                    + (f"-{arguments.session}" if arguments.stage == "full" else "")
+                ),
                 "raptor-scoring": "raptor-reference-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
@@ -171,6 +175,7 @@ def main() -> None:
                 kernel_id=arguments.kernel_id,
                 gpu_approved=arguments.approve_gpu,
                 resume_dataset_id=arguments.resume_dataset_id,
+                session=arguments.session,
             )
         elif arguments.target == "raptor-scoring":
             bundle = build_raptor_scoring_bundle(

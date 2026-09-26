@@ -282,3 +282,15 @@ def test_derivative_bundle_is_separate_and_guarded(
     )
     full_metadata = json.loads(resumed.kernel_metadata_path.read_text())
     assert full_metadata["dataset_sources"][-1] == "plthon/raptor-t4-resume"
+    second = build_raptor_t4_derivative_bundle(
+        project, tmp_path / "second", stage="full", session=2, gpu_approved=True
+    )
+    second_metadata = json.loads(second.kernel_metadata_path.read_text())
+    assert second_metadata["kernel_sources"] == [
+        "plthon/rsna-knee-raptor-t4-derivative-full-1"
+    ]
+    second_source = "\n".join(
+        "".join(cell["source"])
+        for cell in json.loads(second.notebook_path.read_text())["cells"]
+    )
+    assert 'RESUME = json.loads("true")' in second_source

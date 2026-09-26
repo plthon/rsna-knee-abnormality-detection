@@ -1,6 +1,6 @@
 # Issue #38: Raptor T4 derivative
 
-The local implementation and approved Kaggle T4 resource smoke are complete. **Outcome B: Batch-4 / accumulation-2 fits the T4 smoke, but full training was not completed.** The 16-epoch run requires separate approval.
+The local implementation and approved Kaggle T4 resource smoke are complete. **Outcome B: Batch-4 / accumulation-2 fits the T4 smoke, but full training was not completed.** The user subsequently approved the 16-epoch run. It is divided into eight two-epoch Kaggle sessions because the smoke timing projects beyond a single session limit.
 
 The immutable #36 reference remains in `contracts/raptor-training-reference-v1.json` and `docs/raptor-reference-report.md`: its faithful batch-8 recipe failed on the first T4 backward pass. The separately named #38 contract pins that parent by SHA-256 and changes physical batch size to 4 and gradient accumulation to 2. Every other training setting comes from the parent configuration. The 4,349 soft-label studies yield 1,088 physical micro-batches and 544 optimizer updates per full epoch, matching the batch-8 update count. OneCycleLR is configured for 544 updates per epoch, not 1,088 loader iterations.
 
@@ -18,4 +18,4 @@ The smoke is limited to three optimizer updates and records micro-batch and upda
 
 The retrieved `raptor-t4-report.json` SHA-256 (`f3aa18d89cc08f553046d5b4899a81dba79e7a7dc4dbc191be3f4110598408fe`) matches its run-manifest record. The remote notebook verified all three listed artifact hashes before completion. The report, manifest, and kernel log are retained under ignored `.artifacts/kaggle/rsna-knee-raptor-t4-derivative-smoke/`; model checkpoints were not downloaded locally.
 
-The smoke establishes that three consecutive updates fit. It does not establish uninterrupted 16-epoch feasibility or final model performance. Full training remains at Stop point 2 pending explicit approval.
+The smoke establishes that three consecutive updates fit. It does not establish 16-epoch feasibility or final model performance. The full sessions pin the pretrained revision and SHA observed in this smoke. Each completed session emits a resume checkpoint, and the next session attaches the prior kernel output. Progress and final metrics will be recorded here as sessions complete.
