@@ -1,6 +1,6 @@
 # Issue #38: Raptor T4 derivative
 
-Local implementation is complete. The remote resource smoke has not been approved or run, so T4 feasibility and the issue's required A/B/C outcome are pending measured evidence.
+The local implementation and approved Kaggle T4 resource smoke are complete. **Outcome B: Batch-4 / accumulation-2 fits the T4 smoke, but full training was not completed.** The 16-epoch run requires separate approval.
 
 The immutable #36 reference remains in `contracts/raptor-training-reference-v1.json` and `docs/raptor-reference-report.md`: its faithful batch-8 recipe failed on the first T4 backward pass. The separately named #38 contract pins that parent by SHA-256 and changes physical batch size to 4 and gradient accumulation to 2. Every other training setting comes from the parent configuration. The 4,349 soft-label studies yield 1,088 physical micro-batches and 544 optimizer updates per full epoch, matching the batch-8 update count. OneCycleLR is configured for 544 updates per epoch, not 1,088 loader iterations.
 
@@ -8,4 +8,14 @@ Each micro-batch loss is divided by 2 before backward. Gradients are clipped onc
 
 The smoke is limited to three optimizer updates and records micro-batch and update times, update count, scheduler count, GPU identity, package versions, pretrained-weight identity, and peak allocated/reserved GPU memory. The notebook records the kernel ID and any `KAGGLE_KERNEL_VERSION` supplied by Kaggle; the exact remote version must also be recorded when retrieving the approved run. An OOM writes a failure report and stops without retry or further memory changes. The full run saves model, optimizer, scheduler, completed epoch, update count, top-three ranking, best metric, provenance identities, and Python/NumPy/PyTorch/CUDA random states after each epoch. Resume checks the derivative, source commit, label, pretrained weight, and scheduler progress before continuing; it cannot restart the learning-rate schedule.
 
-No hidden-test inference or competition submission is included. A successful smoke would require a separate approval before the 16-epoch run.
+## Approved T4 smoke evidence
+
+- Private kernel: `plthon/rsna-knee-raptor-t4-derivative-smoke`, version 1 according to Kaggle's `GetKernel` metadata; status `COMPLETE`. The notebook's `KAGGLE_KERNEL_VERSION` environment value was unavailable, so its embedded version field is null.
+- Source commit: `658f21340cd17df1c48e2f9cb15a9a4bad50626b`; Jupytext source SHA-256 `9ebefef05dacf6179ad17247ce493ed408d7c3496070eceab5c69ef7a31070c7`; rendered notebook SHA-256 `d20084631ccfc9ae9f8cfe17b2a82dbf5b5d7a54cb7aebd5e91d5447f2fa622a`; derivative contract SHA-256 `79c2f6803188da2963d49bd581c7b36a2e31cb0dabba98b33d78a6b4f8cdd1f0`.
+- Tesla T4, 14.56 GiB total; Python 3.12.13, PyTorch `2.10.0+cu128`, timm 1.0.26, CUDA 12.8. The resolved pretrained `model.safetensors` revision was `2c31d82376cc244c907c064332941e6c65be81f1`, SHA-256 `91570c7af10fea0af03c1b0a49be3e4775596239890eb4193c75129b3045623e`.
+- Six physical micro-batches produced three optimizer updates and three scheduler steps, each update containing eight studies. Mean time was 12.73 seconds per physical micro-batch and 26.08 seconds per optimizer update. Peak allocated memory was 10.78 GiB and peak reserved memory was 12.10 GiB. No OOM or retry occurred.
+- Total notebook run time was 43.91 minutes, including corpus setup and organizer-gold validation. The three-update smoke's gold macro ROC-AUC was 0.4766426396088225, a diagnostic after only three updates and not a full-training performance result. No resume boundary, hidden-test inference, or submission occurred.
+
+The retrieved `raptor-t4-report.json` SHA-256 (`f3aa18d89cc08f553046d5b4899a81dba79e7a7dc4dbc191be3f4110598408fe`) matches its run-manifest record. The remote notebook verified all three listed artifact hashes before completion. The report, manifest, and kernel log are retained under ignored `.artifacts/kaggle/rsna-knee-raptor-t4-derivative-smoke/`; model checkpoints were not downloaded locally.
+
+The smoke establishes that three consecutive updates fit. It does not establish uninterrupted 16-epoch feasibility or final model performance. Full training remains at Stop point 2 pending explicit approval.
