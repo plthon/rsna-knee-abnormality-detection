@@ -223,4 +223,10 @@ The repository now contains a Raptor-specific reconstruction path that reuses th
 
 Historical uncertainties remain explicit: the author's exact label attachment, executed CLI, package environment, pretrained bytes, and completed training output are unknown. Reconstruction outputs will be compared with released checkpoint evidence (best epoch 12, stored gold macro ROC-AUC `0.9167492483170476`, public leaderboard `0.924`) but are not required to produce identical weights and will not trigger post-hoc tuning.
 
-Current state: **Phase 1 succeeded; the Phase 2 best-evidence implementation and reconstruction label identity are locally frozen and ready for a separate Stop point 4 smoke decision.** No corpus payload or pretrained weight was downloaded locally, and no Kaggle run, hidden inference, submission, or training was executed. The exact-recipe smoke run remains unauthorized; full training remains a later separate approval if the smoke passes.
+### Phase 2 resource result
+
+After explicit Stop point 4 smoke approval, private kernel `plthon/rsna-knee-raptor-reconstruction-smoke` version 4 reached the first exact-recipe training backward pass using source commit `b30e909`. The smoke preserved CoAtNet/384, batch size 8, 12 windows per study, CUDA BF16 autocast, and native gradient checkpointing. It failed during checkpoint recomputation with `torch.OutOfMemoryError` before completing one optimizer step.
+
+The T4 reported 14.56 GiB total GPU capacity, 12.02 GiB process memory in use, 11.64 GiB allocated by PyTorch, 241.66 MiB reserved but unallocated, and 2.54 GiB free when a further 3.38 GiB allocation was requested. `PYTORCH_ALLOC_CONF=expandable_segments:True` was already active, so reserved-memory fragmentation cannot account for the missing capacity. No full training, hidden inference, submission, variant, or tuning was started.
+
+This is the issue-defined resource boundary: fitting the recipe would require materially changing batch size, window count, resolution, model, precision behavior, or accumulation policy. None is authorized as faithful reconstruction. The final issue #36 outcome is therefore **B. Phase 1 reproduced `0.924`; Phase 2 is resource-infeasible under current Kaggle limits.** The verified public checkpoint inference remains the competitive external reference, and #31 remains the retained internally trained model.

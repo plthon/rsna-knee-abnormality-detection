@@ -71,6 +71,7 @@ _EXPECTED_CHECKPOINT_KEYS = {
 }
 _TRAINING_REFERENCE_STATUS = "best_evidence_reconstruction_selected_pending_asset_pin"
 _TRAINING_REFERENCE_READY_STATUS = "best_evidence_reconstruction_ready_for_smoke"
+_TRAINING_REFERENCE_RESOURCE_STATUS = "phase_1_success_phase_2_resource_infeasible"
 _TRAINING_NOTEBOOK_SOURCE_SHA256 = (
     "6ea209b03c33bf21d50d89e9e9696e2aecf90c4bcccdd1037c0b3711ab3d3699"
 )
@@ -292,7 +293,11 @@ def load_raptor_training_reference_contract(
     if (
         contract.get("schema_version") != 1
         or contract.get("status")
-        not in {_TRAINING_REFERENCE_STATUS, _TRAINING_REFERENCE_READY_STATUS}
+        not in {
+            _TRAINING_REFERENCE_STATUS,
+            _TRAINING_REFERENCE_READY_STATUS,
+            _TRAINING_REFERENCE_RESOURCE_STATUS,
+        }
         or notebook.get("kaggle_id") != 131724100
         or notebook.get("current_version") != 8
         or notebook.get("source_sha256") != _TRAINING_NOTEBOOK_SOURCE_SHA256
@@ -320,7 +325,8 @@ def load_raptor_training_reference_contract(
             "recorded_at": "2026-09-24",
             "objective": "best_evidence_reconstruction_of_published_training_recipe",
             "historical_byte_identity_required": False,
-            "remote_training_approved": False,
+            "remote_smoke_approved": True,
+            "remote_full_training_approved": False,
         }
         or set(evidence_semantics)
         != {
@@ -457,9 +463,16 @@ def load_raptor_training_reference_contract(
             and reconstruction_identity.get("row_count") is None
         )
     elif lifecycle == "pinned_after_approved_read_only_retrieval":
+        status = contract.get("status")
+        expected_boundaries = {
+            **expected_boundary_base,
+            "label_identity_pinned": True,
+            "resource_infeasible": status == _TRAINING_REFERENCE_RESOURCE_STATUS,
+        }
         valid_lifecycle = (
-            contract.get("status") == _TRAINING_REFERENCE_READY_STATUS
-            and boundaries == {**expected_boundary_base, "label_identity_pinned": True}
+            status
+            in {_TRAINING_REFERENCE_READY_STATUS, _TRAINING_REFERENCE_RESOURCE_STATUS}
+            and boundaries == expected_boundaries
             and isinstance(reconstruction_identity.get("sha256"), str)
             and re.fullmatch(
                 r"[0-9a-f]{64}", cast(str, reconstruction_identity["sha256"])
@@ -474,6 +487,45 @@ def load_raptor_training_reference_contract(
         valid_lifecycle = False
     if not valid_lifecycle:
         raise ValueError("Raptor training reference contract lifecycle has drifted")
+
+    resource_evidence = contract.get("resource_evidence")
+    if contract.get("status") == _TRAINING_REFERENCE_RESOURCE_STATUS:
+        if not isinstance(resource_evidence, dict) or resource_evidence != {
+            "evidence_semantic": "reconstruction_specific_pinned_identity",
+            "kernel_id": "plthon/rsna-knee-raptor-reconstruction-smoke",
+            "kernel_version": 4,
+            "source_commit": "b30e909",
+            "stage": "smoke",
+            "recipe_preserved": {
+                "architecture": ARCHITECTURE,
+                "resolution": MODEL_INPUT_SIZE,
+                "batch_size": 8,
+                "training_windows": 12,
+                "gradient_checkpointing": True,
+                "precision": "cuda_bfloat16_autocast",
+            },
+            "machine": "NvidiaTeslaT4",
+            "failure_phase": "first_training_batch_backward_recomputation",
+            "failure_type": "torch.OutOfMemoryError",
+            "gpu_total_capacity_gib": 14.56,
+            "process_memory_in_use_gib": 12.02,
+            "pytorch_allocated_gib": 11.64,
+            "pytorch_reserved_unallocated_mib": 241.66,
+            "free_before_failed_allocation_gib": 2.54,
+            "failed_allocation_request_gib": 3.38,
+            "allocator_expandable_segments": True,
+            "smoke_elapsed_seconds": 992.9,
+            "interpretation": (
+                "The exact recipe cannot complete one backward pass on the Kaggle "
+                "T4 without a material recipe change."
+            ),
+            "full_training_started": False,
+            "hidden_test_inference_started": False,
+            "competition_submission_started": False,
+        }:
+            raise ValueError("Raptor resource evidence has drifted")
+    elif resource_evidence is not None:
+        raise ValueError("Raptor resource evidence exists before resource failure")
 
     if (
         candidate.get("dataset_id") != 11640568
@@ -496,7 +548,17 @@ def load_raptor_training_reference_contract(
         or pretrained.get("status") != "pending_execution"
         or pretrained.get("repository") != "timm/coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k"
         or pretrained.get("sha256") is not None
-        or reconstruction_output.get("status") != "pending_execution"
+        or reconstruction_output.get("status")
+        not in {"pending_execution", "not_produced_resource_infeasible"}
+        or (
+            contract.get("status") == _TRAINING_REFERENCE_RESOURCE_STATUS
+            and reconstruction_output.get("status")
+            != "not_produced_resource_infeasible"
+        )
+        or (
+            contract.get("status") != _TRAINING_REFERENCE_RESOURCE_STATUS
+            and reconstruction_output.get("status") != "pending_execution"
+        )
         or reconstruction_output.get("best_checkpoint_sha256") is not None
         or not contract.get("unresolved_authoritative_identities")
     ):

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "captured_at": "2026-09-23",
-  "status": "best_evidence_reconstruction_ready_for_smoke",
+  "status": "phase_1_success_phase_2_resource_infeasible",
   "public_notebook": {
     "url": "https://www.kaggle.com/code/dreaddevelopment/knee-mri-training-the-twelve-finding-model",
     "kaggle_id": 131724100,
@@ -460,7 +460,7 @@
     "public_training_checkpoint": null,
     "reconstruction_output": {
       "evidence_semantic": "reconstruction_specific_pinned_identity",
-      "status": "pending_execution",
+      "status": "not_produced_resource_infeasible",
       "best_checkpoint_sha256": null,
       "averaged_checkpoint_sha256": null,
       "run_manifest_sha256": null
@@ -473,7 +473,6 @@
     "evidence_role": "Source comments only; not measured Kaggle T4 feasibility evidence."
   },
   "unresolved_authoritative_identities": [
-    "The required soft-label parquet source/version/hash is not attached or pinned.",
     "The actual executed architecture and command-line arguments are not exposed.",
     "No completed public training output or checkpoint is retained.",
     "Python, PyTorch, timm, NumPy, pandas, scikit-learn, and CUDA runtime package versions are not captured.",
@@ -486,7 +485,7 @@
     "best_evidence_reconstruction_selected": true,
     "label_identity_pinned": true,
     "pretrained_identity_pinned": false,
-    "resource_infeasible": false,
+    "resource_infeasible": true,
     "training_run_completed": false
   },
   "decision": {
@@ -494,11 +493,42 @@
     "recorded_at": "2026-09-24",
     "objective": "best_evidence_reconstruction_of_published_training_recipe",
     "historical_byte_identity_required": false,
-    "remote_training_approved": false
+    "remote_smoke_approved": true,
+    "remote_full_training_approved": false
   },
   "evidence_semantics": {
     "published_authoritative": "Directly observed public notebook code, metadata, attached-input identities, released checkpoint metadata, or verified Phase 1 evidence.",
     "best_evidence_inferred": "Selected reconstruction input or configuration supported by multiple public signals but not proven to be the author historical run identity.",
     "reconstruction_specific_pinned_identity": "Identity measured from an asset, environment, manifest, or checkpoint used by this reconstruction; it makes no claim about the author historical run."
+  },
+  "resource_evidence": {
+    "evidence_semantic": "reconstruction_specific_pinned_identity",
+    "kernel_id": "plthon/rsna-knee-raptor-reconstruction-smoke",
+    "kernel_version": 4,
+    "source_commit": "b30e909",
+    "stage": "smoke",
+    "recipe_preserved": {
+      "architecture": "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k",
+      "resolution": 384,
+      "batch_size": 8,
+      "training_windows": 12,
+      "gradient_checkpointing": true,
+      "precision": "cuda_bfloat16_autocast"
+    },
+    "machine": "NvidiaTeslaT4",
+    "failure_phase": "first_training_batch_backward_recomputation",
+    "failure_type": "torch.OutOfMemoryError",
+    "gpu_total_capacity_gib": 14.56,
+    "process_memory_in_use_gib": 12.02,
+    "pytorch_allocated_gib": 11.64,
+    "pytorch_reserved_unallocated_mib": 241.66,
+    "free_before_failed_allocation_gib": 2.54,
+    "failed_allocation_request_gib": 3.38,
+    "allocator_expandable_segments": true,
+    "smoke_elapsed_seconds": 992.9,
+    "interpretation": "The exact recipe cannot complete one backward pass on the Kaggle T4 without a material recipe change.",
+    "full_training_started": false,
+    "hidden_test_inference_started": false,
+    "competition_submission_started": false
   }
 }

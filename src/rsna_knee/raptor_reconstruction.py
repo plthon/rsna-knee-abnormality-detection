@@ -229,6 +229,13 @@ def reconstruction_config(
     )
 
 
+def require_reconstruction_open(contract: Mapping[str, Any]) -> None:
+    if _mapping(contract, "boundaries").get("resource_infeasible") is not False:
+        raise PermissionError(
+            "Raptor reconstruction is closed by measured resource infeasibility"
+        )
+
+
 def required_pinned_label_identity(
     contract: Mapping[str, Any],
 ) -> dict[str, object]:
@@ -512,6 +519,7 @@ def run_raptor_reconstruction(
         raise ValueError("Raptor reconstruction stage must be smoke or full")
     started = time.perf_counter()
     contract, contract_sha256 = load_raptor_training_reference_contract()
+    require_reconstruction_open(contract)
     pinned_label = required_pinned_label_identity(contract)
     config = reconstruction_config(contract)
     cuda = require_approved_cuda(approved=approved_gpu)

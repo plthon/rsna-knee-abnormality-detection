@@ -58,13 +58,13 @@ def test_reference_contract_freezes_public_source_and_exact_layout() -> None:
     assert raptor.WINDOW_COUNT == 42
 
 
-def test_training_reference_contract_freezes_selected_reconstruction() -> None:
+def test_training_reference_contract_freezes_resource_outcome() -> None:
     contract, digest = raptor.load_raptor_training_reference_contract(
         TRAINING_REFERENCE_CONTRACT
     )
 
     assert len(digest) == 64
-    assert contract["status"] == "best_evidence_reconstruction_ready_for_smoke"
+    assert contract["status"] == "phase_1_success_phase_2_resource_infeasible"
     notebook = contract["public_notebook"]
     assert notebook["url"] == (
         "https://www.kaggle.com/code/dreaddevelopment/"
@@ -124,8 +124,12 @@ def test_training_reference_contract_freezes_selected_reconstruction() -> None:
     )
     assert configurations["actual_run_configuration"] is None
     assert contract["checkpointing"]["public_training_checkpoint"] is None
+    resource = contract["resource_evidence"]
+    assert resource["kernel_version"] == 4
+    assert resource["failure_type"] == "torch.OutOfMemoryError"
+    assert resource["failed_allocation_request_gib"] == 3.38
+    assert resource["full_training_started"] is False
     assert contract["unresolved_authoritative_identities"] == [
-        "The required soft-label parquet source/version/hash is not attached or pinned.",
         "The actual executed architecture and command-line arguments are not exposed.",
         "No completed public training output or checkpoint is retained.",
         (
@@ -148,7 +152,7 @@ def test_training_reference_contract_freezes_selected_reconstruction() -> None:
         "best_evidence_reconstruction_selected": True,
         "label_identity_pinned": True,
         "pretrained_identity_pinned": False,
-        "resource_infeasible": False,
+        "resource_infeasible": True,
         "training_run_completed": False,
     }
     packaged_contract, packaged_digest = (
@@ -212,7 +216,7 @@ def test_training_reference_contract_rejects_unfounded_claims(
             "filename": "fabricated.pt"
         }
     elif mutation == "resource_infeasible":
-        contract["boundaries"]["resource_infeasible"] = True
+        contract["boundaries"]["resource_infeasible"] = False
     else:
         contract["boundaries"]["training_run_completed"] = True
 

@@ -54,7 +54,7 @@ def test_reconstruction_config_is_exact_and_evidence_scoped() -> None:
     config = reconstruction.reconstruction_config(contract)
 
     assert config == _config()
-    assert contract["status"] == "best_evidence_reconstruction_ready_for_smoke"
+    assert contract["status"] == "phase_1_success_phase_2_resource_infeasible"
     assert contract["labels"]["candidate"]["authority"] == (
         "non_authoritative_candidate"
     )
@@ -66,6 +66,8 @@ def test_reconstruction_config_is_exact_and_evidence_scoped() -> None:
     )
     assert contract["configurations"]["actual_run_configuration"] is None
     assert contract["checkpointing"]["public_training_checkpoint"] is None
+    with pytest.raises(PermissionError, match="resource infeasibility"):
+        reconstruction.require_reconstruction_open(contract)
 
 
 def test_cohorts_require_exact_disjoint_corpus_coverage() -> None:
@@ -317,6 +319,9 @@ def test_label_identity_lifecycle_gates_training(tmp_path: Path) -> None:
         }
     )
     pending["boundaries"]["label_identity_pinned"] = False
+    pending["boundaries"]["resource_infeasible"] = False
+    pending["checkpointing"]["reconstruction_output"]["status"] = "pending_execution"
+    pending.pop("resource_evidence")
     path = tmp_path / "pending-training-reference.json"
     path.write_text(json.dumps(pending))
     loaded, _ = reference.load_raptor_training_reference_contract(path)
