@@ -3,8 +3,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from dicom_support import write_ordered_series
 from pydicom import dcmread
-from test_adjacent_slice import _series
 
 from rsna_knee.config import PreprocessingConfig
 from rsna_knee.preprocessing import clipped_window_indices, preprocess_series_result
@@ -41,7 +41,7 @@ CONFIG = PreprocessingConfig(
 def test_clipped_triplets_share_center_statistics_and_crop_every_source(
     tmp_path: Path,
 ) -> None:
-    paths = _series(tmp_path, list(range(21)))
+    paths = write_ordered_series(tmp_path, list(range(21)))
     result = preprocess_series_result(paths, CONFIG)
     assert result.source_indices == (2, 10, 18)
     assert result.clipped_window == (2, 18)
@@ -78,7 +78,9 @@ def test_short_series_deduplicates_and_masks_padding(
     duplicates: int,
     clamps: int,
 ) -> None:
-    result = preprocess_series_result(_series(tmp_path, list(range(length))), CONFIG)
+    result = preprocess_series_result(
+        write_ordered_series(tmp_path, list(range(length))), CONFIG
+    )
     assert result.mask.sum() == valid
     assert result.pixels.shape == (3, 3, 224, 224)
     assert result.preprocessing_counts["short_series"] == 1
@@ -94,7 +96,7 @@ def test_short_series_deduplicates_and_masks_padding(
 def test_clipped_failure_policy(
     tmp_path: Path, failed: int, slot: int, side: str
 ) -> None:
-    paths = _series(tmp_path, list(range(21)))
+    paths = write_ordered_series(tmp_path, list(range(21)))
     paths[failed].write_bytes(b"broken")
     result = preprocess_series_result(paths, CONFIG)
     assert result.source_triplets[slot] == (9, 10, 11)
@@ -117,7 +119,7 @@ def test_clipped_failure_policy(
 
 
 def test_clipped_all_centers_fail_without_neighbor_search(tmp_path: Path) -> None:
-    paths = _series(tmp_path, list(range(21)))
+    paths = write_ordered_series(tmp_path, list(range(21)))
     for center in (2, 10, 18):
         paths[center].write_bytes(b"broken")
     result = preprocess_series_result(paths, CONFIG)
@@ -128,7 +130,7 @@ def test_clipped_all_centers_fail_without_neighbor_search(tmp_path: Path) -> Non
 
 
 def test_clipped_neighbor_spacing_fallback(tmp_path: Path) -> None:
-    paths = _series(tmp_path, list(range(21)))
+    paths = write_ordered_series(tmp_path, list(range(21)))
     dataset = dcmread(paths[9])
     del dataset.PixelSpacing
     dataset.save_as(paths[9], enforce_file_format=True)
@@ -185,7 +187,7 @@ def test_three_real_encoder_inputs_and_equal_series_mean(tmp_path: Path) -> None
             assert pixels.shape == (3, 3, 224, 224)
             return pixels.mean(dim=(2, 3))
 
-    paths = _series(tmp_path, list(range(21)))
+    paths = write_ordered_series(tmp_path, list(range(21)))
     decoded = decode_study(
         IndexedStudy("synthetic", (IndexedSeries(0, tuple(paths)),)),
         CONFIG,

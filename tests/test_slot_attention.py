@@ -181,8 +181,8 @@ def test_live_metadata_decode_training_validation_and_hidden_inference(
     from dataclasses import dataclass
 
     import numpy as np
+    from dicom_support import write_dicom as _write_dicom
     from pydicom import dcmread
-    from test_synthetic_pipeline import _write_dicom
 
     from rsna_knee.combined_supervision import (
         _predict_combined_submission,

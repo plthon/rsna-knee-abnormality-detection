@@ -4,12 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from pydicom.dataset import FileDataset, FileMetaDataset
-from pydicom.uid import (
-    ExplicitVRLittleEndian,
-    SecondaryCaptureImageStorage,
-    generate_uid,
-)
+from dicom_support import write_dicom
 
 from rsna_knee.submission import (
     discover_submission_inputs,
@@ -72,29 +67,13 @@ def _write_submission_inputs(
             if study_id in unusable_ids:
                 dicom_path.write_bytes(b"not a DICOM")
             else:
-                _write_dicom(dicom_path)
+                write_dicom(
+                    dicom_path,
+                    np.arange(4, dtype=np.uint16).reshape(2, 2),
+                    slope=None,
+                    intercept=None,
+                )
     return competition_root
-
-
-def _write_dicom(path: Path) -> None:
-    sop_instance_uid = generate_uid()
-    file_meta = FileMetaDataset()
-    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
-    file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
-    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-    dataset = FileDataset(path, {}, file_meta=file_meta, preamble=b"\0" * 128)
-    dataset.SOPClassUID = SecondaryCaptureImageStorage
-    dataset.SOPInstanceUID = sop_instance_uid
-    dataset.Rows = 2
-    dataset.Columns = 2
-    dataset.SamplesPerPixel = 1
-    dataset.PhotometricInterpretation = "MONOCHROME2"
-    dataset.BitsAllocated = 16
-    dataset.BitsStored = 16
-    dataset.HighBit = 15
-    dataset.PixelRepresentation = 0
-    dataset.PixelData = np.arange(4, dtype=np.uint16).tobytes()
-    dataset.save_as(path, enforce_file_format=True)
 
 
 def _prediction_row(study_id: str, value: object = 0.5) -> list[object]:

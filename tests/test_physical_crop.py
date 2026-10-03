@@ -4,8 +4,8 @@ from typing import Any
 
 import numpy as np
 import pytest
+from dicom_support import write_dicom as _write_dicom
 from pydicom import dcmread
-from test_synthetic_pipeline import _write_dicom
 
 from rsna_knee.config import PreprocessingConfig
 from rsna_knee.preprocessing import (

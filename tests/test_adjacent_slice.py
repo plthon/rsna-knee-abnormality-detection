@@ -4,8 +4,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from dicom_support import write_ordered_series
 from pydicom import dcmread
-from test_synthetic_pipeline import _write_dicom
 
 from rsna_knee.config import PreprocessingConfig
 from rsna_knee.preprocessing import (
@@ -31,24 +31,10 @@ def test_adjacent_triplet_indices(
     assert adjacent_triplet_indices(length, anchor) == expected
 
 
-def _series(tmp_path: Path, values: list[int]) -> list[Path]:
-    paths = []
-    for index, value in enumerate(values):
-        # Deliberately reverse filenames and duplicate/non-consecutive InstanceNumber.
-        path = tmp_path / f"slice-{len(values) - index}.dcm"
-        _write_dicom(path, np.full((140, 140), value, dtype=np.uint16))
-        dataset = dcmread(path)
-        dataset.PixelSpacing = [1.0, 1.0]
-        dataset.InstanceNumber = 99 if index < 2 else 500 + index
-        dataset.save_as(path, enforce_file_format=True)
-        paths.append(path)
-    return paths
-
-
 def test_adjacent_representation_preserves_anchors_percentiles_crop_and_order(
     tmp_path: Path,
 ) -> None:
-    paths = _series(tmp_path, list(range(12)))
+    paths = write_ordered_series(tmp_path, list(range(12)))
     control_config = PreprocessingConfig(8, 1, 99, 224, "physical_crop")
     candidate_config = replace(
         control_config, input_representation="adjacent_slice_2_5d"
@@ -86,7 +72,7 @@ def test_adjacent_representation_preserves_anchors_percentiles_crop_and_order(
 
 
 def test_same_slice_control_is_unchanged(tmp_path: Path) -> None:
-    paths = _series(tmp_path, [0, 1, 2])
+    paths = write_ordered_series(tmp_path, [0, 1, 2])
     legacy = PreprocessingConfig(3, 1, 99, 224, "physical_crop")
     explicit = replace(legacy, input_representation="same_slice_rgb")
     old = preprocess_series_result(paths, legacy)
@@ -120,7 +106,7 @@ def test_adjacent_config_changes_only_channel_representation() -> None:
 def test_failed_neighbor_substitutes_center_without_farther_search(
     tmp_path: Path, failed: int, side: str
 ) -> None:
-    paths = _series(tmp_path, [0, 1, 2])
+    paths = write_ordered_series(tmp_path, [0, 1, 2])
     paths[failed].write_bytes(b"not a dicom")
     result = preprocess_series_result(
         paths,
@@ -144,7 +130,7 @@ def test_failed_neighbor_substitutes_center_without_farther_search(
 
 
 def test_neighbor_spacing_fallback_is_recorded_separately(tmp_path: Path) -> None:
-    paths = _series(tmp_path, [0, 1, 2])
+    paths = write_ordered_series(tmp_path, [0, 1, 2])
     dataset = dcmread(paths[0])
     del dataset.PixelSpacing
     dataset.save_as(paths[0], enforce_file_format=True)

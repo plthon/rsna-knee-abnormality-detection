@@ -6,8 +6,8 @@ from typing import Any
 
 import numpy as np
 import pytest
+from dicom_support import write_dicom as _write_dicom
 from pydicom import dcmread
-from test_synthetic_pipeline import _write_dicom
 
 
 def test_real_336_checkpoint_drives_live_hidden_inference(
