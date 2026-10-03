@@ -180,6 +180,16 @@ node-ID comparisons.
 Review total: one standards readability observation (fixed), zero spec findings;
 no outstanding findings on either axis.
 
+## Main-branch integration
+
+PR #40 isolates the two #39 commits on `main` as `f76defb` and `0a08ed5`,
+excluding the source branch's unrelated, unmerged #38 Raptor derivative work.
+All required gates passed again on this main-based branch: both locked syncs,
+Ruff, formatting, 491 tests (0 skipped, two existing warnings, 56.77s), mypy
+(84 files), wheel/sdist build and diff checks. The five-case difference from the
+496-case audit above is the #38 test module absent from main, not removed
+coverage. The original branch's before/after measurements remain recorded above.
+
 ## Remaining maintenance opportunities
 
 Kaggle wheel/weight dataset-artifact scaffolding and the repeated series/slice
