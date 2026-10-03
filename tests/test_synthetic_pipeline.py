@@ -2,44 +2,9 @@ import os
 from pathlib import Path
 
 import numpy as np
-from pydicom.dataset import FileDataset, FileMetaDataset
-from pydicom.uid import (
-    ExplicitVRLittleEndian,
-    SecondaryCaptureImageStorage,
-    generate_uid,
-)
+from dicom_support import write_dicom
 
 from rsna_knee import decode_pixels, load_config, preprocess_series, uniform_indices
-
-
-def _write_dicom(
-    path: Path,
-    pixels: np.ndarray,
-    *,
-    slope: float = 1.0,
-    intercept: float = 0.0,
-    photometric_interpretation: str = "MONOCHROME2",
-) -> None:
-    sop_instance_uid = generate_uid()
-    file_meta = FileMetaDataset()
-    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
-    file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
-    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-
-    dataset = FileDataset(path, {}, file_meta=file_meta, preamble=b"\0" * 128)
-    dataset.SOPClassUID = SecondaryCaptureImageStorage
-    dataset.SOPInstanceUID = sop_instance_uid
-    dataset.Rows, dataset.Columns = pixels.shape
-    dataset.SamplesPerPixel = 1
-    dataset.PhotometricInterpretation = photometric_interpretation
-    dataset.BitsAllocated = 16
-    dataset.BitsStored = 16
-    dataset.HighBit = 15
-    dataset.PixelRepresentation = 0
-    dataset.RescaleSlope = slope
-    dataset.RescaleIntercept = intercept
-    dataset.PixelData = pixels.astype(np.uint16).tobytes()
-    dataset.save_as(path, enforce_file_format=True)
 
 
 def test_generated_dicom_pipeline_runs_on_cpu(tmp_path: Path) -> None:
@@ -65,10 +30,10 @@ image_size = 2
 
     base_pixels = np.array([[0, 1], [2, 3]], dtype=np.uint16)
     for index in range(10):
-        _write_dicom(input_root / f"{index:02}.dcm", base_pixels + index)
+        write_dicom(input_root / f"{index:02}.dcm", base_pixels + index)
 
     inverted_path = input_root / "monochrome1.dcm"
-    _write_dicom(
+    write_dicom(
         inverted_path,
         base_pixels,
         slope=2,

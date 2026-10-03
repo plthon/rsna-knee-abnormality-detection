@@ -1,11 +1,31 @@
 import csv
 import hashlib
 import json
-from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
+from cohort_support import (
+    COMPETITION_CONTRACT,
+    SELECTED_COLUMNS,
+    SERIES_COLUMNS,
+    SLICE_COLUMNS,
+    STUDY_COLUMNS,
+    TARGETS,
+    TRAIN_COLUMNS,
+)
+from cohort_support import (
+    sha256_file as _sha256,
+)
+from cohort_support import (
+    study_row as _study_row,
+)
+from cohort_support import (
+    train_row as _train_row,
+)
+from cohort_support import (
+    write_csv as _write_csv,
+)
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
@@ -34,52 +54,6 @@ from rsna_knee.training import (
 pytestmark = pytest.mark.training
 
 PROJECT_ROOT = Path(__file__).parents[1]
-COMPETITION_CONTRACT = PROJECT_ROOT / "contracts" / "competition.json"
-TARGETS = tuple(json.loads(COMPETITION_CONTRACT.read_text())["targets"]["order"])
-TRAIN_COLUMNS = tuple(
-    json.loads(COMPETITION_CONTRACT.read_text())["data"]["tables"]["train.csv"][
-        "columns"
-    ]
-)
-STUDY_COLUMNS = (
-    "study_index",
-    "split",
-    "StudyInstanceUID",
-    "PatientID",
-    "series_count",
-    "usable_series_count",
-    "slice_count",
-    "usable_slice_count",
-)
-SERIES_COLUMNS = (
-    "series_index",
-    "study_index",
-    "SeriesInstanceUID",
-    "relative_path",
-    "Fluid_Sensitive",
-    "Fat_Suppression",
-    "Anatomical_Plane",
-    "slice_count",
-    "usable_slice_count",
-    "ordering_method",
-    "selection_mask",
-)
-SLICE_COLUMNS = (
-    "slice_index",
-    "series_index",
-    "SOPInstanceUID",
-    "filename",
-    "ordered_position",
-    "rows",
-    "columns",
-    "instance_number",
-    "geometry_coordinate",
-    "transfer_syntax",
-    "photometric_interpretation",
-    "rescale_slope",
-    "rescale_intercept",
-)
-SELECTED_COLUMNS = ("series_index", "slot", "slice_index", "ordered_position")
 
 
 class _MeanBackbone(nn.Module):
@@ -385,9 +359,9 @@ def _cohort_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
     index_root = root / "index"
     index_root.mkdir()
     study_rows = [
-        _study_row(0, "study-b"),
-        _study_row(1, "study-unlabeled"),
-        _study_row(2, "study-a"),
+        _study_row(0, "study-b", "patient-0"),
+        _study_row(1, "study-unlabeled", "patient-1"),
+        _study_row(2, "study-a", "patient-2"),
     ]
     series_rows: list[dict[str, object]] = []
     slice_rows: list[dict[str, object]] = []
@@ -503,49 +477,10 @@ def _cohort_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
     return competition_root, index_root, index_contract_path, supervision_path
 
 
-def _train_row(study_uid: str, labels: Sequence[int | None]) -> dict[str, object]:
-    row: dict[str, object] = {column: "" for column in TRAIN_COLUMNS}
-    row["StudyInstanceUID"] = study_uid
-    row["Report"] = "private report text must not be consumed"
-    row.update(
-        {
-            target: "" if label is None else label
-            for target, label in zip(TARGETS, labels, strict=True)
-        }
-    )
-    return row
-
-
-def _study_row(index: int, study_uid: str) -> dict[str, object]:
-    return {
-        "study_index": index,
-        "split": "train",
-        "StudyInstanceUID": study_uid,
-        "PatientID": f"patient-{index}",
-        "series_count": 1,
-        "usable_series_count": 1,
-        "slice_count": 1,
-        "usable_slice_count": 1,
-    }
-
-
-def _write_csv(
-    path: Path, columns: Sequence[str], rows: Sequence[dict[str, object]]
-) -> None:
-    with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def _canonical_json(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_index_loading_does_not_resolve_shared_parents_per_slice(

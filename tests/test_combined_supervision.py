@@ -1,18 +1,33 @@
 import csv
-import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
-from pydicom.dataset import FileDataset, FileMetaDataset
-from pydicom.uid import (
-    ExplicitVRLittleEndian,
-    SecondaryCaptureImageStorage,
-    generate_uid,
+from cohort_support import (
+    COMPETITION_CONTRACT,
+    SELECTED_COLUMNS,
+    SERIES_COLUMNS,
+    SLICE_COLUMNS,
+    STUDY_COLUMNS,
+    TARGETS,
+    TRAIN_COLUMNS,
 )
+from cohort_support import (
+    sha256_file as _sha256,
+)
+from cohort_support import (
+    study_row as _study_row,
+)
+from cohort_support import (
+    train_row as _train_row,
+)
+from cohort_support import (
+    write_csv as _write_csv,
+)
+from dicom_support import write_dicom
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
@@ -28,52 +43,6 @@ from rsna_knee.combined_supervision import (
 pytestmark = pytest.mark.training
 
 PROJECT_ROOT = Path(__file__).parents[1]
-COMPETITION_CONTRACT = PROJECT_ROOT / "contracts" / "competition.json"
-TARGETS = tuple(json.loads(COMPETITION_CONTRACT.read_text())["targets"]["order"])
-TRAIN_COLUMNS = tuple(
-    json.loads(COMPETITION_CONTRACT.read_text())["data"]["tables"]["train.csv"][
-        "columns"
-    ]
-)
-STUDY_COLUMNS = (
-    "study_index",
-    "split",
-    "StudyInstanceUID",
-    "PatientID",
-    "series_count",
-    "usable_series_count",
-    "slice_count",
-    "usable_slice_count",
-)
-SERIES_COLUMNS = (
-    "series_index",
-    "study_index",
-    "SeriesInstanceUID",
-    "relative_path",
-    "Fluid_Sensitive",
-    "Fat_Suppression",
-    "Anatomical_Plane",
-    "slice_count",
-    "usable_slice_count",
-    "ordering_method",
-    "selection_mask",
-)
-SLICE_COLUMNS = (
-    "slice_index",
-    "series_index",
-    "SOPInstanceUID",
-    "filename",
-    "ordered_position",
-    "rows",
-    "columns",
-    "instance_number",
-    "geometry_coordinate",
-    "transfer_syntax",
-    "photometric_interpretation",
-    "rescale_slope",
-    "rescale_intercept",
-)
-SELECTED_COLUMNS = ("series_index", "slot", "slice_index", "ordered_position")
 
 
 def test_public_verdict_mapping() -> None:
@@ -168,45 +137,41 @@ def test_public_label_drift_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_missing_non_gold_study_in_public_dataset_raises(tmp_path: Path) -> None:
-    comp_root, pub_root, idx_root, pub_contract, idx_contract = _combined_fixture(
-        tmp_path
-    )
-    # Remove study-public-1 from public dataset
-    csv_file = pub_root / "report_labels_v2.csv"
-    lines = [
-        line
-        for line in csv_file.read_text().splitlines()
-        if "study-public-1" not in line
-    ]
-    csv_file.write_text("\n".join(lines))
-    # Update contract hash to bypass sha check
-    contract_data = json.loads(pub_contract.read_text())
-    contract_data["file_hashes"]["report_labels_v2.csv"] = _sha256(csv_file)
-    pub_contract.write_text(json.dumps(contract_data))
-
-    with pytest.raises(ValueError, match="missing from public label dataset"):
-        derive_combined_cohort(
-            comp_root,
-            pub_root,
-            idx_root,
-            public_dataset_contract_path=pub_contract,
-            data_index_contract_path=idx_contract,
-        )
-
-
-def test_invalid_verdict_raises(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        pytest.param(
+            lambda text: "\n".join(
+                line for line in text.splitlines() if "study-public-1" not in line
+            ),
+            "missing from public label dataset",
+            id="missing-non-gold-study",
+        ),
+        pytest.param(
+            lambda text: text.replace("YES", "INVALID_VALUE"),
+            "Invalid public verdict",
+            id="invalid-verdict",
+        ),
+        pytest.param(
+            lambda text: "\n".join([*text.splitlines(), text.splitlines()[1]]),
+            "Duplicate study in public label dataset",
+            id="duplicate-study",
+        ),
+    ],
+)
+def test_public_label_semantics_rejected_with_matching_hash(
+    tmp_path: Path, mutate: Callable[[str], str], error: str
+) -> None:
     comp_root, pub_root, idx_root, pub_contract, idx_contract = _combined_fixture(
         tmp_path
     )
     csv_file = pub_root / "report_labels_v2.csv"
-    content = csv_file.read_text().replace("YES", "INVALID_VALUE")
-    csv_file.write_text(content)
+    csv_file.write_text(mutate(csv_file.read_text()))
     contract_data = json.loads(pub_contract.read_text())
     contract_data["file_hashes"]["report_labels_v2.csv"] = _sha256(csv_file)
     pub_contract.write_text(json.dumps(contract_data))
 
-    with pytest.raises(ValueError, match="Invalid public verdict"):
+    with pytest.raises(ValueError, match=error):
         derive_combined_cohort(
             comp_root,
             pub_root,
@@ -260,28 +225,6 @@ def test_duplicate_study_rejected_in_train_csv(tmp_path: Path) -> None:
         writer.writerow(dup_row)
 
     with pytest.raises(ValueError, match="Duplicate study in competition train.csv"):
-        derive_combined_cohort(
-            comp_root,
-            pub_root,
-            idx_root,
-            public_dataset_contract_path=pub_contract,
-            data_index_contract_path=idx_contract,
-        )
-
-
-def test_duplicate_study_rejected_in_public_csv(tmp_path: Path) -> None:
-    comp_root, pub_root, idx_root, pub_contract, idx_contract = _combined_fixture(
-        tmp_path
-    )
-    pub_csv = pub_root / "report_labels_v2.csv"
-    lines = pub_csv.read_text().splitlines()
-    lines.append(lines[1])  # duplicate first data row
-    pub_csv.write_text("\n".join(lines))
-    contract_data = json.loads(pub_contract.read_text())
-    contract_data["file_hashes"]["report_labels_v2.csv"] = _sha256(pub_csv)
-    pub_contract.write_text(json.dumps(contract_data))
-
-    with pytest.raises(ValueError, match="Duplicate study in public label dataset"):
         derive_combined_cohort(
             comp_root,
             pub_root,
@@ -698,27 +641,6 @@ def test_run_combined_baseline_with_pretrained_checkpoint(
     assert outcome.report_path.is_file()
 
 
-def _write_dicom(path: Path) -> None:
-    sop_instance_uid = generate_uid()
-    file_meta = FileMetaDataset()
-    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
-    file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
-    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-    dataset = FileDataset(path, {}, file_meta=file_meta, preamble=b"\0" * 128)
-    dataset.SOPClassUID = SecondaryCaptureImageStorage
-    dataset.SOPInstanceUID = sop_instance_uid
-    dataset.Rows = 8
-    dataset.Columns = 8
-    dataset.SamplesPerPixel = 1
-    dataset.PhotometricInterpretation = "MONOCHROME2"
-    dataset.BitsAllocated = 16
-    dataset.BitsStored = 16
-    dataset.HighBit = 15
-    dataset.PixelRepresentation = 0
-    dataset.PixelData = np.arange(64, dtype=np.uint16).tobytes()
-    dataset.save_as(path, enforce_file_format=True)
-
-
 def _combined_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
     competition_root = root / "competition"
     competition_root.mkdir()
@@ -831,7 +753,12 @@ def _combined_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
             / f"series-{suffix}"
         )
         dcm_dir.mkdir(parents=True, exist_ok=True)
-        _write_dicom(dcm_dir / f"slice-{suffix}.dcm")
+        write_dicom(
+            dcm_dir / f"slice-{suffix}.dcm",
+            np.arange(64, dtype=np.uint16).reshape(8, 8),
+            slope=None,
+            intercept=None,
+        )
         selected_rows.append(
             {
                 "series_index": series_index,
@@ -950,19 +877,6 @@ def _combined_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
     )
 
 
-def _train_row(study_uid: str, labels: Sequence[int | None]) -> dict[str, object]:
-    row: dict[str, object] = {column: "" for column in TRAIN_COLUMNS}
-    row["StudyInstanceUID"] = study_uid
-    row["Report"] = "private report text must not be consumed"
-    row.update(
-        {
-            target: "" if label is None else label
-            for target, label in zip(TARGETS, labels, strict=True)
-        }
-    )
-    return row
-
-
 def _public_row(study_uid: str, verdicts: Sequence[str]) -> dict[str, object]:
     row: dict[str, object] = {"StudyInstanceUID": study_uid}
     for target, verdict in zip(TARGETS, verdicts, strict=True):
@@ -970,31 +884,3 @@ def _public_row(study_uid: str, verdicts: Sequence[str]) -> dict[str, object]:
         row[f"{target}__conf"] = "0.95" if verdict != "UNK" else "0.05"
         row[f"{target}__verdict"] = verdict
     return row
-
-
-def _study_row(
-    index: int, study_uid: str, patient_id: str, split: str
-) -> dict[str, object]:
-    return {
-        "study_index": index,
-        "split": split,
-        "StudyInstanceUID": study_uid,
-        "PatientID": patient_id,
-        "series_count": 1,
-        "usable_series_count": 1,
-        "slice_count": 1,
-        "usable_slice_count": 1,
-    }
-
-
-def _write_csv(
-    path: Path, columns: Sequence[str], rows: Sequence[dict[str, object]]
-) -> None:
-    with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()

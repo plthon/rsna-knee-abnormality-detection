@@ -6,12 +6,7 @@ from typing import Literal, cast
 
 import numpy as np
 import pytest
-from pydicom.dataset import FileDataset, FileMetaDataset
-from pydicom.uid import (
-    ExplicitVRLittleEndian,
-    SecondaryCaptureImageStorage,
-    generate_uid,
-)
+from dicom_support import write_dicom
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
@@ -90,7 +85,12 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
 
             for position in range(21):
                 path = series_root / f"{21 - position:02}.dcm"
-                _write_dicom(path)
+                write_dicom(
+                    path,
+                    np.arange(64, dtype=np.uint16).reshape(8, 8),
+                    slope=None,
+                    intercept=None,
+                )
                 dataset = dcmread(path)
                 dataset.ImagePositionPatient = [0, 0, position]
                 dataset.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
@@ -98,7 +98,12 @@ def test_scoring_uses_live_hidden_test_index_and_never_trains(
                 dataset.PixelData = np.full((8, 8), position, dtype=np.uint16).tobytes()
                 dataset.save_as(path, enforce_file_format=True)
         else:
-            _write_dicom(series_root / "slice.dcm")
+            write_dicom(
+                series_root / "slice.dcm",
+                np.arange(64, dtype=np.uint16).reshape(8, 8),
+                slope=None,
+                intercept=None,
+            )
     _write_csv(
         competition_root / "test_series.csv",
         (
@@ -399,27 +404,6 @@ def _write_csv(
         writer = csv.writer(file)
         writer.writerow(columns)
         writer.writerows(rows)
-
-
-def _write_dicom(path: Path) -> None:
-    sop_uid = generate_uid()
-    file_meta = FileMetaDataset()
-    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
-    file_meta.MediaStorageSOPInstanceUID = sop_uid
-    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-    dataset = FileDataset(path, {}, file_meta=file_meta, preamble=b"\0" * 128)
-    dataset.SOPClassUID = SecondaryCaptureImageStorage
-    dataset.SOPInstanceUID = sop_uid
-    dataset.Rows = 8
-    dataset.Columns = 8
-    dataset.SamplesPerPixel = 1
-    dataset.PhotometricInterpretation = "MONOCHROME2"
-    dataset.BitsAllocated = 16
-    dataset.BitsStored = 16
-    dataset.HighBit = 15
-    dataset.PixelRepresentation = 0
-    dataset.PixelData = np.arange(64, dtype=np.uint16).tobytes()
-    dataset.save_as(path, enforce_file_format=True)
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
