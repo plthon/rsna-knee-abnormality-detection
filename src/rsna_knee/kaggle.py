@@ -1370,6 +1370,83 @@ def build_raptor_reconstruction_bundle(
     return _record_rendered_notebook_hash(bundle, label="Raptor reconstruction")
 
 
+def build_raptor_t4_derivative_bundle(
+    project_root: Path,
+    output_root: Path,
+    *,
+    stage: str,
+    kernel_id: str | None = None,
+    gpu_approved: bool = False,
+    resume_dataset_id: str | None = None,
+    session: int = 1,
+) -> KaggleBundle:
+    if (
+        stage not in {"smoke", "full"}
+        or (resume_dataset_id and stage != "full")
+        or not 1 <= session <= 8
+        or (stage == "smoke" and session != 1)
+        or (resume_dataset_id and session != 1)
+    ):
+        raise ValueError("Raptor T4 derivative requires smoke or full stage")
+    source_path = project_root / "notebooks" / "train_raptor_t4_derivative.py"
+    contract_names = (
+        "competition.json",
+        "raptor-training-reference-v1.json",
+        "raptor-t4-derivative-v1.json",
+    )
+    for name in contract_names:
+        if not (project_root / "contracts" / name).is_file():
+            raise FileNotFoundError(f"Raptor T4 derivative requires contracts/{name}")
+    git_commit, git_dirty = _git_state(project_root)
+    if git_dirty:
+        raise ValueError("Raptor T4 derivative requires a clean committed Git revision")
+    suffix = f"{stage}-{session}" if stage == "full" else stage
+    resolved_kernel_id = kernel_id or f"plthon/rsna-knee-raptor-t4-derivative-{suffix}"
+    prior_kernel = (
+        f"plthon/rsna-knee-raptor-t4-derivative-full-{session - 1}"
+        if session > 1
+        else None
+    )
+    bundle = build_kaggle_bundle(
+        project_root,
+        output_root,
+        KaggleSpec(
+            source_name=source_path.name,
+            notebook_name="train_raptor_t4_derivative.ipynb",
+            kernel_id=resolved_kernel_id,
+            title=f"RSNA Knee Raptor T4 Derivative {suffix.title()}",
+            competition_sources=("rsna-knee-abnormality-detection",),
+            dataset_sources=(
+                *_RAPTOR_RECONSTRUCTION_DATASET_SOURCES,
+                *((resume_dataset_id,) if resume_dataset_id else ()),
+            ),
+            kernel_sources=(prior_kernel,) if prior_kernel else (),
+            gpu=True,
+            internet=True,
+            machine_shape=_GPU_MACHINE_SHAPE,
+            replacements={
+                "__RSNA_KNEE_APPROVED_GPU__": json.dumps(gpu_approved),
+                "__RSNA_KNEE_GIT_COMMIT__": git_commit,
+                "__RSNA_KNEE_GIT_DIRTY__": json.dumps(git_dirty),
+                "__RSNA_KNEE_JUPYTEXT_SOURCE_SHA256__": hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest(),
+                "__RSNA_KNEE_RENDERED_NOTEBOOK_SHA256__": "0" * 64,
+                "__RSNA_KNEE_DERIVATIVE_STAGE__": stage,
+                "__RSNA_KNEE_DERIVATIVE_RESUME__": json.dumps(
+                    bool(resume_dataset_id or prior_kernel)
+                ),
+                "__RSNA_KNEE_KERNEL_ID__": resolved_kernel_id,
+            },
+            embed_package=True,
+            package_contracts=contract_names,
+            validator="raptor_t4_derivative",
+        ),
+        gpu_approved=gpu_approved,
+    )
+    return _record_rendered_notebook_hash(bundle, label="Raptor T4 derivative")
+
+
 def _record_rendered_notebook_hash(bundle: KaggleBundle, *, label: str) -> KaggleBundle:
     rendered = bundle.notebook_path.read_text(encoding="utf-8")
     zero_hash = "0" * 64
@@ -1497,8 +1574,13 @@ def _validate_spec(spec: KaggleSpec, *, gpu_approved: bool) -> None:
         )
     if not spec.gpu and spec.machine_shape:
         raise ValueError("CPU metadata cannot select an accelerator shape")
-    if spec.internet and spec.validator != "raptor_reconstruction":
-        raise ValueError("Internet is allowed only for Raptor reconstruction")
+    if spec.internet and spec.validator not in {
+        "raptor_reconstruction",
+        "raptor_t4_derivative",
+    }:
+        raise ValueError(
+            "Internet is allowed only for Raptor reconstruction or derivative"
+        )
 
 
 def _kernel_metadata(spec: KaggleSpec) -> dict[str, object]:
@@ -1570,7 +1652,9 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
         raise ValueError("Bundle provenance does not match the rendered metadata")
     validator = provenance.get("validator")
     internet_enabled = metadata.get("enable_internet") == "true"
-    if internet_enabled != (validator == "raptor_reconstruction"):
+    if internet_enabled != (
+        validator in {"raptor_reconstruction", "raptor_t4_derivative"}
+    ):
         raise ValueError("Kaggle bundle internet policy differs from its validator")
     if validator == "ordering":
         _validate_public_ordering_source(_notebook_source(source))
@@ -1667,6 +1751,26 @@ def _validate_bundle(bundle: KaggleBundle) -> bool:
             or metadata.get("model_sources") != []
         ):
             raise ValueError("Raptor reconstruction attached unexpected inputs")
+    elif validator == "raptor_t4_derivative":
+        notebook_source = _notebook_source(source)
+        _validate_raptor_t4_derivative_source(notebook_source)
+        datasets = tuple(metadata.get("dataset_sources", ()))
+        kernel_id = metadata.get("id", "")
+        final_slug = kernel_id.rsplit("-", 1)[-1]
+        session = int(final_slug) if final_slug.isdigit() else 1
+        derivative_kernels = (
+            [f"plthon/rsna-knee-raptor-t4-derivative-full-{session - 1}"]
+            if session > 1
+            else []
+        )
+        if (
+            metadata.get("competition_sources") != ["rsna-knee-abnormality-detection"]
+            or datasets[:3] != _RAPTOR_RECONSTRUCTION_DATASET_SOURCES
+            or len(datasets) not in {3, 4}
+            or metadata.get("kernel_sources") != derivative_kernels
+            or metadata.get("model_sources") != []
+        ):
+            raise ValueError("Raptor T4 derivative attached unexpected inputs")
     elif validator in {"raptor_parity", "raptor_scoring"}:
         notebook_source = _notebook_source(source)
         if validator == "raptor_parity":
@@ -2198,6 +2302,37 @@ def _validate_raptor_reconstruction_source(source: str) -> None:
     )
     if any(value in source for value in forbidden):
         raise ValueError("Raptor reconstruction crosses an unapproved boundary")
+
+
+def _validate_raptor_t4_derivative_source(source: str) -> None:
+    required = (
+        "run_raptor_t4_derivative",
+        "verify_raptor_t4_artifact",
+        '"hidden_test_inference": False',
+        '"competition_submission": False',
+        '"raptor-t4-best.pt"',
+        '"raptor-t4-swa.pt"',
+        '"raptor-t4-report.json"',
+        '"run-manifest.json"',
+        "Training segment: completed",
+        "Hidden-test inference: not run",
+        "Competition submission: not run",
+    )
+    if any(value not in source for value in required) or not any(
+        marker in source
+        for marker in ('STAGE_LITERAL = "smoke"', 'STAGE_LITERAL = "full"')
+    ):
+        raise ValueError("Raptor T4 derivative notebook omits a training safeguard")
+    forbidden = (
+        'COMPETITION_ROOT / "test_series"',
+        '"submission.csv"',
+        "write_submission",
+        "run_raptor_reference",
+        "kaggle competitions submit",
+        "competitions.submit",
+    )
+    if any(value in source for value in forbidden):
+        raise ValueError("Raptor T4 derivative crosses an unapproved boundary")
 
 
 def _validate_reports_source(source: str) -> None:

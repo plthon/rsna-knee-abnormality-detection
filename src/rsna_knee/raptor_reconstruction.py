@@ -849,8 +849,13 @@ def _read_gold_labels(path: Path) -> tuple[tuple[str, ...], np.ndarray]:
 
 def _initialize_pretrained_model(
     device: torch.device,
+    *,
+    revision: str | None = None,
+    expected_sha256: str | None = None,
 ) -> tuple[RaptorClassifier, PretrainedWeightIdentity]:
-    identity = _resolve_pretrained_weight()
+    identity = _resolve_pretrained_weight(revision=revision)
+    if expected_sha256 is not None and identity.sha256 != expected_sha256:
+        raise ValueError("Raptor pretrained weight hash differs")
     backbone = _new_backbone(True, checkpoint_path=identity.cache_path)
     setter = getattr(backbone, "set_grad_checkpointing", None)
     if not callable(setter):
@@ -865,12 +870,16 @@ def _initialize_pretrained_model(
     return model.to(device), identity
 
 
-def _resolve_pretrained_weight() -> PretrainedWeightIdentity:
+def _resolve_pretrained_weight(
+    *, revision: str | None = None
+) -> PretrainedWeightIdentity:
     repository = "timm/coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k"
     filename = "model.safetensors"
     hub = importlib.import_module("huggingface_hub")
-    info = hub.HfApi().model_info(repository)
-    revision = getattr(info, "sha", None)
+    requested_revision = revision
+    if revision is None:
+        info = hub.HfApi().model_info(repository)
+        revision = getattr(info, "sha", None)
     if not isinstance(revision, str) or not revision:
         raise ValueError("Hugging Face did not resolve the Raptor weight revision")
     raw_path = hub.hf_hub_download(
@@ -879,7 +888,7 @@ def _resolve_pretrained_weight() -> PretrainedWeightIdentity:
     path = _validated_pretrained_cache_path(Path(raw_path), revision)
     return PretrainedWeightIdentity(
         repository=repository,
-        requested_revision=None,
+        requested_revision=requested_revision,
         resolved_revision=revision,
         filename=filename,
         sha256=_sha256(path),

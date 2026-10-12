@@ -17,6 +17,7 @@ from rsna_knee.kaggle import (
     build_raptor_parity_bundle,
     build_raptor_reconstruction_bundle,
     build_raptor_scoring_bundle,
+    build_raptor_t4_derivative_bundle,
     build_report_llm_bundle,
     build_report_source_comparison_bundle,
     build_reports_bundle,
@@ -57,6 +58,7 @@ def main() -> None:
             "dinov2-resume-dataset",
             "raptor-parity",
             "raptor-reconstruction",
+            "raptor-t4-derivative",
             "raptor-scoring",
         ),
     )
@@ -72,6 +74,7 @@ def main() -> None:
         "--weight-dataset-id", default="plthon/torchvision-resnet18-imagenet1k-v1"
     )
     build.add_argument("--kernel-id", default=None)
+    build.add_argument("--session", type=int, default=1)
     build.add_argument("--approve-gpu", action="store_true")
     build.add_argument("--checkpoint-dataset-id")
     build.add_argument("--checkpoint-sha256")
@@ -125,6 +128,10 @@ def main() -> None:
                 "dinov2-resume-dataset": "dinov2-resume-dataset",
                 "raptor-parity": "raptor-parity",
                 "raptor-reconstruction": f"raptor-reconstruction-{arguments.stage}",
+                "raptor-t4-derivative": (
+                    f"raptor-t4-derivative-{arguments.stage}"
+                    + (f"-{arguments.session}" if arguments.stage == "full" else "")
+                ),
                 "raptor-scoring": "raptor-reference-scoring",
             }
             arguments.output = Path("build/kaggle") / names[arguments.target]
@@ -157,6 +164,18 @@ def main() -> None:
                 stage=arguments.stage,
                 kernel_id=arguments.kernel_id,
                 gpu_approved=arguments.approve_gpu,
+            )
+        elif arguments.target == "raptor-t4-derivative":
+            if arguments.stage not in {"smoke", "full"}:
+                parser.error("raptor-t4-derivative requires --stage smoke|full")
+            bundle = build_raptor_t4_derivative_bundle(
+                project_root,
+                arguments.output,
+                stage=arguments.stage,
+                kernel_id=arguments.kernel_id,
+                gpu_approved=arguments.approve_gpu,
+                resume_dataset_id=arguments.resume_dataset_id,
+                session=arguments.session,
             )
         elif arguments.target == "raptor-scoring":
             bundle = build_raptor_scoring_bundle(
