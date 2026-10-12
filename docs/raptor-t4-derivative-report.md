@@ -1,6 +1,6 @@
 # Issue #38: Raptor T4 derivative
 
-The local implementation and approved Kaggle T4 resource smoke are complete. **Outcome B: Batch-4 / accumulation-2 fits the T4 smoke, but full training was not completed.** The user subsequently approved the 16-epoch run. It is divided into eight two-epoch Kaggle sessions because the smoke timing projects beyond a single session limit.
+**Outcome A: Batch-4 / accumulation-2 fits Kaggle T4 and the 16-epoch derivative completed.** The approved smoke first established outcome B. The user then approved the 16-epoch run, which ran in eight two-epoch Kaggle sessions because the smoke timing projected beyond a single session limit. Final results are under [Final result](#final-result).
 
 The immutable #36 reference remains in `contracts/raptor-training-reference-v1.json` and `docs/raptor-reference-report.md`: its faithful batch-8 recipe failed on the first T4 backward pass. The separately named #38 contract pins that parent by SHA-256 and changes physical batch size to 4 and gradient accumulation to 2. Every other training setting comes from the parent configuration. The 4,349 soft-label studies yield 1,088 physical micro-batches and 544 optimizer updates per full epoch, matching the batch-8 update count. OneCycleLR is configured for 544 updates per epoch, not 1,088 loader iterations.
 
@@ -33,3 +33,26 @@ The smoke establishes that three consecutive updates fit. It does not establish 
 
 - Session 7 completion: version 1 is `COMPLETE`. It resumed from epoch 12 and completed epochs 13–14, reaching 7,616 optimizer updates and 7,616 scheduler steps. Best organizer-gold macro ROC-AUC remains 0.907602889793442 at epoch 11; the top-three averaged checkpoint scored 0.9045326535845325 across epochs 11, 13, and 12. No OOM, retry, hidden-test inference, or submission occurred. Runtime: 8.46 hours. The downloaded report SHA-256 `1cdc6ebbd2990ef09808db38424d7864b84b68c1ef3600efc3cb88fcfad4ef88` matches the manifest; its resume checkpoint is available on Kaggle.
 - Session 8: private kernel `plthon/rsna-knee-raptor-t4-derivative-full-8`, version 1, launched on 2026-10-12 with status `RUNNING`. It resumes from epoch 14 / 7,616 optimizer and scheduler steps and is intended to complete epochs 15–16. Kaggle reported 21.43 GPU hours available before launch. It uses the same source package and frozen derivative configuration as session 7, with session 7 as the sole checkpoint source. No completed-epoch or metric result is claimed for session 8 yet.
+- Session 8 completion: version 1 is `COMPLETE`. It resumed from epoch 14 and completed epochs 15–16, reaching 8,704 optimizer updates and 8,704 scheduler steps. Runtime: 8.22 hours. No OOM, retry, hidden-test inference, or submission occurred. The downloaded report SHA-256 `e08279737135ddc0ba6ed826a538dcd4f41c275f846650cf83b73ef3906bad01` matches the manifest, and the notebook verified all four artifact hashes. The report, manifest, and log are retained under ignored `.artifacts/kaggle/rsna-knee-raptor-t4-derivative-full-8/`; checkpoints remain on Kaggle.
+
+## Final result
+
+All 16 epochs completed: 8,704 optimizer updates and 8,704 scheduler steps (544 per epoch), with seven resume boundaries after epochs 2, 4, 6, 8, 10, 12, and 14. The run took 68.92 hours of training-session time across the eight sessions. Peak GPU memory in the final session was 10.78 GiB allocated and 12.12 GiB reserved. No OOM or retry occurred in any session. No hidden-test inference or competition submission was run.
+
+Organizer-gold macro ROC-AUC on the 58 validation studies, by epoch:
+
+| Epoch | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| AUC | 0.7032 | 0.7950 | 0.8392 | 0.8420 | 0.8654 | 0.8838 | 0.8916 | 0.8886 |
+
+| Epoch | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 |
+|---|---|---|---|---|---|---|---|---|
+| AUC | 0.8929 | 0.8989 | **0.9076** | 0.8999 | 0.9062 | 0.8985 | 0.9000 | 0.9009 |
+
+- Best epoch: 11, macro ROC-AUC 0.907602889793442.
+- Top-three averaged checkpoint (epochs 11, 13, 16): 0.9045250969469314.
+- Epoch-11 per-target ROC-AUC: ACL 0.9853, MCL 0.9592, Medial Meniscus 0.9591, Lateral Meniscus 0.8248, Medial OA 0.9814, Lateral OA 0.7911, PF OA 0.8443, Effusion 0.9826, Synovitis 0.7706, Baker's 0.9746, Contusion 0.9015, Fracture 0.9167.
+
+The released Raptor model scored 0.9167492483170476 at epoch 12. The derivative's best is 0.0091 lower and its averaged checkpoint 0.0122 lower. These are comparison references only. No hyperparameter was selected or changed after observing any result.
+
+Runtime caveat: Kaggle's image changed between sessions 3 and 4. Sessions 1–3 ran on Python 3.12.13, PyTorch `2.10.0+cu128`, and timm 1.0.26. Sessions 4–8 ran on Python 3.13.15, PyTorch `2.11.0+cu128`, and timm 1.0.29. The source package, derivative contract, pretrained weight, and labels were identical throughout, but the run is not bit-reproducible from a single environment.
